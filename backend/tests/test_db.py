@@ -86,3 +86,27 @@ def test_delete_unknown_module_returns_false():
     db.init_db()
     sid = db.ensure_session(None)
     assert db.delete_module(sid, "nope") is False
+
+
+def test_get_module_returns_stored_module():
+    db.init_db()
+    sid = db.ensure_session(None)
+    stored = db.insert_module(sid, _sample_config("My Module"))
+    found = db.get_module(sid, stored.id)
+    assert found is not None
+    assert found.id == stored.id
+    assert found.config.title == "My Module"
+
+
+def test_get_module_returns_none_for_unknown():
+    db.init_db()
+    sid = db.ensure_session(None)
+    assert db.get_module(sid, "not-a-real-id") is None
+
+
+def test_get_module_scoped_to_session():
+    db.init_db()
+    s1 = db.ensure_session(None)
+    s2 = db.ensure_session(None)
+    stored = db.insert_module(s1, _sample_config())
+    assert db.get_module(s2, stored.id) is None

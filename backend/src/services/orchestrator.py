@@ -65,6 +65,31 @@ def _strip_codefence(text: str) -> str:
     return s.strip()
 
 
+REFINE_SYSTEM_PROMPT = """You are the Trus orchestrator. Your task is to update an existing
+ModuleConfig based on the user's instruction.
+
+The current config is provided as JSON. Apply the requested change and return the updated
+ModuleConfig as JSON — same format, same output rules as generation.
+
+Available component types (use exactly these "type" values):
+- text_input        — short free-text field. Fields: id, label, type, placeholder?
+- number_input      — numeric field. Fields: id, label, type, min?, max?, step?, unit?
+- checkbox          — boolean toggle. Fields: id, label, type
+- slider            — bounded numeric input. Fields: id, label, type, min, max, step, unit?
+- progress_bar      — visual progress. Fields: id, label, type, max, bound_to?
+- list              — list of free-text items. Fields: id, label, type, item_label, placeholder?
+
+Rules:
+1. Use only the component types above.
+2. Preserve state values for any component that survives the edit unchanged (same id, same type).
+3. Add, remove, rename, or reorder components to match the instruction.
+4. New ids must be snake_case and not collide with surviving ids.
+5. Do not narrate. Output the JSON object and nothing else.
+6. If the request is illicit or structurally impossible, return:
+   { "refusal": "<one-sentence reason>" }
+"""
+
+
 def _seeded_prompt(prompt: str) -> str:
     """Ground generation with the nearest preloaded skeleton, which the model is
     told to adapt to the request. This is "preloaded templates that adjust to the
@@ -80,18 +105,34 @@ def _seeded_prompt(prompt: str) -> str:
     )
 
 
-def generate_module(prompt: str) -> ModuleConfig:
-    raw = llm.generate(_seeded_prompt(prompt), system=SYSTEM_PROMPT)
+def _parse_module_config(raw: str) -> ModuleConfig:
     cleaned = _strip_codefence(raw)
     try:
         data = json.loads(cleaned)
     except json.JSONDecodeError as e:
         raise RefusalError(f"The model returned non-JSON output: {e.msg}") from e
-
     if isinstance(data, dict) and "refusal" in data:
         raise RefusalError(str(data["refusal"]))
-
     try:
         return ModuleConfig.model_validate(data)
     except ValidationError as e:
         raise RefusalError(f"The model produced an invalid ModuleConfig: {e.errors()[0]['msg']}") from e
+
+
+def generate_module(prompt: str) -> ModuleConfig:
+    raw = llm.generate(_seeded_prompt(prompt), system=SYSTEM_PROMPT)
+    return _parse_module_config(raw)
+
+
+def refine_module(config: ModuleConfig, prompt: str) -> ModuleConfig:
+    # Stub mode: Gemini isn't available, so return the config unchanged.
+    # Real refinement requires a valid GEMINI_API_KEY.
+    if llm.is_stub_mode():
+        return config
+    user_message = (
+        f"Current ModuleConfig:\n{config.model_dump_json()}\n\n"
+        f"User instruction: {prompt}\n\n"
+        f"Return the updated ModuleConfig JSON."
+    )
+    raw = llm.generate(user_message, system=REFINE_SYSTEM_PROMPT)
+    return _parse_module_config(raw)

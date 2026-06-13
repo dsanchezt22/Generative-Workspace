@@ -128,6 +128,22 @@ def insert_module(session_id: str, config: ModuleConfig) -> StoredModule:
     return StoredModule(id=module_id, config=config, created_at=now, updated_at=now)
 
 
+def get_module(session_id: str, module_id: str) -> StoredModule | None:
+    with _conn() as c:
+        row = c.execute(
+            "SELECT id, config_json, created_at, updated_at FROM modules WHERE id = ? AND session_id = ?",
+            (module_id, session_id),
+        ).fetchone()
+    if row is None:
+        return None
+    return StoredModule(
+        id=row["id"],
+        config=ModuleConfig.model_validate_json(row["config_json"]),
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+    )
+
+
 def list_modules(session_id: str) -> list[StoredModule]:
     with _conn() as c:
         rows = c.execute(

@@ -17,6 +17,10 @@ def _is_stub_key(key: str | None) -> bool:
     return not key or key.startswith("stub-") or key == "your_key_here"
 
 
+def is_stub_mode() -> bool:
+    return _is_stub_key(os.environ.get("GEMINI_API_KEY"))
+
+
 def _stub_module_for(prompt: str) -> str:
     """Canned ModuleConfig for dev when no real Gemini key is set.
 

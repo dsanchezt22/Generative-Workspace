@@ -10,6 +10,7 @@ interface Props {
   onModuleChange: (updated: StoredModule) => void;
   onModuleDelete: (id: string) => void;
   onModuleUndo: (id: string) => void;
+  onModuleSelectForRefine: (id: string) => void;
 }
 
 interface View {
@@ -23,6 +24,7 @@ export function Canvas({
   onModuleChange,
   onModuleDelete,
   onModuleUndo,
+  onModuleSelectForRefine,
 }: Props) {
   const [view, setView] = useState<View>({ x: 0, y: 0, zoom: 1 });
   const [draggingModule, setDraggingModule] = useState<string | null>(null);
@@ -34,6 +36,11 @@ export function Canvas({
     moduleId: string;
     startClient: { x: number; y: number };
     startLayout: { x: number; y: number };
+  } | null>(null);
+  const moduleResizeRef = useRef<{
+    moduleId: string;
+    startClient: { x: number; y: number };
+    startSize: { width: number; height: number };
   } | null>(null);
 
   const onPointerDown = useCallback(
@@ -52,14 +59,28 @@ export function Canvas({
       const dy = (e.clientY - startClient.y) / viewZoomRef.current;
       const m = latestModulesRef.current.find((mm) => mm.id === moduleId);
       if (!m) return;
-      const newLayout = {
-        ...m.config.layout,
-        x: startLayout.x + dx,
-        y: startLayout.y + dy,
-      };
       onModuleChange({
         ...m,
-        config: { ...m.config, layout: newLayout },
+        config: { ...m.config, layout: { ...m.config.layout, x: startLayout.x + dx, y: startLayout.y + dy } },
+      });
+      return;
+    }
+    if (moduleResizeRef.current) {
+      const { moduleId, startClient, startSize } = moduleResizeRef.current;
+      const dx = (e.clientX - startClient.x) / viewZoomRef.current;
+      const dy = (e.clientY - startClient.y) / viewZoomRef.current;
+      const m = latestModulesRef.current.find((mm) => mm.id === moduleId);
+      if (!m) return;
+      onModuleChange({
+        ...m,
+        config: {
+          ...m.config,
+          layout: {
+            ...m.config.layout,
+            width: Math.max(240, startSize.width + dx),
+            height: Math.max(160, startSize.height + dy),
+          },
+        },
       });
       return;
     }
@@ -82,6 +103,18 @@ export function Canvas({
             await api.patchModule(m.id, m.config);
           } catch (err) {
             console.error("Failed to persist layout", err);
+          }
+        }
+      }
+      if (moduleResizeRef.current) {
+        const { moduleId } = moduleResizeRef.current;
+        const m = latestModulesRef.current.find((mm) => mm.id === moduleId);
+        moduleResizeRef.current = null;
+        if (m) {
+          try {
+            await api.patchModule(m.id, m.config);
+          } catch (err) {
+            console.error("Failed to persist resize", err);
           }
         }
       }
@@ -135,6 +168,22 @@ export function Canvas({
     [],
   );
 
+  const handleResizeStart = useCallback(
+    (e: React.PointerEvent, moduleId: string) => {
+      const m = latestModulesRef.current.find((mm) => mm.id === moduleId);
+      if (!m) return;
+      e.stopPropagation();
+      moduleResizeRef.current = {
+        moduleId,
+        startClient: { x: e.clientX, y: e.clientY },
+        startSize: { width: m.config.layout.width, height: m.config.layout.height },
+      };
+      const root = containerRef.current;
+      if (root) root.setPointerCapture(e.pointerId);
+    },
+    [],
+  );
+
   return (
     <div
       ref={containerRef}
@@ -162,7 +211,9 @@ export function Canvas({
               onChange={onModuleChange}
               onDelete={onModuleDelete}
               onUndo={onModuleUndo}
+              onSelectForRefine={onModuleSelectForRefine}
               onDragStart={handleModuleDragStart}
+              onResizeStart={handleResizeStart}
             />
           ))}
         </div>

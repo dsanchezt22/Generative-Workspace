@@ -89,6 +89,10 @@ class GenerateRequest(BaseModel):
     prompt: str
 
 
+class RefineRequest(BaseModel):
+    prompt: str
+
+
 class GenerateResponse(BaseModel):
     module: StoredModule
 

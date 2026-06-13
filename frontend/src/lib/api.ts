@@ -63,4 +63,9 @@ export const api = {
     request<void>(`/api/modules/${id}`, { method: "DELETE" }),
   undoModule: (id: string) =>
     request<StoredModule>(`/api/modules/${id}/undo`, { method: "POST" }),
+  refineModule: (id: string, prompt: string) =>
+    request<StoredModule>(`/api/modules/${id}/refine`, {
+      method: "POST",
+      body: JSON.stringify({ prompt }),
+    }),
 };

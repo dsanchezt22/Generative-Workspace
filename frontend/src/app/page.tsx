@@ -9,6 +9,7 @@ import type { StoredModule } from "@/lib/types";
 export default function Home() {
   const [modules, setModules] = useState<StoredModule[]>([]);
   const [loading, setLoading] = useState(true);
+  const [refineTarget, setRefineTarget] = useState<StoredModule | null>(null);
 
   useEffect(() => {
     api
@@ -60,6 +61,21 @@ export default function Home() {
     }
   }, []);
 
+  const handleSelectForRefine = useCallback(
+    (id: string) => {
+      const m = modules.find((mod) => mod.id === id) ?? null;
+      setRefineTarget(m);
+    },
+    [modules],
+  );
+
+  const handleClearRefine = useCallback(() => setRefineTarget(null), []);
+
+  const handleRefinedModule = useCallback((updated: StoredModule) => {
+    setModules((prev) => prev.map((m) => (m.id === updated.id ? updated : m)));
+    setRefineTarget(null);
+  }, []);
+
   return (
     <main className="flex-1 flex flex-col h-screen relative">
       <header className="absolute top-0 left-0 right-0 z-10 flex items-center justify-between px-6 py-4 pointer-events-none">
@@ -79,8 +95,14 @@ export default function Home() {
         onModuleChange={handleModuleChange}
         onModuleDelete={handleDeleteModule}
         onModuleUndo={handleUndoModule}
+        onModuleSelectForRefine={handleSelectForRefine}
       />
-      <PromptBar onModule={handleNewModule} />
+      <PromptBar
+        onModule={handleNewModule}
+        refineTarget={refineTarget}
+        onRefineModule={handleRefinedModule}
+        onClearRefine={handleClearRefine}
+      />
     </main>
   );
 }

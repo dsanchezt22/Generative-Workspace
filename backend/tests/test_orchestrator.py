@@ -64,3 +64,55 @@ def test_generate_module_through_real_stub(monkeypatch):
     config = orchestrator.generate_module("trip budget for japan")
     assert "budget" in config.title.lower()
     assert config.components  # valid, non-empty module
+
+
+# --- refine_module tests ---
+
+def _make_config() -> "orchestrator.ModuleConfig":
+    from src.schema import ModuleConfig, TextInput, NumberInput
+    return ModuleConfig(
+        title="Workout Log",
+        components=[
+            TextInput(id="exercise", label="Exercise"),
+            NumberInput(id="reps", label="Reps"),
+        ],
+        state={"reps": 10},
+    )
+
+
+REFINED = json.dumps({
+    "title": "Workout Log",
+    "components": [
+        {"id": "exercise", "type": "text_input", "label": "Exercise"},
+        {"id": "reps", "type": "number_input", "label": "Reps", "min": 0, "step": 1},
+        {"id": "rest_day", "type": "checkbox", "label": "Rest day"},
+    ],
+    "state": {"reps": 10},
+})
+
+
+def test_refine_module_returns_updated_config():
+    with _fake_llm(REFINED):
+        config = orchestrator.refine_module(_make_config(), "add a rest day checkbox")
+    assert any(c.type == "checkbox" for c in config.components)
+    assert config.state.get("reps") == 10
+
+
+def test_refine_module_raises_refusal_on_explicit_refusal():
+    with _fake_llm('{"refusal": "Cannot embed a video."}'):
+        with pytest.raises(RefusalError, match="Cannot embed"):
+            orchestrator.refine_module(_make_config(), "embed a YouTube video")
+
+
+def test_refine_module_raises_refusal_on_non_json():
+    with _fake_llm("I cannot do that"):
+        with pytest.raises(RefusalError):
+            orchestrator.refine_module(_make_config(), "anything")
+
+
+def test_refine_module_stub_returns_config_unchanged(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "stub-test")
+    original = _make_config()
+    result = orchestrator.refine_module(original, "add a rest day checkbox")
+    assert result.title == original.title
+    assert len(result.components) == len(original.components)

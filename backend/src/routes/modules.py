@@ -7,6 +7,7 @@ from src.schema import (
     LLMError,
     ModuleVersion,
     PatchRequest,
+    RefineRequest,
     RefusalError,
     StoredModule,
 )
@@ -61,6 +62,30 @@ async def delete_module(module_id: str, request: Request) -> None:
     sid = _session_id(request)
     if not db.delete_module(sid, module_id):
         raise HTTPException(status_code=404, detail="Module not found")
+
+
+@router.post("/modules/{module_id}/refine", response_model=StoredModule)
+async def refine_module(module_id: str, body: RefineRequest, request: Request) -> StoredModule:
+    prompt = body.prompt.strip()
+    if not prompt:
+        raise HTTPException(status_code=422, detail="Prompt cannot be empty")
+    sid = _session_id(request)
+    existing = db.get_module(sid, module_id)
+    if existing is None:
+        raise HTTPException(status_code=404, detail="Module not found")
+    try:
+        new_config = orchestrator.refine_module(existing.config, prompt)
+    except RefusalError as e:
+        raise HTTPException(status_code=422, detail={"refusal": e.reason})
+    except LLMError:
+        raise HTTPException(
+            status_code=503,
+            detail="AI generation is temporarily unavailable. Please try again in a moment.",
+        )
+    updated = db.update_module(sid, module_id, new_config)
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Module not found")
+    return updated
 
 
 @router.post("/modules/{module_id}/undo", response_model=StoredModule)

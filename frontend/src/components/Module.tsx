@@ -22,7 +22,9 @@ interface Props {
   onChange: (updated: StoredModule) => void;
   onDelete: (id: string) => void;
   onUndo: (id: string) => void;
+  onSelectForRefine: (id: string) => void;
   onDragStart: (e: React.PointerEvent, moduleId: string) => void;
+  onResizeStart: (e: React.PointerEvent, moduleId: string) => void;
 }
 
 interface Draft {
@@ -31,7 +33,7 @@ interface Draft {
   summary_component_id?: string | null;
 }
 
-export function Module({ module, onChange, onDelete, onUndo, onDragStart }: Props) {
+export function Module({ module, onChange, onDelete, onUndo, onSelectForRefine, onDragStart, onResizeStart }: Props) {
   const [state, setState] = useState<Record<string, unknown>>(
     module.config.state ?? {},
   );
@@ -248,6 +250,19 @@ export function Module({ module, onChange, onDelete, onUndo, onDragStart }: Prop
         minHeight: collapsed ? undefined : layout.height,
       }}
     >
+      <div
+        className="absolute bottom-1 right-1 w-4 h-4 cursor-se-resize opacity-0 hover:opacity-100 transition-opacity flex items-end justify-end"
+        style={{ touchAction: "none" }}
+        onPointerDown={(e) => onResizeStart(e, module.id)}
+        aria-label="Resize module"
+        title="Resize"
+      >
+        <svg width="8" height="8" viewBox="0 0 8 8" fill="none" aria-hidden>
+          <circle cx="6" cy="6" r="1" fill="currentColor" className="text-[var(--muted)]"/>
+          <circle cx="3" cy="6" r="1" fill="currentColor" className="text-[var(--muted)]"/>
+          <circle cx="6" cy="3" r="1" fill="currentColor" className="text-[var(--muted)]"/>
+        </svg>
+      </div>
       <div className="flex items-center gap-1.5 px-3 py-3 border-b border-[var(--border)]">
         <button
           type="button"
@@ -290,6 +305,15 @@ export function Module({ module, onChange, onDelete, onUndo, onDragStart }: Prop
           title="Undo last change"
         >
           ↶
+        </button>
+        <button
+          type="button"
+          onClick={() => onSelectForRefine(module.id)}
+          className={iconBtn}
+          aria-label="Refine with AI"
+          title="Refine with AI"
+        >
+          ✦
         </button>
         <button
           type="button"
