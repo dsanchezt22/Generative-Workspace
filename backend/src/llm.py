@@ -4,9 +4,13 @@ from typing import Optional
 
 from dotenv import load_dotenv
 
+from src.schema import LLMError
+
 load_dotenv()
 
 _client = None
+
+DEFAULT_MODEL = "gemini-flash-latest"
 
 
 def _is_stub_key(key: str | None) -> bool:
@@ -39,9 +43,24 @@ def generate(prompt: str, system: Optional[str] = None) -> str:
     key = os.environ.get("GEMINI_API_KEY")
     if _is_stub_key(key):
         return _stub_module_for(prompt)
-    full_prompt = f"{system}\n\n{prompt}" if system else prompt
-    response = _get_client().models.generate_content(
-        model="gemini-2.0-flash",
-        contents=full_prompt,
-    )
-    return response.text
+
+    from google.genai import types
+
+    model = os.environ.get("GEMINI_MODEL", DEFAULT_MODEL)
+    try:
+        response = _get_client().models.generate_content(
+            model=model,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                system_instruction=system,
+                response_mime_type="application/json",
+                temperature=0.4,
+            ),
+        )
+    except Exception as e:  # network, quota (429), auth — surfaced cleanly upstream
+        raise LLMError(str(e)) from e
+
+    text = response.text
+    if not text:
+        raise LLMError("The model returned an empty response.")
+    return text

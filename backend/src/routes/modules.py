@@ -4,6 +4,7 @@ from src import db
 from src.schema import (
     GenerateRequest,
     GenerateResponse,
+    LLMError,
     PatchRequest,
     RefusalError,
     StoredModule,
@@ -30,6 +31,11 @@ async def generate_module(body: GenerateRequest, request: Request) -> GenerateRe
         config = orchestrator.generate_module(prompt)
     except RefusalError as e:
         raise HTTPException(status_code=422, detail={"refusal": e.reason})
+    except LLMError:
+        raise HTTPException(
+            status_code=503,
+            detail="AI generation is temporarily unavailable. Please try again in a moment.",
+        )
     stored = db.insert_module(sid, config)
     return GenerateResponse(module=stored)
 

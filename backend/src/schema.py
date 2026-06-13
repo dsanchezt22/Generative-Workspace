@@ -98,3 +98,12 @@ class RefusalError(Exception):
     def __init__(self, reason: str):
         super().__init__(reason)
         self.reason = reason
+
+
+class LLMError(Exception):
+    """The upstream model call failed (quota, network, auth). Distinct from a
+    refusal — this is the system being unavailable, not the request being invalid."""
+
+    def __init__(self, reason: str):
+        super().__init__(reason)
+        self.reason = reason

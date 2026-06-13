@@ -99,6 +99,18 @@ def test_delete_unknown_module_returns_404(client):
     assert resp.status_code == 404
 
 
+def test_generate_surfaces_llm_failure_as_503(client):
+    from src.schema import LLMError
+
+    with patch(
+        "src.services.orchestrator.llm.generate",
+        side_effect=LLMError("429 prepayment credits depleted"),
+    ):
+        resp = client.post("/api/modules/generate", json={"prompt": "track my workouts"})
+    assert resp.status_code == 503
+    assert "unavailable" in resp.json()["detail"].lower()
+
+
 def test_delete_is_scoped_to_session(client, second_client):
     with patch("src.services.orchestrator.llm.generate", return_value=VALID_RAW):
         created = client.post("/api/modules/generate", json={"prompt": "track my workouts"}).json()
