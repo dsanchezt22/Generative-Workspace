@@ -55,3 +55,12 @@ def test_generate_module_raises_refusal_on_unknown_component():
     with _fake_llm(bogus):
         with pytest.raises(RefusalError):
             orchestrator.generate_module("anything")
+
+
+def test_generate_module_through_real_stub(monkeypatch):
+    # No mock: exercises the seeded-prompt path against the offline stub, so the
+    # stub still routes on the original intent even though the prompt is seeded.
+    monkeypatch.setenv("GEMINI_API_KEY", "stub-test")
+    config = orchestrator.generate_module("trip budget for japan")
+    assert "budget" in config.title.lower()
+    assert config.components  # valid, non-empty module
