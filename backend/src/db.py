@@ -44,8 +44,6 @@ CREATE TABLE IF NOT EXISTS modules (
 );
 CREATE INDEX IF NOT EXISTS idx_modules_session
     ON modules(session_id, created_at);
-CREATE INDEX IF NOT EXISTS idx_modules_page
-    ON modules(page_id, created_at);
 CREATE TABLE IF NOT EXISTS module_versions (
     seq         INTEGER PRIMARY KEY AUTOINCREMENT,
     module_id   TEXT NOT NULL,
@@ -75,8 +73,19 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             needs = True
     if needs:
         conn.executescript(_SCHEMA)
+        # Additive migrations for existing databases.
+        _migrate(conn)
         conn.commit()
         _schema_ready_for = path
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Idempotent column/index additions for databases created before a schema change."""
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(modules)").fetchall()}
+    if "page_id" not in cols:
+        conn.execute("ALTER TABLE modules ADD COLUMN page_id TEXT REFERENCES pages(id) ON DELETE CASCADE")
+    # Create the page index after the column is guaranteed to exist.
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_modules_page ON modules(page_id, created_at)")
 
 
 @contextmanager
