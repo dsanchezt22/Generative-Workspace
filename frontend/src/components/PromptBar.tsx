@@ -6,12 +6,13 @@ import type { StoredModule } from "@/lib/types";
 
 interface Props {
   onModule: (m: StoredModule) => void;
+  activePageId?: string;
   refineTarget?: StoredModule | null;
   onRefineModule?: (m: StoredModule) => void;
   onClearRefine?: () => void;
 }
 
-export function PromptBar({ onModule, refineTarget, onRefineModule, onClearRefine }: Props) {
+export function PromptBar({ onModule, activePageId, refineTarget, onRefineModule, onClearRefine }: Props) {
   const [prompt, setPrompt] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -29,7 +30,7 @@ export function PromptBar({ onModule, refineTarget, onRefineModule, onClearRefin
         const updated = await api.refineModule(refineTarget.id, v);
         onRefineModule(updated);
       } else {
-        const { module } = await api.generateModule(v);
+        const { module } = await api.generateModule(v, activePageId);
         onModule(module);
       }
       setPrompt("");

@@ -7,9 +7,11 @@ import { api, ApiError } from "@/lib/api";
 
 function InsightsButton({
   modules,
+  activePageId,
   onNewModule,
 }: {
   modules: StoredModule[];
+  activePageId?: string;
   onNewModule: (m: StoredModule) => void;
 }) {
   const [loading, setLoading] = useState(false);
@@ -19,7 +21,7 @@ function InsightsButton({
     setLoading(true);
     setError(null);
     try {
-      const { module } = await api.workspaceInsights();
+      const { module } = await api.workspaceInsights(activePageId);
       onNewModule(module);
     } catch (err) {
       const msg =
@@ -62,6 +64,7 @@ interface Props {
   onModuleUndo: (id: string) => void;
   onModuleSelectForRefine: (id: string) => void;
   onNewModule: (m: StoredModule) => void;
+  activePageId?: string;
 }
 
 interface View {
@@ -113,6 +116,7 @@ export function Canvas({
   onModuleUndo,
   onModuleSelectForRefine,
   onNewModule,
+  activePageId,
 }: Props) {
   const [view, setView] = useState<View>({ x: 0, y: 0, zoom: 1 });
   const [draggingModule, setDraggingModule] = useState<string | null>(null);
@@ -309,7 +313,7 @@ export function Canvas({
       </div>
 
       {modules.length >= 2 && (
-        <InsightsButton modules={modules} onNewModule={onNewModule} />
+        <InsightsButton modules={modules} activePageId={activePageId} onNewModule={onNewModule} />
       )}
 
       <div className="absolute bottom-4 right-4 flex items-center gap-2 rounded-full bg-[var(--surface)]/80 backdrop-blur px-3 py-1.5 border border-[var(--border)] text-xs text-[var(--muted)] font-mono">

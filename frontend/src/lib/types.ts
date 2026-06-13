@@ -87,4 +87,13 @@ export interface StoredModule {
   config: ModuleConfig;
   created_at: string;
   updated_at: string;
+  page_id?: string | null;
+}
+
+export interface Page {
+  id: string;
+  session_id: string;
+  name: string;
+  position: number;
+  created_at: string;
 }

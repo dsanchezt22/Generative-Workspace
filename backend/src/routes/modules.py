@@ -1,4 +1,6 @@
-from fastapi import APIRouter, HTTPException, Request
+from typing import Optional
+
+from fastapi import APIRouter, HTTPException, Query, Request
 
 from src import db
 from src.schema import (
@@ -24,7 +26,11 @@ def _session_id(request: Request) -> str:
 
 
 @router.post("/modules/generate", response_model=GenerateResponse)
-async def generate_module(body: GenerateRequest, request: Request) -> GenerateResponse:
+async def generate_module(
+    body: GenerateRequest,
+    request: Request,
+    page_id: Optional[str] = Query(default=None),
+) -> GenerateResponse:
     prompt = body.prompt.strip()
     if not prompt:
         raise HTTPException(status_code=422, detail="Prompt cannot be empty")
@@ -39,14 +45,17 @@ async def generate_module(body: GenerateRequest, request: Request) -> GenerateRe
             status_code=503,
             detail="AI generation is temporarily unavailable. Please try again in a moment.",
         )
-    stored = db.insert_module(sid, config)
+    stored = db.insert_module(sid, config, page_id=page_id)
     return GenerateResponse(module=stored)
 
 
 @router.get("/modules", response_model=list[StoredModule])
-async def list_modules(request: Request) -> list[StoredModule]:
+async def list_modules(
+    request: Request,
+    page_id: Optional[str] = Query(default=None),
+) -> list[StoredModule]:
     sid = _session_id(request)
-    return db.list_modules(sid)
+    return db.list_modules(sid, page_id=page_id)
 
 
 @router.patch("/modules/{module_id}", response_model=StoredModule)
@@ -106,9 +115,12 @@ async def module_history(module_id: str, request: Request) -> list[ModuleVersion
 
 
 @router.post("/workspace/insights", response_model=GenerateResponse)
-async def workspace_insights(request: Request) -> GenerateResponse:
+async def workspace_insights(
+    request: Request,
+    page_id: Optional[str] = Query(default=None),
+) -> GenerateResponse:
     sid = _session_id(request)
-    modules = db.list_modules(sid)
+    modules = db.list_modules(sid, page_id=page_id)
     if not modules:
         raise HTTPException(status_code=422, detail="No modules on canvas to synthesize.")
     existing_configs = [m.config for m in modules]
@@ -121,5 +133,5 @@ async def workspace_insights(request: Request) -> GenerateResponse:
             status_code=503,
             detail="AI generation is temporarily unavailable. Please try again in a moment.",
         )
-    stored = db.insert_module(sid, config)
+    stored = db.insert_module(sid, config, page_id=page_id)
     return GenerateResponse(module=stored)

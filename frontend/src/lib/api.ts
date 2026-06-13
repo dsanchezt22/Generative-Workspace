@@ -1,4 +1,4 @@
-import type { ModuleConfig, StoredModule } from "./types";
+import type { ModuleConfig, Page, StoredModule } from "./types";
 
 const BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";
 
@@ -48,9 +48,17 @@ export interface GenerateResponse {
 }
 
 export const api = {
-  listModules: () => request<StoredModule[]>("/api/modules"),
-  generateModule: (prompt: string) =>
-    request<GenerateResponse>("/api/modules/generate", {
+  listPages: () => request<Page[]>("/api/pages"),
+  createPage: (name: string) =>
+    request<Page>("/api/pages", { method: "POST", body: JSON.stringify({ name }) }),
+  renamePage: (id: string, name: string) =>
+    request<Page>(`/api/pages/${id}`, { method: "PATCH", body: JSON.stringify({ name }) }),
+  deletePage: (id: string) =>
+    request<void>(`/api/pages/${id}`, { method: "DELETE" }),
+  listModules: (pageId?: string) =>
+    request<StoredModule[]>(`/api/modules${pageId ? `?page_id=${pageId}` : ""}`),
+  generateModule: (prompt: string, pageId?: string) =>
+    request<GenerateResponse>(`/api/modules/generate${pageId ? `?page_id=${pageId}` : ""}`, {
       method: "POST",
       body: JSON.stringify({ prompt }),
     }),
@@ -68,6 +76,9 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ prompt }),
     }),
-  workspaceInsights: () =>
-    request<GenerateResponse>("/api/workspace/insights", { method: "POST" }),
+  workspaceInsights: (pageId?: string) =>
+    request<GenerateResponse>(
+      `/api/workspace/insights${pageId ? `?page_id=${pageId}` : ""}`,
+      { method: "POST" },
+    ),
 };

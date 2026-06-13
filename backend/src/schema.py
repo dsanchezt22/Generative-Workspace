@@ -87,6 +87,23 @@ class StoredModule(BaseModel):
     config: ModuleConfig
     created_at: str
     updated_at: str
+    page_id: str | None = None
+
+
+class Page(BaseModel):
+    id: str
+    session_id: str
+    name: str
+    position: int
+    created_at: str
+
+
+class CreatePageRequest(BaseModel):
+    name: str
+
+
+class RenamePageRequest(BaseModel):
+    name: str
 
 
 class ModuleVersion(BaseModel):
