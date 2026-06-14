@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 
 from src import db
-from src.routes import modules, pages
+from src.routes import conversations, modules, pages
 
 
 @asynccontextmanager
@@ -36,6 +36,7 @@ app.add_middleware(
 
 app.include_router(modules.router, prefix="/api")
 app.include_router(pages.router, prefix="/api")
+app.include_router(conversations.router, prefix="/api")
 
 
 @app.get("/api/health")

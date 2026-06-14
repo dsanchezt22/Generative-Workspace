@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator
 
-from src.schema import ModuleConfig, ModuleVersion, Page, StoredModule
+from src.schema import Message, ModuleConfig, ModuleVersion, Page, Snapshot, StoredModule
 
 DEFAULT_DB_PATH = Path(__file__).resolve().parent.parent / "trus.db"
 
@@ -29,6 +29,8 @@ CREATE TABLE IF NOT EXISTS pages (
     id          TEXT PRIMARY KEY,
     session_id  TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
     name        TEXT NOT NULL,
+    icon        TEXT,
+    parent_id   TEXT,
     position    INTEGER NOT NULL DEFAULT 0,
     created_at  TEXT NOT NULL
 );
@@ -39,6 +41,7 @@ CREATE TABLE IF NOT EXISTS modules (
     session_id  TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
     page_id     TEXT REFERENCES pages(id) ON DELETE CASCADE,
     config_json TEXT NOT NULL,
+    archived    INTEGER NOT NULL DEFAULT 0,
     created_at  TEXT NOT NULL,
     updated_at  TEXT NOT NULL
 );
@@ -53,6 +56,27 @@ CREATE TABLE IF NOT EXISTS module_versions (
 );
 CREATE INDEX IF NOT EXISTS idx_versions_module
     ON module_versions(module_id, seq);
+CREATE TABLE IF NOT EXISTS messages (
+    id          TEXT PRIMARY KEY,
+    session_id  TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    page_id     TEXT,
+    role        TEXT NOT NULL,
+    text        TEXT NOT NULL,
+    module_id   TEXT,
+    created_at  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_messages_session
+    ON messages(session_id, page_id, created_at);
+CREATE TABLE IF NOT EXISTS snapshots (
+    id          TEXT PRIMARY KEY,
+    session_id  TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    page_id     TEXT,
+    label       TEXT NOT NULL,
+    data_json   TEXT NOT NULL,
+    created_at  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_snapshots_session
+    ON snapshots(session_id, page_id, created_at);
 """
 
 # Tracks which db file has had its schema ensured this process, so we re-run the
@@ -84,8 +108,15 @@ def _migrate(conn: sqlite3.Connection) -> None:
     cols = {r[1] for r in conn.execute("PRAGMA table_info(modules)").fetchall()}
     if "page_id" not in cols:
         conn.execute("ALTER TABLE modules ADD COLUMN page_id TEXT REFERENCES pages(id) ON DELETE CASCADE")
+    if "archived" not in cols:
+        conn.execute("ALTER TABLE modules ADD COLUMN archived INTEGER NOT NULL DEFAULT 0")
     # Create the page index after the column is guaranteed to exist.
     conn.execute("CREATE INDEX IF NOT EXISTS idx_modules_page ON modules(page_id, created_at)")
+    pcols = {r[1] for r in conn.execute("PRAGMA table_info(pages)").fetchall()}
+    if "icon" not in pcols:
+        conn.execute("ALTER TABLE pages ADD COLUMN icon TEXT")
+    if "parent_id" not in pcols:
+        conn.execute("ALTER TABLE pages ADD COLUMN parent_id TEXT")
 
 
 @contextmanager
@@ -140,36 +171,42 @@ def ensure_session(session_id: str | None) -> str:
 # Pages
 # ---------------------------------------------------------------------------
 
+_PAGE_COLS = "id, name, icon, parent_id, position, created_at"
+
+
+def _page_from_row(r, session_id: str) -> Page:
+    return Page(id=r["id"], name=r["name"], icon=r["icon"], parent_id=r["parent_id"],
+                position=r["position"], session_id=session_id, created_at=r["created_at"])
+
+
 def ensure_default_page(session_id: str) -> Page:
     """Return the first page for a session, creating it if none exist."""
     with _conn() as c:
         row = c.execute(
-            "SELECT id, name, position, created_at FROM pages WHERE session_id = ? ORDER BY position LIMIT 1",
+            f"SELECT {_PAGE_COLS} FROM pages WHERE session_id = ? ORDER BY position LIMIT 1",
             (session_id,),
         ).fetchone()
         if row:
-            return Page(id=row["id"], name=row["name"], position=row["position"],
-                        session_id=session_id, created_at=row["created_at"])
+            return _page_from_row(row, session_id)
         page_id = str(uuid.uuid4())
         now = _now()
         c.execute(
-            "INSERT INTO pages (id, session_id, name, position, created_at) VALUES (?, ?, ?, ?, ?)",
-            (page_id, session_id, "Main", 0, now),
+            "INSERT INTO pages (id, session_id, name, icon, position, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (page_id, session_id, "Main", "🏠", 0, now),
         )
-    return Page(id=page_id, name="Main", position=0, session_id=session_id, created_at=now)
+    return Page(id=page_id, name="Main", icon="🏠", position=0, session_id=session_id, created_at=now)
 
 
 def list_pages(session_id: str) -> list[Page]:
     with _conn() as c:
         rows = c.execute(
-            "SELECT id, name, position, created_at FROM pages WHERE session_id = ? ORDER BY position",
+            f"SELECT {_PAGE_COLS} FROM pages WHERE session_id = ? ORDER BY position",
             (session_id,),
         ).fetchall()
-    return [Page(id=r["id"], name=r["name"], position=r["position"],
-                 session_id=session_id, created_at=r["created_at"]) for r in rows]
+    return [_page_from_row(r, session_id) for r in rows]
 
 
-def create_page(session_id: str, name: str) -> Page:
+def create_page(session_id: str, name: str, icon: str | None = None, parent_id: str | None = None) -> Page:
     with _conn() as c:
         max_pos = c.execute(
             "SELECT COALESCE(MAX(position), -1) FROM pages WHERE session_id = ?",
@@ -179,25 +216,54 @@ def create_page(session_id: str, name: str) -> Page:
         now = _now()
         position = max_pos + 1
         c.execute(
-            "INSERT INTO pages (id, session_id, name, position, created_at) VALUES (?, ?, ?, ?, ?)",
-            (page_id, session_id, name, position, now),
+            "INSERT INTO pages (id, session_id, name, icon, parent_id, position, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (page_id, session_id, name, icon, parent_id, position, now),
         )
-    return Page(id=page_id, name=name, position=position, session_id=session_id, created_at=now)
+    return Page(id=page_id, name=name, icon=icon, parent_id=parent_id, position=position,
+                session_id=session_id, created_at=now)
 
 
-def rename_page(session_id: str, page_id: str, name: str) -> Page | None:
+_UNSET = object()
+
+
+def update_page(session_id: str, page_id: str, name=_UNSET, icon=_UNSET, parent_id=_UNSET) -> Page | None:
+    sets, params = [], []
+    if name is not _UNSET:
+        sets.append("name = ?"); params.append(name)
+    if icon is not _UNSET:
+        sets.append("icon = ?"); params.append(icon)
+    if parent_id is not _UNSET:
+        sets.append("parent_id = ?"); params.append(parent_id)
+    if not sets:
+        return get_page(session_id, page_id)
+    params += [page_id, session_id]
     with _conn() as c:
-        cur = c.execute(
-            "UPDATE pages SET name = ? WHERE id = ? AND session_id = ?",
-            (name, page_id, session_id),
-        )
+        cur = c.execute(f"UPDATE pages SET {', '.join(sets)} WHERE id = ? AND session_id = ?", params)
         if cur.rowcount == 0:
             return None
+        row = c.execute(f"SELECT {_PAGE_COLS} FROM pages WHERE id = ?", (page_id,)).fetchone()
+    return _page_from_row(row, session_id)
+
+
+def get_page(session_id: str, page_id: str) -> Page | None:
+    with _conn() as c:
         row = c.execute(
-            "SELECT id, name, position, created_at FROM pages WHERE id = ?", (page_id,)
+            f"SELECT {_PAGE_COLS} FROM pages WHERE id = ? AND session_id = ?", (page_id, session_id)
         ).fetchone()
-    return Page(id=row["id"], name=row["name"], position=row["position"],
-                session_id=session_id, created_at=row["created_at"])
+    return _page_from_row(row, session_id) if row else None
+
+
+def reorder_pages(session_id: str, ordered_ids: list[str]) -> list[Page]:
+    with _conn() as c:
+        for i, pid in enumerate(ordered_ids):
+            c.execute("UPDATE pages SET position = ? WHERE id = ? AND session_id = ?", (i, pid, session_id))
+    return list_pages(session_id)
+
+
+# Back-compat alias.
+def rename_page(session_id: str, page_id: str, name: str) -> Page | None:
+    return update_page(session_id, page_id, name=name)
 
 
 def delete_page(session_id: str, page_id: str) -> bool:
@@ -234,45 +300,74 @@ def insert_module(session_id: str, config: ModuleConfig, page_id: str | None = N
     return StoredModule(id=module_id, config=config, created_at=now, updated_at=now, page_id=page_id)
 
 
+def _stored_from_row(r) -> StoredModule:
+    return StoredModule(
+        id=r["id"],
+        config=ModuleConfig.model_validate_json(r["config_json"]),
+        created_at=r["created_at"],
+        updated_at=r["updated_at"],
+        page_id=r["page_id"],
+        archived=bool(r["archived"]),
+    )
+
+
+_MOD_COLS = "id, page_id, config_json, created_at, updated_at, archived"
+
+
 def get_module(session_id: str, module_id: str) -> StoredModule | None:
     with _conn() as c:
         row = c.execute(
-            "SELECT id, page_id, config_json, created_at, updated_at FROM modules WHERE id = ? AND session_id = ?",
+            f"SELECT {_MOD_COLS} FROM modules WHERE id = ? AND session_id = ?",
             (module_id, session_id),
         ).fetchone()
-    if row is None:
-        return None
-    return StoredModule(
-        id=row["id"],
-        config=ModuleConfig.model_validate_json(row["config_json"]),
-        created_at=row["created_at"],
-        updated_at=row["updated_at"],
-        page_id=row["page_id"],
-    )
+    return _stored_from_row(row) if row else None
 
 
 def list_modules(session_id: str, page_id: str | None = None) -> list[StoredModule]:
     with _conn() as c:
         if page_id:
             rows = c.execute(
-                "SELECT id, page_id, config_json, created_at, updated_at FROM modules WHERE session_id = ? AND page_id = ? ORDER BY created_at",
+                f"SELECT {_MOD_COLS} FROM modules WHERE session_id = ? AND page_id = ? AND archived = 0 ORDER BY created_at",
                 (session_id, page_id),
             ).fetchall()
         else:
             rows = c.execute(
-                "SELECT id, page_id, config_json, created_at, updated_at FROM modules WHERE session_id = ? ORDER BY created_at",
+                f"SELECT {_MOD_COLS} FROM modules WHERE session_id = ? AND archived = 0 ORDER BY created_at",
                 (session_id,),
             ).fetchall()
-    return [
-        StoredModule(
-            id=r["id"],
-            config=ModuleConfig.model_validate_json(r["config_json"]),
-            created_at=r["created_at"],
-            updated_at=r["updated_at"],
-            page_id=r["page_id"],
+    return [_stored_from_row(r) for r in rows]
+
+
+def list_archived(session_id: str) -> list[StoredModule]:
+    with _conn() as c:
+        rows = c.execute(
+            f"SELECT {_MOD_COLS} FROM modules WHERE session_id = ? AND archived = 1 ORDER BY updated_at DESC",
+            (session_id,),
+        ).fetchall()
+    return [_stored_from_row(r) for r in rows]
+
+
+def set_archived(session_id: str, module_id: str, archived: bool) -> StoredModule | None:
+    with _conn() as c:
+        cur = c.execute(
+            "UPDATE modules SET archived = ?, updated_at = ? WHERE id = ? AND session_id = ?",
+            (1 if archived else 0, _now(), module_id, session_id),
         )
-        for r in rows
-    ]
+        if cur.rowcount == 0:
+            return None
+        row = c.execute(f"SELECT {_MOD_COLS} FROM modules WHERE id = ?", (module_id,)).fetchone()
+    return _stored_from_row(row)
+
+
+def duplicate_module(session_id: str, module_id: str) -> StoredModule | None:
+    existing = get_module(session_id, module_id)
+    if existing is None:
+        return None
+    cfg = existing.config.model_copy(deep=True)
+    cfg.title = f"{cfg.title} copy"
+    cfg.layout.x += 32
+    cfg.layout.y += 32
+    return insert_module(session_id, cfg, page_id=existing.page_id)
 
 
 def update_module(session_id: str, module_id: str, config: ModuleConfig) -> StoredModule | None:
@@ -287,10 +382,10 @@ def update_module(session_id: str, module_id: str, config: ModuleConfig) -> Stor
             return None
         _record_version(c, module_id, session_id, config_json, now)
         row = c.execute(
-            "SELECT page_id, created_at FROM modules WHERE id = ?", (module_id,)
+            "SELECT page_id, created_at, archived FROM modules WHERE id = ?", (module_id,)
         ).fetchone()
     return StoredModule(id=module_id, config=config, created_at=row["created_at"], updated_at=now,
-                        page_id=row["page_id"])
+                        page_id=row["page_id"], archived=bool(row["archived"]))
 
 
 def delete_module(session_id: str, module_id: str) -> bool:
@@ -320,6 +415,128 @@ def list_versions(session_id: str, module_id: str) -> list[ModuleVersion]:
     ]
 
 
+# ---------------------------------------------------------------------------
+# Conversation log (the prompts that shaped a page)
+# ---------------------------------------------------------------------------
+
+def add_message(
+    session_id: str,
+    role: str,
+    text: str,
+    page_id: str | None = None,
+    module_id: str | None = None,
+) -> Message:
+    message_id = str(uuid.uuid4())
+    now = _now()
+    with _conn() as c:
+        c.execute(
+            "INSERT INTO messages (id, session_id, page_id, role, text, module_id, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (message_id, session_id, page_id, role, text, module_id, now),
+        )
+    return Message(id=message_id, role=role, text=text, module_id=module_id,
+                   page_id=page_id, created_at=now)
+
+
+def list_messages(session_id: str, page_id: str | None = None) -> list[Message]:
+    with _conn() as c:
+        if page_id:
+            rows = c.execute(
+                "SELECT id, page_id, role, text, module_id, created_at FROM messages "
+                "WHERE session_id = ? AND page_id = ? ORDER BY created_at, rowid",
+                (session_id, page_id),
+            ).fetchall()
+        else:
+            rows = c.execute(
+                "SELECT id, page_id, role, text, module_id, created_at FROM messages "
+                "WHERE session_id = ? ORDER BY created_at, rowid",
+                (session_id,),
+            ).fetchall()
+    return [
+        Message(id=r["id"], page_id=r["page_id"], role=r["role"], text=r["text"],
+                module_id=r["module_id"], created_at=r["created_at"])
+        for r in rows
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Snapshots (point-in-time capture of a page)
+# ---------------------------------------------------------------------------
+
+def create_snapshot(session_id: str, page_id: str | None, label: str) -> Snapshot:
+    mods = list_modules(session_id, page_id)
+    data = json.dumps([m.config.model_dump() for m in mods])
+    snap_id = str(uuid.uuid4())
+    now = _now()
+    with _conn() as c:
+        c.execute(
+            "INSERT INTO snapshots (id, session_id, page_id, label, data_json, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (snap_id, session_id, page_id, label, data, now),
+        )
+    return Snapshot(id=snap_id, page_id=page_id, label=label, module_count=len(mods), created_at=now)
+
+
+def list_snapshots(session_id: str, page_id: str | None = None) -> list[Snapshot]:
+    with _conn() as c:
+        if page_id:
+            rows = c.execute(
+                "SELECT id, page_id, label, data_json, created_at FROM snapshots WHERE session_id = ? AND page_id = ? ORDER BY created_at DESC",
+                (session_id, page_id),
+            ).fetchall()
+        else:
+            rows = c.execute(
+                "SELECT id, page_id, label, data_json, created_at FROM snapshots WHERE session_id = ? ORDER BY created_at DESC",
+                (session_id,),
+            ).fetchall()
+    out = []
+    for r in rows:
+        try:
+            count = len(json.loads(r["data_json"]))
+        except Exception:
+            count = 0
+        out.append(Snapshot(id=r["id"], page_id=r["page_id"], label=r["label"], module_count=count, created_at=r["created_at"]))
+    return out
+
+
+def restore_snapshot(session_id: str, snapshot_id: str) -> bool:
+    with _conn() as c:
+        row = c.execute(
+            "SELECT page_id, data_json FROM snapshots WHERE id = ? AND session_id = ?",
+            (snapshot_id, session_id),
+        ).fetchone()
+    if row is None:
+        return False
+    page_id = row["page_id"]
+    try:
+        configs = json.loads(row["data_json"])
+    except Exception:
+        return False
+    # Replace the page's live modules with the snapshot's.
+    for m in list_modules(session_id, page_id):
+        delete_module(session_id, m.id)
+    for cfg in configs:
+        insert_module(session_id, ModuleConfig.model_validate(cfg), page_id=page_id)
+    return True
+
+
+def delete_snapshot(session_id: str, snapshot_id: str) -> bool:
+    with _conn() as c:
+        cur = c.execute("DELETE FROM snapshots WHERE id = ? AND session_id = ?", (snapshot_id, session_id))
+        return cur.rowcount > 0
+
+
+def clear_messages(session_id: str, page_id: str | None = None) -> int:
+    with _conn() as c:
+        if page_id:
+            cur = c.execute(
+                "DELETE FROM messages WHERE session_id = ? AND page_id = ?",
+                (session_id, page_id),
+            )
+        else:
+            cur = c.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
+        return cur.rowcount
+
+
 def undo_module(session_id: str, module_id: str) -> StoredModule | None:
     """Revert a module to its previous version. Returns None when there is
     nothing to undo (unknown module, wrong session, or only one version)."""
@@ -338,7 +555,7 @@ def undo_module(session_id: str, module_id: str) -> StoredModule | None:
             (previous["config_json"], now, module_id, session_id),
         )
         row = c.execute(
-            "SELECT created_at, page_id FROM modules WHERE id = ?", (module_id,)
+            "SELECT created_at, page_id, archived FROM modules WHERE id = ?", (module_id,)
         ).fetchone()
     return StoredModule(
         id=module_id,
@@ -346,4 +563,5 @@ def undo_module(session_id: str, module_id: str) -> StoredModule | None:
         created_at=row["created_at"],
         updated_at=now,
         page_id=row["page_id"],
+        archived=bool(row["archived"]),
     )

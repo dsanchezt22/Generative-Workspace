@@ -24,7 +24,41 @@ _COMPONENT_DOCS = """Available component types (use exactly these "type" values)
                  Fields: id, label, type, formula ("sum"|"count"|"avg"|"max"|"min"),
                  source_component_id (the component id to aggregate), unit?
                  Use metric when the user wants a running total, average, or count
-                 across multiple modules (e.g. total calories across meal logs)."""
+                 across multiple modules (e.g. total calories across meal logs).
+- rating       — star rating.        Fields: id, label, type, max? (default 5)
+- tags         — chip labels.        Fields: id, label, type, placeholder?
+- kpi          — ONE big headline number with a label. Fields: id, label, type, unit?
+- date         — a date picker.      Fields: id, label, type, include_time?
+- table        — structured grid.    Fields: id, label, type, columns (list of column names)
+                 Use for guests, transactions, inventory, anything row/column shaped.
+- calendar     — a month calendar of marked days. Fields: id, label, type
+                 Use for schedules, habit day-marking, trip days, streaks.
+- chart        — a chart drawn from data the user enters. Fields: id, label, type,
+                 chart_type ("bar"|"line"|"area"|"pie"), unit?
+                 Use for trends, spending over time, distributions.
+- dropdown     — pick one of set options.  Fields: id, label, type, options (list of strings)
+- choice_chips — pick one option as chips.  Fields: id, label, type, options (list of strings)
+- color        — a colour swatch.           Fields: id, label, type
+- sparkline    — tiny inline trend line.    Fields: id, label, type, unit?
+- ring         — circular progress ring.    Fields: id, label, type, max, bound_to? (a number/slider id)
+- timeline     — chronological event strip. Fields: id, label, type
+- button       — an action button.          Fields: id, label, type, action ("calculator"|"timer"|"increment"|"add_item"), target? (component id for increment/add_item)
+- section      — a labelled group header.    Fields: id, label, type. Use to structure a tool into sections.
+- divider      — a thin horizontal rule.     Fields: id, label(""), type.
+- kanban       — a BOARD of columns of cards. Fields: id, label, type, columns (list of column names, e.g. ["To do","Doing","Done"]). Use for pipelines, backlogs, workflows, stages.
+- heatmap      — a streak/contribution grid. Fields: id, label, type, unit?. Use for habit/mood/activity day-marking over time.
+- gauge        — a radial meter.             Fields: id, label, type, min, max, unit?. Use for a single level (hydration, sleep score, budget used).
+- checklist    — checkable items w/ progress. Fields: id, label, type. Use for packing, onboarding, routines.
+- gallery      — a grid of image thumbnails. Fields: id, label, type. Use for moodboards, wishlists, inspiration.
+- note         — a multi-line text area.      Fields: id, label, type, placeholder?. Use for journals, descriptions, reflections.
+
+Also: set "columns": 2 on a module to lay its components out in a TWO-COLUMN grid (great for dashboards and forms). Wide components (section, divider, table, chart, calendar, kanban, heatmap, timeline, gallery, note) automatically span both columns.
+
+CHOOSE COMPONENTS AND A LAYOUT THAT MATCH THE SUBJECT — vary the FORMAT, don't always make a single vertical form. A task pipeline → a kanban board; a habit → a heatmap; a dashboard → columns:2 with kpis + chart + gauge; a journal → a note + heatmap; a packing list → a checklist.
+
+CHOOSE COMPONENTS THAT MATCH THE SUBJECT so each tool LOOKS like what it is:
+a calendar request → a calendar; a guest list → a table; spending over time → a chart;
+a headline figure → a kpi; a review → a rating. Do not reduce everything to text/number fields."""
 
 SYSTEM_PROMPT = f"""You are the Trus orchestrator. Your job is to turn a user's intent
 into a ModuleConfig — a JSON document that the frontend renders using a fixed component
@@ -38,7 +72,10 @@ Output JSON ONLY, with this shape:
   "components": [ {{ "id": "stable_snake_case_id", "type": "...", "label": "...", ... }}, ... ],
   "state": {{ "component_id": <prefilled value> }},
   "layout": {{ "x": 0, "y": 0, "width": 360, "height": 320 }},
-  "summary_component_id": "id of the component that best represents this module at a glance (optional)"
+  "summary_component_id": "id of the component that best represents this module at a glance (optional)",
+  "icon": "one icon NAME from: activity, leaf, dollar, check, book, repeat, smile, calendar, plane, music, cap, briefcase, droplet, moon, film, cart, star, target, list, grid, chart, camera, heart, home, folder, bell, paw, sparkles",
+  "accent": "one token from: amber, emerald, sky, rose, violet, coral, teal, gold",
+  "columns": 1
 }}
 
 Rules:
@@ -50,13 +87,17 @@ Rules:
 4. If existing modules are listed, prefer metric/progress_bar cross-module bindings where
    they add real value (e.g. a dashboard that aggregates workout totals).
 5. Prefer 3-6 components unless the request clearly needs more.
-6. If the request is too vague to produce a useful module — AND one short question would
+6. GIVE IT A DISTINCT LOOK. Choose an "icon" (one name from the list above) and an "accent" token that fit the
+   subject, so two different tools never look the same at a glance. Match the accent to the
+   domain's feel (e.g. fitness→emerald, finance→amber/gold, travel→sky, wellness→rose,
+   creative→violet, food→coral) and vary it across requests — do not default everything to amber.
+7. If the request is too vague to produce a useful module — AND one short question would
    unlock it — output exactly: {{ "question": "<one short, specific question>" }}
    Only do this when the answer genuinely changes the module structure (e.g. you cannot
    pick sensible fields, units, or ranges without knowing). If you can make a reasonable
    default, do so instead.
-7. Do not narrate. Output the JSON object and nothing else.
-8. If the request is illicit or structurally impossible, output exactly:
+8. Do not narrate. Output the JSON object and nothing else.
+9. If the request is illicit or structurally impossible, output exactly:
    {{ "refusal": "<one-sentence reason>" }}
 """
 
@@ -86,8 +127,10 @@ Rules:
 3. Add, remove, rename, or reorder components to match the instruction.
 4. New ids must be snake_case and not collide with surviving ids.
 5. If other session modules are listed, use metric/cross-module bindings where helpful.
-6. Do not narrate. Output the JSON object and nothing else.
-7. If the request is illicit or structurally impossible, return:
+6. Keep the existing "icon" and "accent" unless the user asks to change the look; if they do,
+   pick a new icon name and/or accent token (amber, emerald, sky, rose, violet, coral, teal, gold).
+7. Do not narrate. Output the JSON object and nothing else.
+8. If the request is illicit or structurally impossible, return:
    {{ "refusal": "<one-sentence reason>" }}
 """
 
@@ -101,6 +144,7 @@ Rules:
 1. Use metric components to aggregate numeric values across modules (totals, averages, counts).
 2. Use progress_bar with source_module_id to show a specific module's progress.
 3. Prefer 4-8 components. Title it something like "Dashboard" or domain-specific ("Fitness Overview").
+   Give it an "icon" name (e.g. "chart" or "layers") and an "accent" token (amber, emerald, sky, rose, violet, coral, teal, gold).
 4. Do not narrate. Output the JSON object and nothing else.
 5. If there is nothing meaningful to synthesize, output:
    {{ "refusal": "Not enough data across modules to synthesize a dashboard." }}
@@ -153,6 +197,116 @@ def generate_module(
 ) -> ModuleConfig:
     raw = llm.generate(_seeded_prompt(prompt, existing_modules), system=SYSTEM_PROMPT)
     return _parse_module_config(raw)
+
+
+DECOMPOSE_SYSTEM_PROMPT = f"""You are the Trus orchestrator. Turn the user's intent into the
+SET of tools (modules) they actually need — a coordinated system when appropriate, not always
+a single card. You never write UI code; you return ModuleConfig JSON.
+
+{_COMPONENT_DOCS}
+
+Output JSON ONLY: an ARRAY of 1-6 ModuleConfig objects. Each object has this shape:
+{{
+  "title": "...", "components": [ {{ "id","type","label",... }} ], "state": {{ }},
+  "layout": {{ "x":0,"y":0,"width":360,"height":320 }},
+  "icon": "<one icon name: activity|leaf|dollar|check|book|repeat|smile|calendar|plane|music|cap|briefcase|droplet|moon|film|cart|star|target|list|grid|chart|camera|heart|home|folder|bell|paw|sparkles>", "accent": "<amber|emerald|sky|rose|violet|coral|teal|gold>",
+  "columns": 1, "summary_component_id": "<id?>"
+}}
+
+HOW MANY TOOLS:
+- A focused request ("a workout log", "a calorie tracker", "a reading list") → ONE strong module.
+- A broad project or life-area → SEVERAL complementary modules forming a system. Examples:
+  • "plan my Japan trip" → [Itinerary (calendar), Trip Budget (chart + kpi/progress), Packing List (table or list), To-Do (list)]
+  • "organize my wedding" → [Guest List (table), Budget (chart), Timeline (calendar), Vendors (table)]
+  • "my semester" → [Class Schedule (calendar), Assignment Tracker (table), GPA (kpi), Study Habits (calendar)]
+  • "moving house" → [Moving Checklist (list), Budget (chart), Address Change (table), Timeline (calendar)]
+
+Rules:
+1. Only the component types listed above. Pick the ones that make each tool LOOK right.
+2. Give EACH module a DISTINCT icon and accent so the system reads as a colour-coded set.
+3. snake_case unique ids within each module. Prefill "state" with any concrete values mentioned.
+4. ADAPT to the specifics of the request — never return generic rebranded clones.
+5. If existing modules are listed, you may add cross-module metric/progress_bar bindings.
+6. If the request is too vague AND one short question would unlock it, output exactly:
+   {{ "question": "<one short question>" }}
+7. If illicit or impossible, output exactly: {{ "refusal": "<one-sentence reason>" }}
+8. Output ONLY the JSON array (or the single refusal/question object). No prose.
+"""
+
+
+def _seeded_system(prompt: str, existing_modules: list[ModuleConfig] | None = None) -> str:
+    from src.stub_templates import pick_system
+
+    seed = json.dumps(pick_system(prompt))
+    context = _module_context(existing_modules or [])
+    return (
+        f"User request: {prompt}\n\n"
+        f"Example starting system (adapt freely — change the number of tools, fields, components, "
+        f"labels, icons, accents, and prefill state to match the request; do not return it as-is):\n{seed}"
+        f"{context}\n\n"
+        f"Return the adapted ModuleConfig JSON array."
+    )
+
+
+def _parse_modules(raw: str) -> list[ModuleConfig]:
+    cleaned = _strip_codefence(raw)
+    try:
+        data = json.loads(cleaned)
+    except json.JSONDecodeError as e:
+        raise RefusalError(f"The model returned non-JSON output: {e.msg}") from e
+    if isinstance(data, dict):
+        if "refusal" in data:
+            raise RefusalError(str(data["refusal"]))
+        if "question" in data and len(data) == 1:
+            raise ClarifyingQuestion(str(data["question"]))
+        if isinstance(data.get("modules"), list):
+            data = data["modules"]
+        else:
+            data = [data]  # a single config object
+    if not isinstance(data, list):
+        raise RefusalError("The model did not return a list of modules.")
+    out: list[ModuleConfig] = []
+    for item in data:
+        if not isinstance(item, dict) or "refusal" in item:
+            continue
+        try:
+            out.append(ModuleConfig.model_validate(item))
+        except ValidationError:
+            continue
+    if not out:
+        raise RefusalError("The model produced no valid modules.")
+    return out
+
+
+def generate_modules(
+    prompt: str,
+    existing_modules: list[ModuleConfig] | None = None,
+) -> list[ModuleConfig]:
+    """Decompose a request into the set of tools it needs (1-6 modules)."""
+    if llm.is_stub_mode():
+        from src.stub_templates import pick_system
+        return [ModuleConfig.model_validate(c) for c in pick_system(prompt)]
+    raw = llm.generate(_seeded_system(prompt, existing_modules), system=DECOMPOSE_SYSTEM_PROMPT)
+    return _parse_modules(raw)
+
+
+def generate_modules_from_file(
+    prompt: str,
+    data: bytes,
+    mime: str,
+    existing_modules: list[ModuleConfig] | None = None,
+) -> list[ModuleConfig]:
+    """Build tools shaped around an uploaded document/image (Gemini multimodal)."""
+    if llm.is_stub_mode():
+        from src.stub_templates import pick_system
+        return [ModuleConfig.model_validate(c) for c in pick_system(prompt)]
+    user_message = (
+        _seeded_system(prompt, existing_modules)
+        + "\n\nA file is attached above. Read it and build tools shaped around its ACTUAL content — "
+        "prefill state with the real values, dates, and rows you extract from it."
+    )
+    raw = llm.generate_from_file(user_message, DECOMPOSE_SYSTEM_PROMPT, data, mime)
+    return _parse_modules(raw)
 
 
 def refine_module(

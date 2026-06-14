@@ -1,6 +1,25 @@
 @import "tailwindcss";
 
+/* Light theme (default) — warm, paper-like. */
 :root {
+  --background: #f4efe6;
+  --surface: #fffdf8;
+  --surface-elevated: #ece5d7;
+  --foreground: #2b2825;
+  --muted: #8c8472;
+  --border: #e2dac9;
+  --accent: #c0894a;
+  --accent-fg: #fffaf0;
+  --danger: #c2544a;
+
+  /* Density — consumed by module cards (comfortable by default). */
+  --mod-pad: 1rem;
+  --mod-gap: 1rem;
+  --mod-head-pad: 0.75rem;
+}
+
+/* Dark theme — deep, comfortable charcoal. */
+[data-theme="dark"] {
   --background: #1c1b1a;
   --surface: #26241f;
   --surface-elevated: #2e2b25;
@@ -10,6 +29,12 @@
   --accent: #d9a86c;
   --accent-fg: #1c1b1a;
   --danger: #c97169;
+}
+
+[data-density="compact"] {
+  --mod-pad: 0.6rem;
+  --mod-gap: 0.55rem;
+  --mod-head-pad: 0.5rem;
 }
 
 @theme inline {
@@ -32,6 +57,11 @@ body {
   font-family: var(--font-geist-sans), Arial, Helvetica, sans-serif;
 }
 
+/* Theme changes glide rather than snap. */
+html {
+  transition: background-color 0.2s ease, color 0.2s ease;
+}
+
 .canvas-grid {
   background-image: radial-gradient(
     circle,
@@ -39,4 +69,78 @@ body {
     transparent 1px
   );
   background-size: 28px 28px;
+}
+
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+/* Toggle the canvas dot-grid via a global setting. */
+html[data-grid="off"] .canvas-grid {
+  background-image: none;
+}
+
+/* ---- Motion ------------------------------------------------------------- */
+@keyframes trus-pop {
+  from { opacity: 0; transform: translateY(10px) scale(0.97); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes trus-fade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes trus-slide-right {
+  from { opacity: 0; transform: translateX(20px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes trus-scale-in {
+  from { opacity: 0; transform: scale(0.96); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes trus-shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+@keyframes trus-blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
+.blink { animation: trus-blink 1s step-end infinite; }
+@keyframes trus-rise {
+  from { opacity: 0; transform: translateY(16px); }
+  to { opacity: 1; transform: none; }
+}
+.animate-rise { animation: trus-rise 0.5s cubic-bezier(0.2, 0.8, 0.2, 1) both; }
+
+.animate-pop { animation: trus-pop 0.3s cubic-bezier(0.2, 0.8, 0.2, 1) both; }
+.animate-fade { animation: trus-fade 0.22s ease both; }
+.animate-slide-right { animation: trus-slide-right 0.28s cubic-bezier(0.2, 0.8, 0.2, 1) both; }
+.animate-scale-in { animation: trus-scale-in 0.16s ease both; }
+
+/* A subtle moving sheen for "generating…" states. */
+.shimmer {
+  background-image: linear-gradient(
+    100deg,
+    transparent 30%,
+    color-mix(in srgb, var(--accent) 28%, transparent) 50%,
+    transparent 70%
+  );
+  background-size: 200% 100%;
+  animation: trus-shimmer 1.1s linear infinite;
+}
+
+/* Reduce motion: honour the OS unless the user forced "full"; "reduced" always off. */
+@media (prefers-reduced-motion: reduce) {
+  html:not([data-motion="full"]) *,
+  html:not([data-motion="full"]) *::before,
+  html:not([data-motion="full"]) *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}
+html[data-motion="reduced"] *,
+html[data-motion="reduced"] *::before,
+html[data-motion="reduced"] *::after {
+  animation-duration: 0.001ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.001ms !important;
 }

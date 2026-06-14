@@ -68,3 +68,35 @@ def generate(prompt: str, system: Optional[str] = None) -> str:
     if not text:
         raise LLMError("The model returned an empty response.")
     return text
+
+
+def generate_from_file(user_message: str, system: Optional[str], data: bytes, mime: str) -> str:
+    """Multimodal generation: send a document/image plus instructions to Gemini."""
+    key = os.environ.get("GEMINI_API_KEY")
+    if _is_stub_key(key):
+        # Offline: callers fall back to keyword templates; signal with empty JSON object.
+        return "{}"
+
+    from google.genai import types
+
+    model = os.environ.get("GEMINI_MODEL", DEFAULT_MODEL)
+    try:
+        response = _get_client().models.generate_content(
+            model=model,
+            contents=[
+                types.Part.from_bytes(data=data, mime_type=mime),
+                user_message,
+            ],
+            config=types.GenerateContentConfig(
+                system_instruction=system,
+                response_mime_type="application/json",
+                temperature=0.4,
+            ),
+        )
+    except Exception as e:
+        raise LLMError(str(e)) from e
+
+    text = response.text
+    if not text:
+        raise LLMError("The model returned an empty response.")
+    return text

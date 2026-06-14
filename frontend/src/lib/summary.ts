@@ -40,5 +40,72 @@ function summarizeComponent(
       return raw ? String(raw) : c.label;
     case "metric":
       return `${c.label}: …`;
+    case "rating":
+      return `${c.label}: ${Number(raw) || 0}★`;
+    case "tags": {
+      const n = Array.isArray(raw) ? raw.length : 0;
+      return `${n} tag${n === 1 ? "" : "s"}`;
+    }
+    case "kpi":
+      return `${c.label}: ${raw ?? 0}${c.unit ? ` ${c.unit}` : ""}`;
+    case "date":
+      return raw ? `${c.label}: ${raw}` : c.label;
+    case "table": {
+      const n = Array.isArray(raw) ? raw.length : 0;
+      return `${n} row${n === 1 ? "" : "s"}`;
+    }
+    case "calendar": {
+      const n = Array.isArray(raw) ? raw.length : 0;
+      return `${n} day${n === 1 ? "" : "s"} marked`;
+    }
+    case "chart": {
+      const n = Array.isArray(raw) ? raw.length : 0;
+      return `${c.label}: ${n} point${n === 1 ? "" : "s"}`;
+    }
+    case "dropdown":
+    case "choice_chips":
+    case "color":
+      return raw ? `${c.label}: ${raw}` : c.label;
+    case "sparkline": {
+      const arr = Array.isArray(raw) ? raw : [];
+      return `${c.label}: ${arr.length ? arr[arr.length - 1] : "—"}`;
+    }
+    case "ring": {
+      const src = c.bound_to ? state[c.bound_to] : raw;
+      const pct = Math.round(((Number(src) || 0) / (c.max || 1)) * 100);
+      return `${c.label}: ${Math.max(0, Math.min(100, pct))}%`;
+    }
+    case "timeline": {
+      const n = Array.isArray(raw) ? raw.length : 0;
+      return `${n} event${n === 1 ? "" : "s"}`;
+    }
+    case "button":
+      return c.label;
+    case "section":
+      return c.label;
+    case "divider":
+      return "—";
+    case "kanban": {
+      const board = raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as Record<string, string[]>) : {};
+      const n = Object.values(board).reduce((s, arr) => s + (Array.isArray(arr) ? arr.length : 0), 0);
+      return `${n} card${n === 1 ? "" : "s"}`;
+    }
+    case "heatmap": {
+      const n = raw && typeof raw === "object" ? Object.values(raw as Record<string, number>).filter((v) => v > 0).length : 0;
+      return `${n} day${n === 1 ? "" : "s"}`;
+    }
+    case "gauge":
+      return `${c.label}: ${raw ?? 0}${c.unit ? ` ${c.unit}` : ""}`;
+    case "checklist": {
+      const items = Array.isArray(raw) ? (raw as { done: boolean }[]) : [];
+      const done = items.filter((i) => i.done).length;
+      return `${c.label}: ${done}/${items.length}`;
+    }
+    case "gallery": {
+      const n = Array.isArray(raw) ? raw.length : 0;
+      return `${n} image${n === 1 ? "" : "s"}`;
+    }
+    case "note":
+      return raw ? String(raw).slice(0, 40) : c.label;
   }
 }

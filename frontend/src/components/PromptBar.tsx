@@ -1,8 +1,10 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ApiError, api } from "@/lib/api";
-import type { StoredModule } from "@/lib/types";
+import type { ModuleConfig, StoredModule } from "@/lib/types";
+import { resolveAccent, resolveIconName } from "@/lib/theme";
+import { Icon } from "./Icon";
 
 interface Props {
   onModule: (m: StoredModule) => void;
@@ -10,9 +12,12 @@ interface Props {
   refineTarget?: StoredModule | null;
   onRefineModule?: (m: StoredModule) => void;
   onClearRefine?: () => void;
+  seed?: string | null;
+  onSeedConsumed?: () => void;
+  focusSignal?: number;
 }
 
-export function PromptBar({ onModule, activePageId, refineTarget, onRefineModule, onClearRefine }: Props) {
+export function PromptBar({ onModule, activePageId, refineTarget, onRefineModule, onClearRefine, seed, onSeedConsumed, focusSignal }: Props) {
   const [prompt, setPrompt] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -22,6 +27,54 @@ export function PromptBar({ onModule, activePageId, refineTarget, onRefineModule
   const inputRef = useRef<HTMLInputElement | null>(null);
 
   const isRefining = Boolean(refineTarget);
+  const [recording, setRecording] = useState(false);
+  const [file, setFile] = useState<File | null>(null);
+  const [previews, setPreviews] = useState<ModuleConfig[]>([]);
+  const lastPromptRef = useRef<string>("");
+  const fileRef = useRef<HTMLInputElement | null>(null);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const recRef = useRef<any>(null);
+
+  const toggleMic = () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SR) { setError("Voice input isn't supported in this browser."); return; }
+    if (recording) { recRef.current?.stop(); return; }
+    const rec = new SR();
+    rec.lang = "en-US";
+    rec.interimResults = true;
+    rec.continuous = false;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    rec.onresult = (e: any) => {
+      let t = "";
+      for (let i = 0; i < e.results.length; i++) t += e.results[i][0].transcript;
+      setPrompt(t);
+    };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    rec.onerror = (e: any) => {
+      setError(e.error === "not-allowed" ? "Microphone blocked — allow access to use voice." : "Didn't catch that — try again.");
+      setRecording(false);
+    };
+    rec.onend = () => setRecording(false);
+    recRef.current = rec;
+    rec.start();
+    setRecording(true);
+    setError(null);
+  };
+
+  // Refill the input when a past prompt is reused from the history panel.
+  useEffect(() => {
+    if (seed) {
+      setPrompt(seed);
+      setTimeout(() => inputRef.current?.focus(), 0);
+      onSeedConsumed?.();
+    }
+  }, [seed, onSeedConsumed]);
+
+  // Focus the bar on demand (creation-bar shortcut / command).
+  useEffect(() => {
+    if (focusSignal) inputRef.current?.focus();
+  }, [focusSignal]);
 
   const clearClarification = () => {
     setPendingQuestion(null);
@@ -32,7 +85,7 @@ export function PromptBar({ onModule, activePageId, refineTarget, onRefineModule
   const submit = async (e?: React.FormEvent) => {
     e?.preventDefault();
     const v = prompt.trim();
-    if (!v || loading) return;
+    if ((!v && !file) || loading) return;
     setLoading(true);
     setError(null);
     try {
@@ -40,22 +93,32 @@ export function PromptBar({ onModule, activePageId, refineTarget, onRefineModule
         const updated = await api.refineModule(refineTarget.id, v);
         onRefineModule(updated);
         setPrompt("");
+      } else if (file) {
+        const result = await api.generateModuleFromFile(file, v, activePageId);
+        if (result.modules?.length) result.modules.forEach((m) => onModule(m));
+        else if (result.module) onModule(result.module);
+        setPrompt("");
+        setFile(null);
+        clearClarification();
       } else {
         // If we're answering a clarifying question, combine original + answer.
         const fullPrompt = pendingQuestion
           ? `${originalPromptRef.current} — ${v}`
           : v;
-        const result = await api.generateModule(fullPrompt, activePageId);
+        const result = await api.previewModules(fullPrompt, activePageId);
         if (result.question) {
           // AI needs clarification — enter follow-up mode.
           if (!pendingQuestion) originalPromptRef.current = v;
           setPendingQuestion(result.question);
           setPrompt("");
           setTimeout(() => inputRef.current?.focus(), 0);
-        } else if (result.module) {
-          onModule(result.module);
+        } else if (result.previews?.length) {
+          // Show a preview stack to accept before anything lands on the canvas.
+          lastPromptRef.current = fullPrompt;
+          setPreviews(result.previews);
           setPrompt("");
-          clearClarification();
+          setPendingQuestion(null);
+          originalPromptRef.current = "";
         }
       }
     } catch (err) {
@@ -71,6 +134,19 @@ export function PromptBar({ onModule, activePageId, refineTarget, onRefineModule
     }
   };
 
+  const addConfigs = async (configs: ModuleConfig[]) => {
+    try {
+      const stored = await api.insertModules(configs, lastPromptRef.current, activePageId);
+      stored.forEach((m) => onModule(m));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Couldn't add to canvas.");
+    }
+  };
+  const addAll = async () => { await addConfigs(previews); setPreviews([]); };
+  const addOne = async (i: number) => { await addConfigs([previews[i]]); setPreviews((p) => p.filter((_, idx) => idx !== i)); };
+  const dismissOne = (i: number) => setPreviews((p) => p.filter((_, idx) => idx !== i));
+  const dismissAll = () => setPreviews([]);
+
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Escape") {
       if (pendingQuestion) clearClarification();
@@ -85,12 +161,14 @@ export function PromptBar({ onModule, activePageId, refineTarget, onRefineModule
       : "Describe what you want to organize — e.g. track my workouts";
 
   const buttonLabel = loading
-    ? (isRefining ? "Refining…" : "Generating…")
+    ? (isRefining ? "Refining…" : file ? "Building…" : "Generating…")
     : isRefining
       ? "Refine"
-      : pendingQuestion
-        ? "Answer"
-        : "Generate";
+      : file
+        ? "Build"
+        : pendingQuestion
+          ? "Answer"
+          : "Generate";
 
   return (
     <form
@@ -98,6 +176,44 @@ export function PromptBar({ onModule, activePageId, refineTarget, onRefineModule
       className="absolute left-1/2 -translate-x-1/2 bottom-6 w-[min(720px,calc(100%-2rem))] z-10"
     >
       <div className="flex flex-col rounded-2xl border border-[var(--border)] bg-[var(--surface)]/95 backdrop-blur shadow-2xl shadow-black/40 overflow-hidden">
+
+        {previews.length > 0 && (
+          <div className="flex flex-col gap-2 px-3 pt-3 pb-1 max-h-[55vh] overflow-y-auto">
+            <div className="flex items-center gap-2 px-1">
+              <span className="text-[10px] uppercase tracking-wide text-[var(--muted)] font-mono">
+                {previews.length} tool{previews.length === 1 ? "" : "s"} proposed — preview
+              </span>
+              <button type="button" onClick={addAll}
+                className="ml-auto rounded-md bg-[var(--accent)] text-[var(--accent-fg)] px-2.5 py-1 text-xs font-medium hover:brightness-110 transition">
+                Add all to canvas
+              </button>
+              <button type="button" onClick={dismissAll}
+                className="text-xs text-[var(--muted)] hover:text-[var(--foreground)] transition">Dismiss</button>
+            </div>
+            {previews.map((cfg, i) => {
+              const theme = resolveAccent(cfg.accent, cfg.title);
+              const iconName = resolveIconName(cfg.icon, cfg.title);
+              return (
+                <div key={i} className="rounded-xl border p-2.5 animate-pop"
+                  style={{ ["--accent" as string]: theme.accent, ["--accent-fg" as string]: theme.accentFg, borderColor: "color-mix(in srgb, var(--accent) 30%, var(--border))" } as React.CSSProperties}>
+                  <div className="flex items-center gap-2">
+                    <span className="shrink-0 grid place-items-center w-6 h-6 rounded-md" style={{ background: "color-mix(in srgb, var(--accent) 20%, transparent)", color: "var(--accent)" }}><Icon name={iconName} size={15} /></span>
+                    <span className="flex-1 min-w-0 truncate text-sm font-medium">{cfg.title}</span>
+                    <button type="button" onClick={() => addOne(i)}
+                      className="rounded-md border border-[var(--accent)] text-[var(--accent)] px-2 py-0.5 text-xs hover:bg-[var(--accent)] hover:text-[var(--accent-fg)] transition">Add</button>
+                    <button type="button" onClick={() => dismissOne(i)}
+                      className="text-[var(--muted)] hover:text-[var(--danger)] text-xs" aria-label="Dismiss">✕</button>
+                  </div>
+                  <div className="flex flex-wrap gap-1 mt-1.5">
+                    {cfg.components.slice(0, 10).map((c, ci) => (
+                      <span key={ci} className="rounded-full bg-[var(--surface-elevated)] px-2 py-0.5 text-[10px] text-[var(--muted)]">{c.label}</span>
+                    ))}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
 
         {isRefining && refineTarget && (
           <div className="flex items-center gap-2 px-4 pt-2.5 pb-0">
@@ -135,7 +251,42 @@ export function PromptBar({ onModule, activePageId, refineTarget, onRefineModule
           </div>
         )}
 
+        {file && (
+          <div className="flex items-center gap-2 px-4 pt-2.5 pb-0">
+            <span className="text-[10px] uppercase tracking-wide text-[var(--muted)] font-mono">Attached</span>
+            <span className="text-xs text-[var(--accent)] truncate max-w-[260px] flex items-center gap-1"><Icon name="paperclip" size={12} /> {file.name}</span>
+            <button type="button" onClick={() => setFile(null)} className="ml-auto text-[var(--muted)] hover:text-[var(--foreground)] transition text-xs shrink-0" aria-label="Remove file">✕ remove</button>
+          </div>
+        )}
+
         <div className="flex items-center gap-2 px-4 py-3">
+          <button
+            type="button"
+            onClick={toggleMic}
+            className={`shrink-0 w-8 h-8 grid place-items-center rounded-full transition ${
+              recording ? "bg-[var(--danger)] text-white animate-pulse" : "text-[var(--muted)] hover:text-[var(--foreground)] hover:bg-[var(--surface-elevated)]"
+            }`}
+            title={recording ? "Stop recording" : "Speak"}
+            aria-label={recording ? "Stop recording" : "Voice input"}
+          >
+            <Icon name="mic" size={16} />
+          </button>
+          <button
+            type="button"
+            onClick={() => fileRef.current?.click()}
+            className="shrink-0 w-8 h-8 grid place-items-center rounded-full text-[var(--muted)] hover:text-[var(--foreground)] hover:bg-[var(--surface-elevated)] transition"
+            title="Attach a document or image"
+            aria-label="Attach file"
+          >
+            <Icon name="paperclip" size={16} />
+          </button>
+          <input
+            ref={fileRef}
+            type="file"
+            className="hidden"
+            accept="image/*,application/pdf,.csv,.txt,.md"
+            onChange={(e) => { const f = e.target.files?.[0]; if (f) setFile(f); e.target.value = ""; }}
+          />
           <input
             ref={inputRef}
             value={prompt}
@@ -148,8 +299,8 @@ export function PromptBar({ onModule, activePageId, refineTarget, onRefineModule
           />
           <button
             type="submit"
-            disabled={!prompt.trim() || loading}
-            className="rounded-md bg-[var(--accent)] text-[var(--accent-fg)] px-3 py-1.5 text-sm font-medium disabled:opacity-40 disabled:cursor-not-allowed hover:brightness-110 transition shrink-0"
+            disabled={(!prompt.trim() && !file) || loading}
+            className={`rounded-md bg-[var(--accent)] text-[var(--accent-fg)] px-3 py-1.5 text-sm font-medium disabled:opacity-40 disabled:cursor-not-allowed hover:brightness-110 active:scale-95 transition shrink-0 ${loading ? "animate-pulse" : ""}`}
           >
             {buttonLabel}
           </button>

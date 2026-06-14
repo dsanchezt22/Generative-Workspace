@@ -31,10 +31,11 @@ def test_pick_template_falls_back_to_generic():
 
 
 def test_generic_title_strips_filler_and_does_not_double_tracker():
-    config = pick_template("I want to create a tracker for my plants")
+    # Use an unrouted noun so we exercise the generic title path.
+    config = pick_template("I want to create a tracker for my gadgets")
     title = config["title"]
     assert "tracker" not in title.lower()  # filler stripped, no "Tracker Tracker"
-    assert "Plants" in title
+    assert "Gadgets" in title
 
 
 def test_every_template_validates():
@@ -44,3 +45,31 @@ def test_every_template_validates():
     ]
     for p in prompts:
         ModuleConfig.model_validate(pick_template(p))
+
+
+def test_all_v2_templates_validate():
+    from src.stub_templates import _ROUTES_V2, _finalize
+    builders = {b for _, b in _ROUTES_V2}
+    assert len(builders) >= 50  # at least 50 new templates
+    for b in builders:
+        ModuleConfig.model_validate(_finalize(b()))
+
+
+def test_v2_templates_use_varied_formats():
+    """The new templates must use more than plain stacked fields."""
+    from src.stub_templates import _ROUTES_V2, _finalize
+    used = set()
+    for _, b in _ROUTES_V2:
+        for c in _finalize(b())["components"]:
+            used.add(c["type"])
+    # Distinct, non-rectangular formats are represented.
+    for fmt in ["kanban", "heatmap", "gauge", "checklist", "gallery", "note", "section", "timeline"]:
+        assert fmt in used, f"expected {fmt} in the new templates"
+
+
+def test_v2_routing_spot_check():
+    assert pick_template("a kanban task board")["title"] == "Task Board"
+    assert "Dashboard" in pick_template("a finance dashboard")["title"]
+    assert pick_template("weekly retro")["title"] == "Weekly Retro"
+    # 'category' must not mis-route to the 'cat' (pet) template.
+    assert "Pet" not in pick_template("expense categories")["title"]
