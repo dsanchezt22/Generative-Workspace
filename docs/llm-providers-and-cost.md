@@ -19,7 +19,14 @@ See `.env.example` for every variable.
 
 ## Option A — Free local model (recommended)
 
-On macOS / Windows / Linux with [Ollama](https://ollama.com):
+**Fastest — one command** (installs Ollama, starts it, pulls a model, wires
+`.env`, smoke-tests; safe to re-run):
+
+```bash
+make ollama-setup        # → then `make dev-local` to run the backend against it
+```
+
+Or do it by hand on macOS / Windows / Linux with [Ollama](https://ollama.com):
 
 ```bash
 brew install ollama                       # or download the installer
