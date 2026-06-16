@@ -1,7 +1,8 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { Component, ModuleConfig, StoredModule } from "@/lib/types";
+import { runAssembly } from "@/lib/assembly";
 import { api } from "@/lib/api";
 import { deriveSummary } from "@/lib/summary";
 import { resolveAccent, resolveIconName } from "@/lib/theme";
@@ -34,6 +35,10 @@ import { ChecklistField } from "./primitives/ChecklistField";
 import { GalleryField } from "./primitives/GalleryField";
 import { NoteField } from "./primitives/NoteField";
 import { TrackerField } from "./primitives/TrackerField";
+
+// useLayoutEffect on the client (no SSR warning) so the build's initial hidden
+// state is set before paint — no flash of the finished card.
+const useIsoLayoutEffect = typeof window !== "undefined" ? useLayoutEffect : useEffect;
 
 // In a 2-column module these span the full width rather than sit in one cell.
 const WIDE_TYPES = new Set<string>([
@@ -86,6 +91,19 @@ export function Module({
     ro.observe(el);
     return () => ro.disconnect();
   }, [isCanvas, onMeasure, module.id]);
+
+  // Signature "module build" assembly motion — runs when a canvas tile mounts
+  // (page load, page switch, or generation). Reduced motion → final state instantly.
+  useIsoLayoutEffect(() => {
+    if (!isCanvas || !rootRef.current) return;
+    const m = document.documentElement.dataset.motion;
+    const reduced =
+      m === "reduced" ||
+      (m !== "full" && typeof window !== "undefined" && !!window.matchMedia?.("(prefers-reduced-motion: reduce)").matches);
+    if (reduced) return; // accessibility: no animation, the finished card is already correct
+    return runAssembly(rootRef.current, index);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const persistConfig = useCallback(
     async (config: ModuleConfig) => {
@@ -252,7 +270,7 @@ export function Module({
       ref={rootRef}
       onMouseDown={isCanvas ? () => onSelect(module.id) : undefined}
       className={`rounded-2xl border bg-[var(--surface)] flex flex-col ${
-        isCanvas ? "absolute shadow-lg shadow-black/30 animate-pop transition-[transform,box-shadow] duration-200 hover:shadow-xl hover:shadow-black/40 hover:-translate-y-0.5 will-change-transform" : "relative w-full shadow-none"
+        isCanvas ? "absolute shadow-lg shadow-black/30 transition-[transform,box-shadow] duration-200 hover:shadow-xl hover:shadow-black/40 hover:-translate-y-0.5 will-change-transform" : "relative w-full shadow-none"
       }`}
       style={!isCanvas ? ({
         ["--accent" as string]: theme.accent,
@@ -263,8 +281,6 @@ export function Module({
         left: layout.x,
         top: layout.y,
         width: layout.width,
-        // Staggered entrance so a batch of tools cascades in rather than popping at once.
-        animationDelay: `${Math.min(index, 8) * 45}ms`,
         // Cards size to their content (no wasted space); a manual resize sets an
         // explicit taller min-height via layout.height when the user wants it.
         minHeight: collapsed || !layout.height ? undefined : layout.height,
@@ -276,6 +292,19 @@ export function Module({
         ...densityVars,
       } as React.CSSProperties)}
     >
+      {isCanvas && (
+        <>
+          {/* Beat 2 — the border traces itself. */}
+          <svg data-assembly="border-svg" className="pointer-events-none absolute inset-0 z-20 opacity-0" preserveAspectRatio="none" aria-hidden>
+            <rect data-assembly="border" fill="none" stroke="var(--accent)" strokeWidth="1.5" rx="16" ry="16" />
+          </svg>
+          {/* Beat 4 — a light band sweeps across. */}
+          <div className="pointer-events-none absolute inset-0 z-20 overflow-hidden rounded-2xl" aria-hidden>
+            <div data-assembly="scan" className="absolute inset-y-0 left-0 w-1/2 opacity-0"
+              style={{ background: "linear-gradient(100deg, transparent 20%, color-mix(in srgb, var(--white-matte) 28%, transparent) 50%, transparent 80%)" }} />
+          </div>
+        </>
+      )}
       {isCanvas && (
         <div
           className="absolute bottom-1 right-1 w-4 h-4 cursor-se-resize opacity-0 hover:opacity-100 transition-opacity flex items-end justify-end"
@@ -317,7 +346,7 @@ export function Module({
           <Icon name={iconName} size={15} />
         </span>
 
-        <h3 className="flex-1 min-w-0 text-sm font-semibold tracking-tight select-none truncate" title={title}>
+        <h3 data-assembly="label" className="flex-1 min-w-0 text-sm font-semibold tracking-tight select-none truncate" title={title}>
           {title}
         </h3>
 
@@ -344,7 +373,7 @@ export function Module({
           {deriveSummary(module.config, state)}
         </div>
       ) : (
-        <div className={twoCol
+        <div data-assembly="body" className={twoCol
           ? "grid grid-cols-2 gap-[var(--mod-gap)] p-[var(--mod-pad)] items-start"
           : "flex flex-col p-[var(--mod-pad)] gap-[var(--mod-gap)]"}>
           {components.map((c) => {
