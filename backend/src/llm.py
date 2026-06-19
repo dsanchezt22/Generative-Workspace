@@ -334,3 +334,20 @@ def vision_describe(system: Optional[str], user_text: str, data: bytes, mime: st
     if not text or not text.strip():
         raise LLMError("The vision model returned an empty response.")
     return text
+
+
+def vision_capture(system: Optional[str], user_text: str, data: bytes, mime: str) -> str:
+    """Image → text for the capture engine, choosing the right backend:
+      1. a dedicated LOCAL vision endpoint (TRUS_VISION_MODEL) if configured, else
+      2. Gemini multimodal (when a real GEMINI_API_KEY is set).
+    On hardware where the local vision path is unreliable (e.g. AMD RDNA2 on bare
+    Windows) leave TRUS_VISION_MODEL unset so capture uses Gemini. Raises LLMError
+    when no vision backend is available."""
+    if vision_available():
+        return vision_describe(system, user_text, data, mime)
+    if not _is_stub_key(os.environ.get("GEMINI_API_KEY")):
+        return _gemini_generate_file(user_text, system, data, mime)
+    raise LLMError(
+        "No vision backend available. Set TRUS_VISION_MODEL (local vision endpoint) "
+        "or GEMINI_API_KEY (cloud) to capture screenshots."
+    )

@@ -247,12 +247,20 @@ export function Module({
 
   const components = module.config.components;
   const title = module.config.title;
-  const theme = resolveAccent(module.config.accent, module.config.title);
+  const theme = resolveAccent(module.config.accent, module.config.title, module.config.theme_opt_in ?? false);
   const iconName = resolveIconName(module.config.icon, module.config.title);
   const densityVars =
     module.config.density === "compact"
       ? { ["--mod-pad" as string]: "0.6rem", ["--mod-gap" as string]: "0.55rem" }
       : {};
+  // Constrained design layer carried from a screenshot capture (closed-enum tokens,
+  // no raw CSS). Available as CSS vars; the card radius is applied here directly.
+  const RADIUS: Record<string, string> = { sharp: "8px", rounded: "16px", pill: "28px" };
+  const TYPE_SCALE: Record<string, string> = { compact: "0.92", regular: "1", large: "1.08" };
+  const designVars: Record<string, string> = {};
+  if (module.config.radius && RADIUS[module.config.radius]) designVars["--mod-radius"] = RADIUS[module.config.radius];
+  if (module.config.type_scale && TYPE_SCALE[module.config.type_scale]) designVars["--mod-type-scale"] = TYPE_SCALE[module.config.type_scale];
+  const radiusOverride = module.config.radius ? { borderRadius: "var(--mod-radius)" } : {};
   const twoCol = module.config.columns === 2;
 
   // Automations: "when a field goes over/under a value, flag another field red."
@@ -277,6 +285,8 @@ export function Module({
         ["--accent-fg" as string]: theme.accentFg,
         borderColor: "var(--border)",
         ...densityVars,
+        ...designVars,
+        ...radiusOverride,
       } as React.CSSProperties) : ({
         left: layout.x,
         top: layout.y,
@@ -290,6 +300,8 @@ export function Module({
         outline: selected ? "2px solid color-mix(in srgb, var(--accent) 55%, transparent)" : "none",
         outlineOffset: "2px",
         ...densityVars,
+        ...designVars,
+        ...radiusOverride,
       } as React.CSSProperties)}
     >
       {isCanvas && (

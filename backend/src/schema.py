@@ -14,6 +14,10 @@ class ComponentBase(BaseModel):
     id: str
     label: str
     span: str | None = None  # "full" | "half" — width placement in a 2-column module
+    # Visual weight, mapped to existing --accent intensity (no new colour). Lets a
+    # screenshot capture mark the "primary action / hero figure". Optional → default
+    # render is unchanged for every existing config.
+    emphasis: Literal["normal", "primary", "muted"] | None = None
 
 
 class TextInput(ComponentBase):
@@ -248,6 +252,14 @@ class ModuleConfig(BaseModel):
     icon: str | None = None
     accent: str | None = None
     density: str | None = None
+    # Constrained design layer (closed-enum, no raw CSS) — raises re-skin fidelity for
+    # screenshot captures while preserving config-not-code. All Optional so existing
+    # configs and normal generation render identically.
+    radius: Literal["sharp", "rounded", "pill"] | None = None      # corner scale token
+    type_scale: Literal["compact", "regular", "large"] | None = None  # font scale token
+    # When True, the captured `accent` hue is honored by the renderer (a themed import);
+    # otherwise the brand-blue ethos default applies. Default False → no visual change.
+    theme_opt_in: bool = False
 
 
 class StoredModule(BaseModel):

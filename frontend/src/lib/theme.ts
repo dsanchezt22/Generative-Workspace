@@ -36,10 +36,14 @@ function hash(seed: string): number {
   return h;
 }
 
-export function resolveAccent(_name?: string | null, _seed = ""): AccentTheme {
-  // Ethos: ONE accent. Every module is matte charcoal with the single deep-blue
-  // accent — per-module hues are not used in the default UI (saturated colour is
-  // reserved for opt-in module themes, a separate mechanism). Always blue.
+export function resolveAccent(name?: string | null, _seed = "", themeOptIn = false): AccentTheme {
+  // Ethos: ONE accent by default — matte charcoal + the single deep-blue accent.
+  // Per-module hues are an explicit opt-in (e.g. a "match source colours" screenshot
+  // import sets theme_opt_in): only then do we honor the stored accent token.
+  if (themeOptIn && name) {
+    const t = name.trim();
+    if (ACCENTS[t]) return ACCENTS[t];
+  }
   return ACCENTS.blue;
 }
 

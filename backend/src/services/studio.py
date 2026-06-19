@@ -248,7 +248,10 @@ def _parse_one(raw: str) -> ModuleConfig:
 
 def import_from_image(use_case_key: str, data: bytes, mime: str) -> dict:
     """Read a reference screenshot with a vision model and return a layout dict
-    {label, inspired_by, config}. Only the derived layout is kept — never the image."""
+    {label, inspired_by, config}. Only the derived layout is kept — never the image.
+
+    This is the original single-shot importer (kept for back-compat / the fast path).
+    The staged capture→transform engine is `capture_layout`."""
     uc = _BY_KEY.get(use_case_key)
     if uc is None:
         raise RefusalError(f"Unknown use case: {use_case_key}")
@@ -269,3 +272,17 @@ def import_from_image(use_case_key: str, data: bytes, mime: str) -> dict:
         except _Invalid as e:
             last = e
     raise RefusalError(f"Couldn't read a usable layout from that image ({last}).")
+
+
+def capture_layout(use_case_key: str, data: bytes, mime: str, *, match_colors: bool = False) -> dict:
+    """Staged screenshot → layout: CAPTURE the image into a full-fidelity IR, then
+    TRANSFORM it onto the trusted component library (re-skinned, no feature dropped),
+    score capability coverage, and return an enriched layout dict
+    {label, inspired_by, config, capture_meta, confidence, ir_digest, structured_text}.
+    Image is never persisted. Raises RefusalError / LLMError like import_from_image."""
+    uc = _BY_KEY.get(use_case_key)
+    if uc is None:
+        raise RefusalError(f"Unknown use case: {use_case_key}")
+    from src.services.capture.engine import capture_to_layout
+
+    return capture_to_layout(data, mime, uc["title"].lower(), match_colors=match_colors)

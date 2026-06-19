@@ -171,4 +171,23 @@ export const api = {
     }
     return (await res.json()) as StudioLayout;
   },
+  // Staged, high-fidelity capture: full IR → transform → coverage score → auto-seed.
+  studioCapture: async (
+    key: string,
+    opts: { file?: File; url?: string; matchColors?: boolean },
+  ): Promise<StudioLayout> => {
+    const fd = new FormData();
+    if (opts.file) fd.append("file", opts.file);
+    if (opts.url) fd.append("image_url", opts.url);
+    fd.append("match_colors", opts.matchColors ? "true" : "false");
+    const res = await fetch(`${BASE}/api/studio/use-cases/${key}/capture`, {
+      method: "POST", credentials: "include", body: fd,
+    });
+    if (!res.ok) {
+      let detail: unknown = res.statusText;
+      try { const b = await res.json(); detail = b.detail ?? b; } catch { /* keep */ }
+      throw new ApiError(res.status, detail);
+    }
+    return (await res.json()) as StudioLayout;
+  },
 };

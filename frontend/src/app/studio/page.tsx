@@ -18,6 +18,7 @@ export default function StudioPage() {
   const [generating, setGenerating] = useState(false);
   const [importing, setImporting] = useState(false);
   const [importUrl, setImportUrl] = useState("");
+  const [matchColors, setMatchColors] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
@@ -67,11 +68,15 @@ export default function StudioPage() {
     if (!active) return;
     setImporting(true);
     try {
-      await api.studioImport(active, opts);
+      // Staged capture engine: full-fidelity read → faithful Trus re-skin → coverage score.
+      const ly = await api.studioCapture(active, { ...opts, matchColors });
       await loadLayouts(active);
       await reloadUseCases();
       setImportUrl("");
-      flash("Imported a layout from the screenshot.");
+      const conf = typeof ly.confidence === "number" ? ` · ${Math.round(ly.confidence * 100)}% match` : "";
+      const seeded = (ly.capture_meta?.capture_quality as string) === "high"
+        ? " — added to the generation library." : ".";
+      flash(`Captured a layout from the screenshot${conf}${seeded}`);
     } catch (e) {
       const msg = e instanceof ApiError
         ? (e.refusal || (typeof e.detail === "string" ? e.detail : "Import failed"))
@@ -153,6 +158,21 @@ export default function StudioPage() {
           <div className="ml-auto flex items-center gap-2">
             <input ref={fileRef} type="file" accept="image/*" className="hidden"
               onChange={(e) => { const f = e.target.files?.[0]; if (f) doImport({ file: f }); e.currentTarget.value = ""; }} />
+            <button
+              type="button"
+              onClick={() => setMatchColors((v) => !v)}
+              disabled={importing || !active}
+              title="Carry the source app's accent colour into the imported layout (off = Trus brand look)"
+              aria-pressed={matchColors}
+              className={`${btn} press border flex items-center gap-1.5 disabled:opacity-40 ${
+                matchColors
+                  ? "border-[var(--accent)] text-[var(--accent)]"
+                  : "border-[var(--border)] text-[var(--muted)] hover:text-[var(--foreground)]"
+              }`}
+            >
+              <Icon name={matchColors ? "check" : "sparkles"} size={14} />
+              Match colors
+            </button>
             <input
               value={importUrl}
               onChange={(e) => setImportUrl(e.target.value)}

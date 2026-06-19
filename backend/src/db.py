@@ -142,6 +142,16 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE pages ADD COLUMN icon TEXT")
     if "parent_id" not in pcols:
         conn.execute("ALTER TABLE pages ADD COLUMN parent_id TEXT")
+    # Screenshot-capture metadata on layout_library (all nullable; image never stored).
+    lcols = {r[1] for r in conn.execute("PRAGMA table_info(layout_library)").fetchall()}
+    for col, decl in (
+        ("capture_meta_json", "TEXT"),
+        ("ir_digest_json", "TEXT"),
+        ("confidence", "REAL"),
+        ("embedding", "TEXT"),
+    ):
+        if col not in lcols:
+            conn.execute(f"ALTER TABLE layout_library ADD COLUMN {col} {decl}")
 
 
 @contextmanager
@@ -631,12 +641,26 @@ def cache_stats() -> dict:
 _LAYOUT_COLS = "id, use_case, label, inspired_by, config_json, created_at"
 
 
-def layout_add(use_case: str, label: str, inspired_by: str | None, config_json: str) -> str:
+def layout_add(use_case: str, label: str, inspired_by: str | None, config_json: str,
+               *, capture_meta_json: str | None = None, ir_digest_json: str | None = None,
+               confidence: float | None = None, embedding: str | None = None) -> str:
+    """Insert a library layout. The capture_* fields are optional screenshot-capture
+    metadata (None for non-vision layouts) — additive, so existing callers are unaffected."""
     lid = uuid.uuid4().hex
+    cols = ["id", "use_case", "label", "inspired_by", "config_json", "created_at"]
+    vals: list = [lid, use_case, label, inspired_by, config_json, _now()]
+    for name, value in (
+        ("capture_meta_json", capture_meta_json), ("ir_digest_json", ir_digest_json),
+        ("confidence", confidence), ("embedding", embedding),
+    ):
+        if value is not None:
+            cols.append(name)
+            vals.append(value)
+    placeholders = ", ".join("?" for _ in cols)
     with _conn() as c:
         c.execute(
-            f"INSERT INTO layout_library ({_LAYOUT_COLS}) VALUES (?, ?, ?, ?, ?, ?)",
-            (lid, use_case, label, inspired_by, config_json, _now()),
+            f"INSERT INTO layout_library ({', '.join(cols)}) VALUES ({placeholders})",
+            tuple(vals),
         )
     return lid
 

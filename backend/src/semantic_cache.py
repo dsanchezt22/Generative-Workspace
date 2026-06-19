@@ -154,3 +154,17 @@ def store(kind: str, prompt: str, configs: list) -> None:
         db.cache_add(kind, prompt, normalize(prompt), json.dumps(emb), json.dumps(configs))
     except Exception:  # pragma: no cover - cache is best-effort
         pass
+
+
+def store_structured(kind: str, structured_text: str, prompt: str, configs: list) -> None:
+    """Like store(), but embed a richer structured document (e.g. a screenshot
+    capture's component inventory) while keeping `prompt` as the human-readable seed
+    key. Gives nearest-neighbour seeding more discriminative signal than the bare
+    prompt. Best-effort — never breaks the caller."""
+    if not enabled():
+        return
+    try:
+        emb = embed(structured_text or prompt)
+        db.cache_add(kind, prompt, normalize(prompt), json.dumps(emb), json.dumps(configs))
+    except Exception:  # pragma: no cover - cache is best-effort
+        pass

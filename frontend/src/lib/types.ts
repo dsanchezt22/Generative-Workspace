@@ -35,6 +35,8 @@ export interface ComponentBase {
   label: string;
   type: ComponentType;
   span?: "full" | "half" | null;
+  /** Visual weight, mapped to existing --accent intensity (no new colour). */
+  emphasis?: "normal" | "primary" | "muted" | null;
 }
 
 export interface TextInput extends ComponentBase {
@@ -222,6 +224,11 @@ export interface ModuleConfig {
   density?: "comfortable" | "compact" | null;
   automations?: Automation[];
   columns?: number;
+  /** Constrained design layer (closed-enum, no raw CSS) — used by screenshot captures. */
+  radius?: "sharp" | "rounded" | "pill" | null;
+  type_scale?: "compact" | "regular" | "large" | null;
+  /** When true, the captured `accent` hue is honored (a themed import); else brand default. */
+  theme_opt_in?: boolean;
 }
 
 export interface StoredModule {
@@ -276,4 +283,7 @@ export interface StudioLayout {
   inspired_by?: string | null;
   config: ModuleConfig;
   created_at?: string;
+  /** Screenshot-capture metadata (capture endpoint only). */
+  capture_meta?: Record<string, unknown> | null;
+  confidence?: number | null;
 }

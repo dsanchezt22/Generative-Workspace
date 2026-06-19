@@ -1,6 +1,7 @@
 """Layout Studio API — build/browse a use-case-indexed library of candidate
 ModuleConfig layouts, and promote chosen ones into the generation seed pool."""
 import json
+import os
 import urllib.error
 import urllib.request
 
@@ -12,6 +13,11 @@ from src.schema import LLMError, ModuleConfig, RefusalError
 from src.services import studio
 
 _MAX_IMAGE_BYTES = 12 * 1024 * 1024
+
+
+def _autopromote_enabled() -> bool:
+    return os.environ.get("TRUS_CAPTURE_AUTOPROMOTE", "on").strip().lower() not in ("off", "0", "false", "no")
+
 
 router = APIRouter(prefix="/studio")
 
@@ -32,6 +38,8 @@ class StudioLayout(BaseModel):
     inspired_by: str | None = None
     config: ModuleConfig
     created_at: str | None = None
+    capture_meta: dict | None = None   # screenshot-capture metadata (capture endpoint)
+    confidence: float | None = None    # capability-coverage confidence (capture endpoint)
 
 
 class PromoteResponse(BaseModel):
@@ -125,6 +133,49 @@ async def import_layout(
     lid = db.layout_add(key, ly["label"], ly.get("inspired_by"), json.dumps(ly["config"]))
     return StudioLayout(id=lid, use_case=key, label=ly["label"], inspired_by=ly.get("inspired_by"),
                         config=ModuleConfig.model_validate(ly["config"]))
+
+
+@router.post("/use-cases/{key}/capture", response_model=StudioLayout)
+async def capture_layout(
+    key: str,
+    file: UploadFile | None = File(default=None),
+    image_url: str = Form(default=""),
+    match_colors: bool = Form(default=False),
+) -> StudioLayout:
+    """Staged, high-fidelity screenshot import: CAPTURE the image into a full IR, then
+    TRANSFORM it onto the trusted component library (re-skinned, no feature dropped),
+    score capability coverage, store the enriched layout, and auto-seed high-confidence
+    captures into the generation pool. Only the layout is stored — never the image."""
+    if studio.get_use_case(key) is None:
+        raise HTTPException(status_code=404, detail=f"Unknown use case: {key}")
+    data, mime = await _load_image(file, image_url)
+    try:
+        ly = studio.capture_layout(key, data, mime, match_colors=match_colors)
+    except RefusalError as e:
+        raise HTTPException(status_code=422, detail={"refusal": e.reason})
+    except LLMError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+
+    lid = db.layout_add(
+        key, ly["label"], ly.get("inspired_by"), json.dumps(ly["config"]),
+        capture_meta_json=json.dumps(ly.get("capture_meta")),
+        ir_digest_json=json.dumps(ly.get("ir_digest")),
+        confidence=ly.get("confidence"),
+    )
+
+    # Auto-seed: high-confidence captures join the generation seed pool so future
+    # prompts for similar tools immediately benefit (decided: auto-seed ON).
+    quality = (ly.get("capture_meta") or {}).get("capture_quality")
+    if _autopromote_enabled() and quality == "high":
+        uc = studio.get_use_case(key)
+        seed_prompt = (uc.get("seed_prompts") or [ly["label"]])[0] if uc else ly["label"]
+        semantic_cache.store_structured("system", ly.get("structured_text", ""), seed_prompt, [ly["config"]])
+
+    return StudioLayout(
+        id=lid, use_case=key, label=ly["label"], inspired_by=ly.get("inspired_by"),
+        config=ModuleConfig.model_validate(ly["config"]),
+        capture_meta=ly.get("capture_meta"), confidence=ly.get("confidence"),
+    )
 
 
 @router.get("/layouts", response_model=list[StudioLayout])
