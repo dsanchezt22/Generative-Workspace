@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { StoredModule } from "@/lib/types";
 import { Module } from "./Module";
+import { GenerationBeam } from "./GenerationBeam";
 import { api } from "@/lib/api";
 
 interface Props {
@@ -18,6 +19,7 @@ interface Props {
   activePageId?: string;
   focusRequest?: { id: string; n: number };
   fitRequest?: number;
+  generating?: boolean;
 }
 
 interface View {
@@ -75,6 +77,7 @@ export function Canvas({
   activePageId,
   focusRequest,
   fitRequest,
+  generating,
 }: Props) {
   const [view, setView] = useState<View>({ x: 0, y: 0, zoom: 1 });
   const [draggingModule, setDraggingModule] = useState<string | null>(null);
@@ -352,6 +355,7 @@ export function Canvas({
       className="canvas-grid relative flex-1 overflow-hidden cursor-grab active:cursor-grabbing touch-none"
       style={{ backgroundPosition: `${view.x}px ${view.y}px` }}
     >
+      <GenerationBeam active={!!generating} />
       <div
         className="absolute inset-0 origin-top-left"
         style={{

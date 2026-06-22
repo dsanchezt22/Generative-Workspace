@@ -183,6 +183,52 @@ html[data-grid="off"] .canvas-grid {
   animation: trus-shimmer 1.1s linear infinite;
 }
 
+/* One-shot matte sheen swept across a module title as it builds (DESIGN-ETHOS §5.4).
+   Same off-white→white→off-white DNA as the module scan-sweep, clipped to the text. */
+@keyframes trus-title-sheen {
+  from { background-position: 200% 0; }
+  to { background-position: -50% 0; }
+}
+.title-sheen {
+  background-image: linear-gradient(
+    100deg,
+    var(--foreground) 0%, var(--foreground) 40%,
+    #ffffff 50%,
+    var(--foreground) 60%, var(--foreground) 100%
+  );
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+  animation: trus-title-sheen 0.6s ease-out 1;
+}
+
+/* A light beam sweeping the canvas while Trus reads the user's intent
+   (echoes the marketing site's .clay-scan-beam). */
+@keyframes trus-readbeam {
+  0% { transform: translateX(-20vw); opacity: 0; }
+  12% { opacity: 1; }
+  88% { opacity: 1; }
+  100% { transform: translateX(120vw); opacity: 0; }
+}
+.read-beam {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 64px;
+  pointer-events: none;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    color-mix(in srgb, var(--white-matte) 6%, transparent) 40%,
+    color-mix(in srgb, var(--white-matte) 18%, transparent) 50%,
+    color-mix(in srgb, var(--white-matte) 6%, transparent) 60%,
+    transparent 100%
+  );
+  animation: trus-readbeam 1.4s linear infinite;
+}
+
 /* Reduce motion: honour the OS unless the user forced "full"; "reduced" always off. */
 @media (prefers-reduced-motion: reduce) {
   html:not([data-motion="full"]) *,
@@ -200,3 +246,11 @@ html[data-motion="reduced"] *::after {
   animation-iteration-count: 1 !important;
   transition-duration: 0.001ms !important;
 }
+
+/* The reading beam relies on its sweep animation; with motion off it would sit on
+   the canvas as a static band, so hide it outright (same gate: OS pref unless
+   forced "full"; explicit "reduced" always off). */
+@media (prefers-reduced-motion: reduce) {
+  html:not([data-motion="full"]) .read-beam { display: none !important; }
+}
+html[data-motion="reduced"] .read-beam { display: none !important; }

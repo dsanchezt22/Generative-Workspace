@@ -310,10 +310,19 @@ export function Module({
           <svg data-assembly="border-svg" className="pointer-events-none absolute inset-0 z-20 opacity-0" preserveAspectRatio="none" aria-hidden>
             <rect data-assembly="border" fill="none" stroke="var(--accent)" strokeWidth="1.5" rx="16" ry="16" />
           </svg>
-          {/* Beat 4 — a light band sweeps across. */}
+          {/* Beat 4 — the canonical matte sheen band sweeps across (matches the
+              marketing site's .module-scan: triple-stop --white-matte band at 36% width). */}
           <div className="pointer-events-none absolute inset-0 z-20 overflow-hidden rounded-2xl" aria-hidden>
-            <div data-assembly="scan" className="absolute inset-y-0 left-0 w-1/2 opacity-0"
-              style={{ background: "linear-gradient(100deg, transparent 20%, color-mix(in srgb, var(--white-matte) 28%, transparent) 50%, transparent 80%)" }} />
+            <div data-assembly="scan" className="absolute inset-y-0 left-0 opacity-0"
+              style={{
+                width: "36%",
+                background:
+                  "linear-gradient(100deg, transparent 0%, " +
+                  "color-mix(in srgb, var(--white-matte) 10%, transparent) 45%, " +
+                  "color-mix(in srgb, var(--white-matte) 16%, transparent) 50%, " +
+                  "color-mix(in srgb, var(--white-matte) 10%, transparent) 55%, " +
+                  "transparent 100%)",
+              }} />
           </div>
         </>
       )}

@@ -18,9 +18,10 @@ interface Props {
   seed?: string | null;
   onSeedConsumed?: () => void;
   focusSignal?: number;
+  onGeneratingChange?: (busy: boolean) => void;
 }
 
-export function PromptBar({ onModule, activePageId, refineTarget, onRefineModule, onClearRefine, seed, onSeedConsumed, focusSignal }: Props) {
+export function PromptBar({ onModule, activePageId, refineTarget, onRefineModule, onClearRefine, seed, onSeedConsumed, focusSignal, onGeneratingChange }: Props) {
   const [prompt, setPrompt] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -90,6 +91,7 @@ export function PromptBar({ onModule, activePageId, refineTarget, onRefineModule
     const v = prompt.trim();
     if ((!v && !file) || loading) return;
     setLoading(true);
+    onGeneratingChange?.(true);
     setError(null);
     try {
       if (previews.length > 0 && !isRefining && !file) {
@@ -141,6 +143,7 @@ export function PromptBar({ onModule, activePageId, refineTarget, onRefineModule
       }
     } finally {
       setLoading(false);
+      onGeneratingChange?.(false);
     }
   };
 

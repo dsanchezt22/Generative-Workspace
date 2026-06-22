@@ -52,10 +52,10 @@ export function runAssembly(card: HTMLElement, index = 0): () => void {
     { opacity: 0, y: 4 },
     { opacity: 1, y: 0, duration: 0.24, ease: "power1.out" }, 0.2);
 
-  // 4 · Scan sweep — a light band sweeps L→R (echoes the wordmark sheen).
+  // 4 · Scan sweep — the canonical matte sheen band sweeps L→R (DESIGN-ETHOS §5.2).
   if (scan) tl.fromTo(scan,
     { xPercent: -130, opacity: 1 },
-    { xPercent: 330, duration: 0.5, ease: "power1.inOut" }, 0.18);
+    { xPercent: 330, duration: 0.5, ease: "power2.inOut" }, 0.18);
 
   // 5 · Label builds — wipes in left→right. Driven via a numeric proxy because
   // GSAP doesn't interpolate clip-path inset() strings reliably.
@@ -66,6 +66,9 @@ export function runAssembly(card: HTMLElement, index = 0): () => void {
       v: 0, duration: 0.2, ease: "power3.out",
       onUpdate: () => { label.style.clipPath = `inset(0 ${wipe.v}% 0 0)`; },
     }, 0.3);
+    // 5b · Title sheen — a one-shot matte sheen passes over the revealed label,
+    // echoing the hero wordmark sheen (DESIGN-ETHOS §5.4).
+    tl.add(() => label.classList.add("title-sheen"), 0.52);
   }
 
   // 6 · Micro-settle — a tiny overshoot, then clear every inline prop.
@@ -76,7 +79,7 @@ export function runAssembly(card: HTMLElement, index = 0): () => void {
     if (svg) gsap.set(svg, { opacity: 0 });
     if (scan) gsap.set(scan, { opacity: 0 });
     gsap.set(card, { clearProps: "transform,opacity" });
-    if (label) label.style.clipPath = "";
+    if (label) { label.style.clipPath = ""; label.classList.remove("title-sheen"); }
     if (body) gsap.set(body, { clearProps: "transform,opacity" });
   };
   tl.eventCallback("onComplete", finalize);

@@ -78,6 +78,7 @@ export default function Home() {
   const [modules, setModules] = useState<StoredModule[]>([]);
   const [loading, setLoading] = useState(true);
   const [refineTarget, setRefineTarget] = useState<StoredModule | null>(null);
+  const [generating, setGenerating] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   // The inspector (side popup) is intentionally separate from selection: clicking
   // a module only selects/highlights it; the inspector opens solely via the pen.
@@ -585,6 +586,7 @@ export default function Home() {
         onModuleSelectForRefine={handleSelectForRefine}
         focusRequest={focusReq}
         fitRequest={fitReq}
+        generating={generating}
       />
 
       {!loading && activeModules.length === 0 && <EmptyState onPick={handlePickChip} />}
@@ -615,6 +617,7 @@ export default function Home() {
         seed={seed}
         onSeedConsumed={handleSeedConsumed}
         focusSignal={promptFocus}
+        onGeneratingChange={setGenerating}
       />
 
       {convoOpen && (
