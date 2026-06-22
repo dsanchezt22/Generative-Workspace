@@ -274,6 +274,17 @@ def select_archetypes(prompt: str, limit: int = 3) -> list[Archetype]:
 
 
 # --- live LLM intent decode -------------------------------------------------
+# The trusted palette/icon vocabulary the renderer understands. The decoder's theme
+# fields are filtered to these so an off-palette or hallucinated value can't leak
+# into the generation hint (the orchestrator falls back per-field when absent).
+_ACCENTS = {"amber", "emerald", "sky", "rose", "violet", "coral", "teal", "gold"}
+_ICONS = {
+    "activity", "leaf", "dollar", "check", "book", "repeat", "smile", "calendar",
+    "plane", "music", "cap", "briefcase", "droplet", "moon", "film", "cart", "star",
+    "target", "list", "grid", "chart", "camera", "heart", "home", "folder", "bell",
+    "paw", "sparkles",
+}
+
 DECODE_SYSTEM_PROMPT = (
     "You are the Trus intent decoder. Read the user's request and choose which UI "
     "archetype(s) best model it, picking ONLY from the menu keys provided.\n\n"
@@ -310,5 +321,12 @@ def decode_intent(prompt: str) -> dict[str, Any] | None:
     keys = [k for k in data.get("archetypes", []) if k in valid]
     if not keys:
         return None
-    theme = data.get("theme") if isinstance(data.get("theme"), dict) else {}
+    raw_theme = data.get("theme") if isinstance(data.get("theme"), dict) else {}
+    # Keep only in-vocabulary fields; missing/invalid ones are dropped so the
+    # orchestrator can fall back per-field (no literal "None" reaches the hint).
+    theme: dict[str, Any] = {}
+    if raw_theme.get("accent") in _ACCENTS:
+        theme["accent"] = raw_theme["accent"]
+    if raw_theme.get("icon") in _ICONS:
+        theme["icon"] = raw_theme["icon"]
     return {"summary": str(data.get("summary", "")), "archetypes": keys, "theme": theme}

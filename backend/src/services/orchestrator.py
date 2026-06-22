@@ -380,17 +380,20 @@ def generate_modules(
     # deterministic selector. A cache "seed" neighbour takes precedence as the seed.
     archetype_hint: str | None = None
     if not (mode == "seed" and cached):
+        chosen = archetypes.select_archetypes(prompt)
         decoded = archetypes.decode_intent(prompt)
-        if decoded:
-            keys = decoded["archetypes"]
-            theme = decoded.get("theme") or archetypes.theme_for(prompt)
-        else:
-            keys = [a.key for a in archetypes.select_archetypes(prompt)]
-            theme = archetypes.theme_for(prompt)
+        decoded_theme = decoded.get("theme", {}) if decoded else {}
+        keys = decoded["archetypes"] if decoded else [a.key for a in chosen]
+        # Theme resolved PER FIELD so a partial/absent decoder theme never injects a
+        # literal "None": decoder field → top archetype's own theme → domain default.
+        domain = archetypes.theme_for(prompt)
+        top = chosen[0] if chosen else None
+        accent = decoded_theme.get("accent") or (top.accent if top else None) or domain["accent"]
+        icon = decoded_theme.get("icon") or (top.icon if top else None) or domain["icon"]
         if keys:
             archetype_hint = (
                 f"Best-matching archetype(s): {', '.join(keys)}. "
-                f"Theme: accent={theme.get('accent')}, icon={theme.get('icon')}."
+                f"Theme: accent={accent}, icon={icon}."
             )
 
     result = _generate_validated(

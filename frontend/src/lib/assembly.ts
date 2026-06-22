@@ -66,9 +66,14 @@ export function runAssembly(card: HTMLElement, index = 0): () => void {
       v: 0, duration: 0.2, ease: "power3.out",
       onUpdate: () => { label.style.clipPath = `inset(0 ${wipe.v}% 0 0)`; },
     }, 0.3);
-    // 5b · Title sheen — a one-shot matte sheen passes over the revealed label,
-    // echoing the hero wordmark sheen (DESIGN-ETHOS §5.4).
-    tl.add(() => label.classList.add("title-sheen"), 0.52);
+    // 5b · Title sheen — a matte sheen sweeps over the revealed label, echoing the
+    // hero wordmark sheen (DESIGN-ETHOS §5.4). Driven by GSAP (not a CSS animation)
+    // so the timeline outlives the sweep and finalize() can't truncate it; the
+    // class supplies the text-clipped gradient, the tween moves it across.
+    tl.fromTo(label,
+      { backgroundPosition: "200% 0" },
+      { backgroundPosition: "-50% 0", duration: 0.5, ease: "power2.out",
+        onStart: () => label.classList.add("title-sheen") }, 0.5);
   }
 
   // 6 · Micro-settle — a tiny overshoot, then clear every inline prop.
@@ -79,7 +84,11 @@ export function runAssembly(card: HTMLElement, index = 0): () => void {
     if (svg) gsap.set(svg, { opacity: 0 });
     if (scan) gsap.set(scan, { opacity: 0 });
     gsap.set(card, { clearProps: "transform,opacity" });
-    if (label) { label.style.clipPath = ""; label.classList.remove("title-sheen"); }
+    if (label) {
+      label.style.clipPath = "";
+      label.classList.remove("title-sheen");
+      gsap.set(label, { clearProps: "backgroundPosition" });
+    }
     if (body) gsap.set(body, { clearProps: "transform,opacity" });
   };
   tl.eventCallback("onComplete", finalize);

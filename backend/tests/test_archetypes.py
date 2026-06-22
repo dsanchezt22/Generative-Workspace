@@ -89,3 +89,21 @@ def test_decode_intent_none_on_non_json():
 def test_decode_intent_none_on_llm_error():
     with patch("src.archetypes.llm.generate", side_effect=LLMError("boom")):
         assert decode_intent("anything") is None
+
+
+def test_decode_intent_drops_off_palette_theme():
+    raw = json.dumps(
+        {"archetypes": ["workout_calendar"], "theme": {"accent": "chartreuse", "icon": "nope"}}
+    )
+    with _decode_with(raw):
+        out = decode_intent("track workouts")
+    assert out["theme"] == {}  # invalid accent + icon both dropped
+
+
+def test_decode_intent_keeps_only_valid_theme_fields():
+    raw = json.dumps(
+        {"archetypes": ["workout_calendar"], "theme": {"accent": "emerald", "icon": "nope"}}
+    )
+    with _decode_with(raw):
+        out = decode_intent("track workouts")
+    assert out["theme"] == {"accent": "emerald"}  # valid accent kept, bad icon dropped
