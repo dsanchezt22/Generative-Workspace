@@ -1,0 +1,30 @@
+# Python quality-gate config. This repo's source lives under backend/src and its
+# tests under backend/tests (tests import as `src.*`), so the tools are pointed at
+# backend/ from the repo root via pythonpath / mypy_path / testpaths.
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "B", "S", "C4", "UP", "SIM", "RUF"]
+
+[tool.ruff.lint.per-file-ignores]
+# assert is fine in tests
+"**/tests/**" = ["S101"]
+
+[tool.mypy]
+strict = true
+ignore_missing_imports = true
+# Resolve `import src.*` (source lives in backend/) from the repo root.
+mypy_path = "backend"
+
+[tool.pytest.ini_options]
+addopts = "--cov=src --cov-report=term-missing --cov-fail-under=80"
+testpaths = ["backend/tests"]
+# Put backend/ on sys.path so `import src.*` resolves when run from the repo root.
+pythonpath = ["backend"]
+asyncio_mode = "auto"
+
+[tool.coverage.run]
+branch = true
+source = ["src"]

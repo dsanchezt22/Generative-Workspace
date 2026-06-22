@@ -4,12 +4,11 @@ Steps 0-3 of the pipeline: preprocess (downscale), optional OCR ground-truth tex
 then a vision-model read into a CaptureIR. The vision call goes through
 `llm.vision_capture` (local vision endpoint if configured, else Gemini multimodal).
 """
+
 from __future__ import annotations
 
-import os
-
 from src import llm
-from src.schema import LLMError, RefusalError
+from src.schema import RefusalError
 
 from . import ocr
 from .ir import CaptureIR, IRParseError, parse_ir
@@ -41,7 +40,9 @@ def preprocess(data: bytes, mime: str) -> tuple[bytes, str, dict]:
         return data, mime, {}
 
 
-_RETRY_NOTE = "\n\nYour previous output was not valid JSON. Return ONLY the JSON object, nothing else."
+_RETRY_NOTE = (
+    "\n\nYour previous output was not valid JSON. Return ONLY the JSON object, nothing else."
+)
 
 
 def capture_ir(data: bytes, mime: str, use_case_hint: str | None = None) -> CaptureIR:
@@ -51,7 +52,9 @@ def capture_ir(data: bytes, mime: str, use_case_hint: str | None = None) -> Capt
     ocr_block = ""
     text = ocr.ocr_text(png)
     if text:
-        ocr_block = f"\n\nExact on-screen text (OCR, use these strings verbatim for labels):\n{text[:2000]}"
+        ocr_block = (
+            f"\n\nExact on-screen text (OCR, use these strings verbatim for labels):\n{text[:2000]}"
+        )
 
     user = (
         "Capture this screenshot as the IR JSON."
@@ -61,7 +64,9 @@ def capture_ir(data: bytes, mime: str, use_case_hint: str | None = None) -> Capt
 
     last: Exception | None = None
     for attempt in range(2):  # one retry — VLMs occasionally slip on strict JSON
-        raw = llm.vision_capture(CAPTURE_SYSTEM, user if attempt == 0 else user + _RETRY_NOTE, png, png_mime)
+        raw = llm.vision_capture(
+            CAPTURE_SYSTEM, user if attempt == 0 else user + _RETRY_NOTE, png, png_mime
+        )
         try:
             ir = parse_ir(raw)
             if viewport and not ir.viewport:

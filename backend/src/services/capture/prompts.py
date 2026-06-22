@@ -1,6 +1,7 @@
 """System prompts for the capture (image → IR) and transform (IR → ModuleConfig)
 stages. Kept dependency-free; the component docs are injected by the caller so
 this module imports nothing heavy."""
+
 from __future__ import annotations
 
 CAPTURE_SYSTEM = """You are Trus's screenshot capture engine. You are shown a SCREENSHOT of an

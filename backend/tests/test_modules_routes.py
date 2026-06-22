@@ -3,14 +3,24 @@ from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
-
 from src.main import app
 from src.schema import ModuleConfig, TextInput
 
-VALID_RAW = json.dumps({
-    "title": "Workout Log",
-    "components": [{"id": "exercise", "type": "text_input", "label": "Exercise"}],
-})
+VALID_RAW = json.dumps(
+    {
+        "title": "Workout Log",
+        "components": [{"id": "exercise", "type": "text_input", "label": "Exercise"}],
+    }
+)
+
+
+@pytest.fixture(autouse=True)
+def _force_non_stub():
+    """These tests mock orchestrator.llm.generate to assert API behavior, so the
+    orchestrator must take its real (non-stub) path instead of short-circuiting
+    to offline templates."""
+    with patch("src.services.orchestrator.llm.is_stub_mode", return_value=False):
+        yield
 
 
 @pytest.fixture
@@ -151,13 +161,15 @@ def test_history_endpoint_lists_versions(client):
     assert [v["config"]["title"] for v in history] == ["Workout Log", "Renamed"]
 
 
-REFINED_RAW = json.dumps({
-    "title": "Workout Log",
-    "components": [
-        {"id": "exercise", "type": "text_input", "label": "Exercise"},
-        {"id": "rest_day", "type": "checkbox", "label": "Rest day"},
-    ],
-})
+REFINED_RAW = json.dumps(
+    {
+        "title": "Workout Log",
+        "components": [
+            {"id": "exercise", "type": "text_input", "label": "Exercise"},
+            {"id": "rest_day", "type": "checkbox", "label": "Rest day"},
+        ],
+    }
+)
 
 
 def test_refine_endpoint_updates_module(client):
@@ -166,7 +178,9 @@ def test_refine_endpoint_updates_module(client):
     module_id = created["module"]["id"]
 
     with patch("src.services.orchestrator.llm.generate", return_value=REFINED_RAW):
-        resp = client.post(f"/api/modules/{module_id}/refine", json={"prompt": "add a rest day checkbox"})
+        resp = client.post(
+            f"/api/modules/{module_id}/refine", json={"prompt": "add a rest day checkbox"}
+        )
     assert resp.status_code == 200, resp.text
     comps = resp.json()["config"]["components"]
     assert any(c["type"] == "checkbox" for c in comps)
@@ -218,18 +232,20 @@ def test_refine_scoped_to_session(client, second_client):
     assert resp.status_code == 404
 
 
-METRIC_RAW = json.dumps({
-    "title": "Dashboard",
-    "components": [
-        {
-            "id": "total_reps",
-            "type": "metric",
-            "label": "Total Reps",
-            "formula": "sum",
-            "source_component_id": "reps",
-        }
-    ],
-})
+METRIC_RAW = json.dumps(
+    {
+        "title": "Dashboard",
+        "components": [
+            {
+                "id": "total_reps",
+                "type": "metric",
+                "label": "Total Reps",
+                "formula": "sum",
+                "source_component_id": "reps",
+            }
+        ],
+    }
+)
 
 
 def test_generate_module_with_metric_component(client):

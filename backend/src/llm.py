@@ -24,12 +24,12 @@ Env for the openai provider:
   TRUS_LLM_JSON_MODE object (default) | schema | off
   TRUS_LLM_TIMEOUT   request timeout seconds (default 60)
 """
+
 import base64
 import json
 import os
 import urllib.error
 import urllib.request
-from typing import Optional
 
 from dotenv import load_dotenv
 
@@ -53,7 +53,12 @@ def _timeout() -> float:
 def _cascade_enabled() -> bool:
     """When a local/hosted endpoint is unreachable, fall back to Gemini (if a key
     is set) and then to offline templates instead of failing the request."""
-    return os.environ.get("TRUS_LLM_CASCADE", "on").strip().lower() not in ("off", "0", "false", "no")
+    return os.environ.get("TRUS_LLM_CASCADE", "on").strip().lower() not in (
+        "off",
+        "0",
+        "false",
+        "no",
+    )
 
 
 def _max_output_tokens() -> int | None:
@@ -101,6 +106,7 @@ def provider_info() -> dict:
 
 # ---------------------------------------------------------------- stub -------
 
+
 def _stub_module_for(prompt: str) -> str:
     """Canned ModuleConfig for offline/dev use (see stub_templates.py)."""
     from src.stub_templates import pick_template
@@ -109,6 +115,7 @@ def _stub_module_for(prompt: str) -> str:
 
 
 # -------------------------------------------------------------- gemini -------
+
 
 def _get_client():
     global _client
@@ -119,7 +126,7 @@ def _get_client():
     return _client
 
 
-def _gemini_config(system: Optional[str]):
+def _gemini_config(system: str | None):
     from google.genai import types
 
     # Static system_instruction + variable text at the tail → Gemini's implicit
@@ -135,11 +142,13 @@ def _gemini_config(system: Optional[str]):
     return types.GenerateContentConfig(**kwargs)
 
 
-def _gemini_generate(prompt: str, system: Optional[str]) -> str:
+def _gemini_generate(prompt: str, system: str | None) -> str:
     model = os.environ.get("GEMINI_MODEL", DEFAULT_MODEL)
     try:
         response = _get_client().models.generate_content(
-            model=model, contents=prompt, config=_gemini_config(system),
+            model=model,
+            contents=prompt,
+            config=_gemini_config(system),
         )
     except Exception as e:  # network, quota (429), auth — surfaced cleanly upstream
         raise LLMError(str(e)) from e
@@ -149,7 +158,7 @@ def _gemini_generate(prompt: str, system: Optional[str]) -> str:
     return text
 
 
-def _gemini_generate_file(user_message: str, system: Optional[str], data: bytes, mime: str) -> str:
+def _gemini_generate_file(user_message: str, system: str | None, data: bytes, mime: str) -> str:
     from google.genai import types
 
     model = os.environ.get("GEMINI_MODEL", DEFAULT_MODEL)
@@ -169,7 +178,10 @@ def _gemini_generate_file(user_message: str, system: Optional[str], data: bytes,
 
 # ----------------------------------------------- openai-compatible -----------
 
-def _openai_chat(messages: list[dict], schema: Optional[dict] = None, expect_array: bool = False) -> str:
+
+def _openai_chat(
+    messages: list[dict], schema: dict | None = None, expect_array: bool = False
+) -> str:
     base = os.environ.get("TRUS_LLM_BASE_URL", "").strip().rstrip("/")
     model = os.environ.get("TRUS_LLM_MODEL", "").strip()
     if not base or not model:
@@ -223,8 +235,14 @@ def _openai_chat(messages: list[dict], schema: Optional[dict] = None, expect_arr
 
 # ------------------------------------------------------------- public --------
 
-def generate(prompt: str, system: Optional[str] = None, *, schema: Optional[dict] = None,
-             expect_array: bool = False) -> str:
+
+def generate(
+    prompt: str,
+    system: str | None = None,
+    *,
+    schema: dict | None = None,
+    expect_array: bool = False,
+) -> str:
     provider = _resolve_provider()
     if provider == "stub":
         return _stub_module_for(prompt)
@@ -245,7 +263,7 @@ def generate(prompt: str, system: Optional[str] = None, *, schema: Optional[dict
     return _gemini_generate(prompt, system)
 
 
-def generate_from_file(user_message: str, system: Optional[str], data: bytes, mime: str) -> str:
+def generate_from_file(user_message: str, system: str | None, data: bytes, mime: str) -> str:
     """Multimodal generation. Gemini handles any file; the openai provider handles
     images (data URL); unsupported inputs return "{}" so callers fall back to templates."""
     provider = _resolve_provider()
@@ -257,10 +275,15 @@ def generate_from_file(user_message: str, system: Optional[str], data: bytes, mi
             messages: list[dict] = []
             if system:
                 messages.append({"role": "system", "content": system})
-            messages.append({"role": "user", "content": [
-                {"type": "text", "text": user_message},
-                {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}},
-            ]})
+            messages.append(
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": user_message},
+                        {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}},
+                    ],
+                }
+            )
             return _openai_chat(messages, expect_array=True)
         return "{}"  # non-image documents aren't portable across openai-compat servers
     return _gemini_generate_file(user_message, system, data, mime)
@@ -274,6 +297,7 @@ def generate_from_file(user_message: str, system: Optional[str], data: bytes, mi
 #   TRUS_VISION_API_KEY   defaults to TRUS_LLM_API_KEY
 #   TRUS_VISION_TIMEOUT   seconds (default 180 — image inference is slower)
 
+
 def vision_available() -> bool:
     return bool(os.environ.get("TRUS_VISION_MODEL", "").strip())
 
@@ -284,20 +308,28 @@ def vision_info() -> dict:
     return {
         "available": True,
         "model": os.environ.get("TRUS_VISION_MODEL", "").strip(),
-        "base_url": (os.environ.get("TRUS_VISION_BASE_URL") or os.environ.get("TRUS_LLM_BASE_URL", "")).strip(),
+        "base_url": (
+            os.environ.get("TRUS_VISION_BASE_URL") or os.environ.get("TRUS_LLM_BASE_URL", "")
+        ).strip(),
     }
 
 
-def vision_describe(system: Optional[str], user_text: str, data: bytes, mime: str) -> str:
+def vision_describe(system: str | None, user_text: str, data: bytes, mime: str) -> str:
     """Send an image + instruction to the configured vision model; return its text."""
     model = os.environ.get("TRUS_VISION_MODEL", "").strip()
-    base = (os.environ.get("TRUS_VISION_BASE_URL") or os.environ.get("TRUS_LLM_BASE_URL", "")).strip().rstrip("/")
+    base = (
+        (os.environ.get("TRUS_VISION_BASE_URL") or os.environ.get("TRUS_LLM_BASE_URL", ""))
+        .strip()
+        .rstrip("/")
+    )
     if not model or not base:
         raise LLMError(
             "No vision model configured. Run a vision model (e.g. `make ollama-vision`) "
             "and set TRUS_VISION_MODEL."
         )
-    api_key = (os.environ.get("TRUS_VISION_API_KEY") or os.environ.get("TRUS_LLM_API_KEY", "")).strip()
+    api_key = (
+        os.environ.get("TRUS_VISION_API_KEY") or os.environ.get("TRUS_LLM_API_KEY", "")
+    ).strip()
     try:
         timeout = float(os.environ.get("TRUS_VISION_TIMEOUT", "180"))
     except ValueError:
@@ -307,12 +339,18 @@ def vision_describe(system: Optional[str], user_text: str, data: bytes, mime: st
     messages: list[dict] = []
     if system:
         messages.append({"role": "system", "content": system})
-    messages.append({"role": "user", "content": [
-        {"type": "text", "text": user_text},
-        {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}},
-    ]})
-    body = json.dumps({"model": model, "messages": messages, "temperature": DEFAULT_TEMPERATURE,
-                       "stream": False}).encode("utf-8")
+    messages.append(
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": user_text},
+                {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}},
+            ],
+        }
+    )
+    body = json.dumps(
+        {"model": model, "messages": messages, "temperature": DEFAULT_TEMPERATURE, "stream": False}
+    ).encode("utf-8")
     req = urllib.request.Request(base + "/chat/completions", data=body, method="POST")
     req.add_header("Content-Type", "application/json")
     if api_key:
@@ -336,7 +374,7 @@ def vision_describe(system: Optional[str], user_text: str, data: bytes, mime: st
     return text
 
 
-def vision_capture(system: Optional[str], user_text: str, data: bytes, mime: str) -> str:
+def vision_capture(system: str | None, user_text: str, data: bytes, mime: str) -> str:
     """Image → text for the capture engine, choosing the right backend:
       1. a dedicated LOCAL vision endpoint (TRUS_VISION_MODEL) if configured, else
       2. Gemini multimodal (when a real GEMINI_API_KEY is set).

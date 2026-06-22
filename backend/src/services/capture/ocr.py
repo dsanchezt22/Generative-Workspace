@@ -1,6 +1,7 @@
 """Optional OCR ground-truth text (Phase 2). Lazy + env-gated: returns "" unless
 TRUS_CAPTURE_OCR=on and RapidOCR is installed, so the default install/tests never
 need the extra dependency."""
+
 from __future__ import annotations
 
 import os

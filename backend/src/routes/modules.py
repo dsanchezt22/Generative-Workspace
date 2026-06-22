@@ -1,5 +1,3 @@
-from typing import Optional
-
 from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile
 
 from src import db
@@ -31,7 +29,9 @@ def _session_id(request: Request) -> str:
     return sid
 
 
-def _log(sid: str, role: str, text: str, page_id: str | None = None, module_id: str | None = None) -> None:
+def _log(
+    sid: str, role: str, text: str, page_id: str | None = None, module_id: str | None = None
+) -> None:
     """Best-effort conversation logging — never let it break a generation."""
     try:
         db.add_message(sid, role, text, page_id=page_id, module_id=module_id)
@@ -43,7 +43,7 @@ def _log(sid: str, role: str, text: str, page_id: str | None = None, module_id: 
 async def generate_module(
     body: GenerateRequest,
     request: Request,
-    page_id: Optional[str] = Query(default=None),
+    page_id: str | None = Query(default=None),
 ) -> GenerateResponse:
     prompt = body.prompt.strip()
     if not prompt:
@@ -72,7 +72,7 @@ async def generate_module(
 async def preview_modules(
     body: GenerateRequest,
     request: Request,
-    page_id: Optional[str] = Query(default=None),
+    page_id: str | None = Query(default=None),
 ) -> GenerateResponse:
     """Propose tools for a prompt WITHOUT persisting them (preview-then-accept)."""
     prompt = body.prompt.strip()
@@ -87,7 +87,10 @@ async def preview_modules(
     except RefusalError as e:
         raise HTTPException(status_code=422, detail={"refusal": e.reason})
     except LLMError:
-        raise HTTPException(status_code=503, detail="AI generation is temporarily unavailable. Please try again in a moment.")
+        raise HTTPException(
+            status_code=503,
+            detail="AI generation is temporarily unavailable. Please try again in a moment.",
+        )
     return GenerateResponse(previews=configs)
 
 
@@ -95,7 +98,7 @@ async def preview_modules(
 async def insert_modules(
     body: InsertModulesRequest,
     request: Request,
-    page_id: Optional[str] = Query(default=None),
+    page_id: str | None = Query(default=None),
 ) -> list[StoredModule]:
     """Persist accepted preview tools onto the canvas."""
     sid = _session_id(request)
@@ -112,7 +115,7 @@ async def generate_from_file(
     request: Request,
     file: UploadFile = File(...),
     prompt: str = Form(""),
-    page_id: Optional[str] = Query(default=None),
+    page_id: str | None = Query(default=None),
 ) -> GenerateResponse:
     sid = _session_id(request)
     data = await file.read()
@@ -124,13 +127,18 @@ async def generate_from_file(
     instruction = prompt.strip() or f"Build the tools I need from {file.filename}."
     existing = [m.config for m in db.list_modules(sid)]
     try:
-        configs = orchestrator.generate_modules_from_file(instruction, data, mime, existing_modules=existing)
+        configs = orchestrator.generate_modules_from_file(
+            instruction, data, mime, existing_modules=existing
+        )
     except ClarifyingQuestion as e:
         return GenerateResponse(question=e.question)
     except RefusalError as e:
         raise HTTPException(status_code=422, detail={"refusal": e.reason})
     except LLMError:
-        raise HTTPException(status_code=503, detail="AI generation is temporarily unavailable. Please try again in a moment.")
+        raise HTTPException(
+            status_code=503,
+            detail="AI generation is temporarily unavailable. Please try again in a moment.",
+        )
     stored = [db.insert_module(sid, c, page_id=page_id) for c in configs]
     _log(sid, "user", f"📎 {file.filename}: {instruction}", page_id=stored[0].page_id)
     for s in stored:
@@ -141,7 +149,7 @@ async def generate_from_file(
 @router.post("/onboarding/seed", response_model=list[StoredModule])
 async def seed_onboarding(
     request: Request,
-    page_id: Optional[str] = Query(default=None),
+    page_id: str | None = Query(default=None),
 ) -> list[StoredModule]:
     """Pre-populate a brand-new session's canvas (no LLM cost). Never reseeds an
     existing workspace — if anything already exists, returns it unchanged."""
@@ -149,10 +157,23 @@ async def seed_onboarding(
     if db.list_modules(sid):
         return db.list_modules(sid, page_id=page_id)
     note = {
-        "title": "Today", "icon": "📝", "accent": "amber",
+        "title": "Today",
+        "icon": "📝",
+        "accent": "amber",
         "components": [
-            {"id": "note", "type": "text_input", "label": "Today's note", "placeholder": "What's on your mind?"},
-            {"id": "remember", "type": "list", "label": "To remember", "item_label": "Item", "placeholder": "Add a reminder…"},
+            {
+                "id": "note",
+                "type": "text_input",
+                "label": "Today's note",
+                "placeholder": "What's on your mind?",
+            },
+            {
+                "id": "remember",
+                "type": "list",
+                "label": "To remember",
+                "item_label": "Item",
+                "placeholder": "Add a reminder…",
+            },
         ],
         "summary_component_id": "note",
     }
@@ -171,7 +192,7 @@ async def seed_onboarding(
 @router.get("/modules", response_model=list[StoredModule])
 async def list_modules(
     request: Request,
-    page_id: Optional[str] = Query(default=None),
+    page_id: str | None = Query(default=None),
 ) -> list[StoredModule]:
     sid = _session_id(request)
     return db.list_modules(sid, page_id=page_id)
@@ -237,7 +258,9 @@ async def refine_module(module_id: str, body: RefineRequest, request: Request) -
         raise HTTPException(status_code=404, detail="Module not found")
     other_modules = [m.config for m in db.list_modules(sid) if m.id != module_id]
     try:
-        new_config = orchestrator.refine_module(existing.config, prompt, existing_modules=other_modules)
+        new_config = orchestrator.refine_module(
+            existing.config, prompt, existing_modules=other_modules
+        )
     except RefusalError as e:
         raise HTTPException(status_code=422, detail={"refusal": e.reason})
     except LLMError:
@@ -249,7 +272,13 @@ async def refine_module(module_id: str, body: RefineRequest, request: Request) -
     if updated is None:
         raise HTTPException(status_code=404, detail="Module not found")
     _log(sid, "user", prompt, page_id=updated.page_id, module_id=module_id)
-    _log(sid, "assistant", f"Refined {new_config.title}", page_id=updated.page_id, module_id=module_id)
+    _log(
+        sid,
+        "assistant",
+        f"Refined {new_config.title}",
+        page_id=updated.page_id,
+        module_id=module_id,
+    )
     return updated
 
 
@@ -298,7 +327,7 @@ async def delete_snapshot(snapshot_id: str, request: Request) -> None:
 @router.post("/workspace/insights", response_model=GenerateResponse)
 async def workspace_insights(
     request: Request,
-    page_id: Optional[str] = Query(default=None),
+    page_id: str | None = Query(default=None),
 ) -> GenerateResponse:
     sid = _session_id(request)
     modules = db.list_modules(sid, page_id=page_id)

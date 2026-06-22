@@ -1,5 +1,4 @@
 import pytest
-
 from src.schema import ModuleConfig
 from src.stub_templates import pick_template
 
@@ -40,7 +39,13 @@ def test_generic_title_strips_filler_and_does_not_double_tracker():
 
 def test_every_template_validates():
     prompts = [
-        "workout", "calorie", "budget", "todo", "reading", "habit", "mood",
+        "workout",
+        "calorie",
+        "budget",
+        "todo",
+        "reading",
+        "habit",
+        "mood",
         "random thing",
     ]
     for p in prompts:
@@ -49,6 +54,7 @@ def test_every_template_validates():
 
 def test_all_v2_templates_validate():
     from src.stub_templates import _ROUTES_V2, _finalize
+
     builders = {b for _, b in _ROUTES_V2}
     assert len(builders) >= 50  # at least 50 new templates
     for b in builders:
@@ -58,12 +64,22 @@ def test_all_v2_templates_validate():
 def test_v2_templates_use_varied_formats():
     """The new templates must use more than plain stacked fields."""
     from src.stub_templates import _ROUTES_V2, _finalize
+
     used = set()
     for _, b in _ROUTES_V2:
         for c in _finalize(b())["components"]:
             used.add(c["type"])
     # Distinct, non-rectangular formats are represented.
-    for fmt in ["kanban", "heatmap", "gauge", "checklist", "gallery", "note", "section", "timeline"]:
+    for fmt in [
+        "kanban",
+        "heatmap",
+        "gauge",
+        "checklist",
+        "gallery",
+        "note",
+        "section",
+        "timeline",
+    ]:
         assert fmt in used, f"expected {fmt} in the new templates"
 
 

@@ -6,6 +6,7 @@ components were produced. The render/SSIM/VLM-match signals are added in Phase 2
 behind TRUS_CAPTURE_VERIFY (see the plan); the weighting is kept here so the
 Phase-2 upgrade is a localized change.
 """
+
 from __future__ import annotations
 
 import os
@@ -24,7 +25,12 @@ def conf_threshold() -> float:
 
 
 def verify_enabled() -> bool:
-    return os.environ.get("TRUS_CAPTURE_VERIFY", "off").strip().lower() in ("on", "1", "true", "yes")
+    return os.environ.get("TRUS_CAPTURE_VERIFY", "off").strip().lower() in (
+        "on",
+        "1",
+        "true",
+        "yes",
+    )
 
 
 def assess(ir: CaptureIR, config: ModuleConfig) -> dict:
@@ -40,8 +46,10 @@ def assess(ir: CaptureIR, config: ModuleConfig) -> dict:
 
     # MVP value: coverage dominates; a small base credits a valid, non-empty config.
     value = 0.0 if no_components else round(0.15 + 0.85 * element_coverage, 4)
-    quality = "high" if (element_coverage >= 1.0 and not no_components) else (
-        "low" if value < conf_threshold() else "medium"
+    quality = (
+        "high"
+        if (element_coverage >= 1.0 and not no_components)
+        else ("low" if value < conf_threshold() else "medium")
     )
     return {
         "value": value,

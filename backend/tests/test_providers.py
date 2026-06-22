@@ -1,14 +1,19 @@
 """Tests for the LLM provider abstraction (gemini / openai-compatible / stub)."""
+
 import json
 
 import pytest
-
 from src import llm
 from src.schema import LLMError
 
 _VARS = (
-    "TRUS_LLM_PROVIDER", "TRUS_LLM_BASE_URL", "TRUS_LLM_MODEL", "TRUS_LLM_API_KEY",
-    "GEMINI_API_KEY", "TRUS_LLM_JSON_MODE", "TRUS_LLM_CASCADE",
+    "TRUS_LLM_PROVIDER",
+    "TRUS_LLM_BASE_URL",
+    "TRUS_LLM_MODEL",
+    "TRUS_LLM_API_KEY",
+    "GEMINI_API_KEY",
+    "TRUS_LLM_JSON_MODE",
+    "TRUS_LLM_CASCADE",
 )
 
 
@@ -160,7 +165,6 @@ def test_status_endpoint(monkeypatch):
     _clear(monkeypatch)
     monkeypatch.setenv("TRUS_LLM_PROVIDER", "stub")
     from fastapi.testclient import TestClient
-
     from src.main import app
 
     with TestClient(app) as c:

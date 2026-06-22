@@ -4,6 +4,7 @@ A deterministic type pre-map (open IR `ui_type` → the 31 closed trusted types)
 plus an LLM assembly step, then a capability-coverage check that is the
 "lose-no-feature" guard.
 """
+
 from __future__ import annotations
 
 import json
@@ -92,8 +93,30 @@ def _parse_config(raw: str) -> ModuleConfig:
     return _coerce(data)
 
 
-_STOP = {"a", "an", "the", "of", "to", "and", "or", "for", "your", "my", "see", "view",
-         "add", "log", "track", "with", "in", "on", "per", "by", "switch", "between"}
+_STOP = {
+    "a",
+    "an",
+    "the",
+    "of",
+    "to",
+    "and",
+    "or",
+    "for",
+    "your",
+    "my",
+    "see",
+    "view",
+    "add",
+    "log",
+    "track",
+    "with",
+    "in",
+    "on",
+    "per",
+    "by",
+    "switch",
+    "between",
+}
 
 
 def _words(text: str) -> set[str]:
@@ -108,11 +131,15 @@ def coverage(capabilities: list[str], config: ModuleConfig) -> tuple[float, list
         return 1.0, []
     haystacks: list[set[str]] = []
     for c in config.components:
-        text = " ".join(str(x) for x in [
-            getattr(c, "label", ""), getattr(c, "id", ""),
-            " ".join(getattr(c, "columns", []) or []),
-            " ".join(getattr(c, "options", []) or []),
-        ])
+        text = " ".join(
+            str(x)
+            for x in [
+                getattr(c, "label", ""),
+                getattr(c, "id", ""),
+                " ".join(getattr(c, "columns", []) or []),
+                " ".join(getattr(c, "options", []) or []),
+            ]
+        )
         haystacks.append(_words(text))
     uncovered: list[str] = []
     for cap in capabilities:
@@ -146,7 +173,9 @@ def _apply_design_layer(config: ModuleConfig, ir: CaptureIR, match_colors: bool)
 def _type_hints(ir: CaptureIR) -> str:
     lines = []
     for n in ir.nodes:
-        lines.append(f"- {n.id} ({n.ui_type or n.role or 'element'}) → {map_ui_type(n.ui_type, n.role)}: \"{n.label}\"")
+        lines.append(
+            f'- {n.id} ({n.ui_type or n.role or "element"}) → {map_ui_type(n.ui_type, n.role)}: "{n.label}"'
+        )
     return "\n".join(lines)
 
 
@@ -156,13 +185,15 @@ def transform_ir(ir: CaptureIR, *, match_colors: bool = False) -> tuple[ModuleCo
     theme_note = (
         "The user opted to MATCH SOURCE COLORS: set `theme_opt_in: true` and put the source accent "
         f"('{ir.accent_hint() or 'pick the closest'}') into `accent`."
-        if match_colors else
-        "Do NOT match source colors: leave `theme_opt_in: false` (Trus brand default)."
+        if match_colors
+        else "Do NOT match source colors: leave `theme_opt_in: false` (Trus brand default)."
     )
     user = (
         f"Captured IR:\n{json.dumps(ir.model_dump(by_alias=True), ensure_ascii=False)[:9000]}\n\n"
         f"Type hints (IR node → trusted component):\n{_type_hints(ir)}\n\n"
-        f"Capabilities that MUST each be served by ≥1 component:\n- " + "\n- ".join(ir.capabilities) + "\n\n"
+        f"Capabilities that MUST each be served by ≥1 component:\n- "
+        + "\n- ".join(ir.capabilities)
+        + "\n\n"
         f"{theme_note}\n\nReturn the ModuleConfig JSON."
     )
 
@@ -172,7 +203,9 @@ def transform_ir(ir: CaptureIR, *, match_colors: bool = False) -> tuple[ModuleCo
         try:
             raw = llm.generate(
                 user if attempt == 0 else user + "\n\nReturn ONLY valid ModuleConfig JSON.",
-                system=system, schema=ModuleConfig.model_json_schema(), expect_array=False,
+                system=system,
+                schema=ModuleConfig.model_json_schema(),
+                expect_array=False,
             )
             config = _parse_config(raw)
             break

@@ -1,24 +1,33 @@
 import json
+from contextlib import contextmanager
 from unittest.mock import patch
 
 import pytest
-
 from src.schema import RefusalError
 from src.services import orchestrator
 
+VALID = json.dumps(
+    {
+        "title": "Workout Log",
+        "components": [
+            {"id": "exercise", "type": "text_input", "label": "Exercise"},
+            {"id": "reps", "type": "number_input", "label": "Reps", "min": 0, "step": 1},
+        ],
+        "state": {},
+    }
+)
 
-VALID = json.dumps({
-    "title": "Workout Log",
-    "components": [
-        {"id": "exercise", "type": "text_input", "label": "Exercise"},
-        {"id": "reps", "type": "number_input", "label": "Reps", "min": 0, "step": 1},
-    ],
-    "state": {},
-})
 
-
+@contextmanager
 def _fake_llm(text: str):
-    return patch("src.services.orchestrator.llm.generate", return_value=text)
+    """Exercise the orchestrator's real (non-stub) path with llm.generate mocked.
+    Without forcing non-stub, generate_modules/refine_module short-circuit to
+    stub templates and never call the mock."""
+    with (
+        patch("src.services.orchestrator.llm.is_stub_mode", return_value=False),
+        patch("src.services.orchestrator.llm.generate", return_value=text) as gen,
+    ):
+        yield gen
 
 
 def test_generate_module_returns_valid_config():
@@ -42,19 +51,19 @@ def test_generate_module_raises_refusal_on_explicit_refusal():
 
 
 def test_generate_module_raises_refusal_on_non_json():
-    with _fake_llm("sorry I can't do that"):
-        with pytest.raises(RefusalError):
-            orchestrator.generate_module("anything")
+    with _fake_llm("sorry I can't do that"), pytest.raises(RefusalError):
+        orchestrator.generate_module("anything")
 
 
 def test_generate_module_raises_refusal_on_unknown_component():
-    bogus = json.dumps({
-        "title": "Bad",
-        "components": [{"id": "x", "type": "magic_box", "label": "Magic"}],
-    })
-    with _fake_llm(bogus):
-        with pytest.raises(RefusalError):
-            orchestrator.generate_module("anything")
+    bogus = json.dumps(
+        {
+            "title": "Bad",
+            "components": [{"id": "x", "type": "magic_box", "label": "Magic"}],
+        }
+    )
+    with _fake_llm(bogus), pytest.raises(RefusalError):
+        orchestrator.generate_module("anything")
 
 
 def test_generate_module_through_real_stub(monkeypatch):
@@ -68,8 +77,10 @@ def test_generate_module_through_real_stub(monkeypatch):
 
 # --- refine_module tests ---
 
+
 def _make_config() -> "orchestrator.ModuleConfig":
-    from src.schema import ModuleConfig, TextInput, NumberInput
+    from src.schema import ModuleConfig, NumberInput, TextInput
+
     return ModuleConfig(
         title="Workout Log",
         components=[
@@ -80,15 +91,17 @@ def _make_config() -> "orchestrator.ModuleConfig":
     )
 
 
-REFINED = json.dumps({
-    "title": "Workout Log",
-    "components": [
-        {"id": "exercise", "type": "text_input", "label": "Exercise"},
-        {"id": "reps", "type": "number_input", "label": "Reps", "min": 0, "step": 1},
-        {"id": "rest_day", "type": "checkbox", "label": "Rest day"},
-    ],
-    "state": {"reps": 10},
-})
+REFINED = json.dumps(
+    {
+        "title": "Workout Log",
+        "components": [
+            {"id": "exercise", "type": "text_input", "label": "Exercise"},
+            {"id": "reps", "type": "number_input", "label": "Reps", "min": 0, "step": 1},
+            {"id": "rest_day", "type": "checkbox", "label": "Rest day"},
+        ],
+        "state": {"reps": 10},
+    }
+)
 
 
 def test_refine_module_returns_updated_config():
@@ -105,9 +118,8 @@ def test_refine_module_raises_refusal_on_explicit_refusal():
 
 
 def test_refine_module_raises_refusal_on_non_json():
-    with _fake_llm("I cannot do that"):
-        with pytest.raises(RefusalError):
-            orchestrator.refine_module(_make_config(), "anything")
+    with _fake_llm("I cannot do that"), pytest.raises(RefusalError):
+        orchestrator.refine_module(_make_config(), "anything")
 
 
 def test_refine_module_stub_returns_config_unchanged(monkeypatch):
@@ -120,8 +132,10 @@ def test_refine_module_stub_returns_config_unchanged(monkeypatch):
 
 # --- context injection tests ---
 
+
 def test_generate_module_includes_existing_context():
     from src.schema import ModuleConfig, TextInput
+
     existing = [ModuleConfig(title="Meal Log", components=[TextInput(id="meal", label="Meal")])]
     with _fake_llm(VALID) as mock_gen:
         orchestrator.generate_module("add a dashboard", existing_modules=existing)
@@ -132,22 +146,32 @@ def test_generate_module_includes_existing_context():
 
 def test_refine_module_includes_existing_context():
     from src.schema import ModuleConfig, TextInput
+
     existing = [ModuleConfig(title="Meal Log", components=[TextInput(id="meal", label="Meal")])]
     with _fake_llm(VALID) as mock_gen:
-        orchestrator.refine_module(_make_config(), "add cross-module binding", existing_modules=existing)
+        orchestrator.refine_module(
+            _make_config(), "add cross-module binding", existing_modules=existing
+        )
     prompt_used = mock_gen.call_args[0][0]
     assert "Meal Log" in prompt_used
 
 
 # --- synthesize_workspace tests ---
 
-DASHBOARD_RAW = json.dumps({
-    "title": "Dashboard",
-    "components": [
-        {"id": "total_reps", "type": "metric", "label": "Total Reps",
-         "formula": "sum", "source_component_id": "reps"},
-    ],
-})
+DASHBOARD_RAW = json.dumps(
+    {
+        "title": "Dashboard",
+        "components": [
+            {
+                "id": "total_reps",
+                "type": "metric",
+                "label": "Total Reps",
+                "formula": "sum",
+                "source_component_id": "reps",
+            },
+        ],
+    }
+)
 
 
 def test_synthesize_workspace_returns_dashboard():
@@ -166,8 +190,10 @@ def test_synthesize_workspace_stub_returns_stub_module(monkeypatch):
 
 # --- metric schema validation ---
 
+
 def test_metric_component_roundtrips():
-    from src.schema import ModuleConfig, Metric
+    from src.schema import Metric, ModuleConfig
+
     config = ModuleConfig(
         title="Stats",
         components=[Metric(id="total", label="Total", formula="sum", source_component_id="reps")],
@@ -179,8 +205,10 @@ def test_metric_component_roundtrips():
 
 # --- clarifying question tests ---
 
+
 def test_generate_module_raises_clarifying_question():
     from src.schema import ClarifyingQuestion
+
     with _fake_llm('{"question": "How many meals per day do you track?"}'):
         with pytest.raises(ClarifyingQuestion) as exc:
             orchestrator.generate_module("track my food")

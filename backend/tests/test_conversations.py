@@ -3,16 +3,17 @@ from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
-
 from src import db
 from src.main import app
 
-VALID_RAW = json.dumps({
-    "title": "Workout Log",
-    "icon": "🏋️",
-    "accent": "emerald",
-    "components": [{"id": "exercise", "type": "text_input", "label": "Exercise"}],
-})
+VALID_RAW = json.dumps(
+    {
+        "title": "Workout Log",
+        "icon": "🏋️",
+        "accent": "emerald",
+        "components": [{"id": "exercise", "type": "text_input", "label": "Exercise"}],
+    }
+)
 
 
 @pytest.fixture
@@ -22,6 +23,7 @@ def client():
 
 
 # --- db-level ---
+
 
 def test_add_and_list_messages_in_order():
     db.init_db()
@@ -56,13 +58,14 @@ def test_clear_messages_for_page_only():
 
 # --- route-level ---
 
+
 def test_generate_logs_a_conversation_turn(client):
     with patch("src.services.orchestrator.llm.generate", return_value=VALID_RAW):
         client.post("/api/modules/generate", json={"prompt": "track my workouts"})
     convo = client.get("/api/conversations").json()
     roles = [m["role"] for m in convo]
     assert "user" in roles and "assistant" in roles
-    assert any("track my workouts" == m["text"] for m in convo)
+    assert any(m["text"] == "track my workouts" for m in convo)
 
 
 def test_clear_conversation_endpoint(client):

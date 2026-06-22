@@ -1,11 +1,18 @@
 """Tests for the semantic cache / self-growing template library."""
+
 import json
 import math
 
 from src import semantic_cache as sc
 
-_VARS = ("TRUS_CACHE", "TRUS_CACHE_THRESHOLD", "TRUS_CACHE_SEED_THRESHOLD",
-         "TRUS_EMBED_BASE_URL", "TRUS_EMBED_MODEL", "TRUS_EMBED_API_KEY")
+_VARS = (
+    "TRUS_CACHE",
+    "TRUS_CACHE_THRESHOLD",
+    "TRUS_CACHE_SEED_THRESHOLD",
+    "TRUS_EMBED_BASE_URL",
+    "TRUS_EMBED_MODEL",
+    "TRUS_EMBED_API_KEY",
+)
 
 
 def _clear(monkeypatch):
@@ -17,10 +24,10 @@ def test_embed_deterministic_and_case_insensitive(monkeypatch):
     _clear(monkeypatch)
     a = sc.embed("Track My Workouts")
     b = sc.embed("track my workouts")
-    assert a == b                                   # normalise lowercases
+    assert a == b  # normalise lowercases
     assert sc.embed("hello world") == sc.embed("hello world")  # stable across calls
     n = math.sqrt(sum(x * x for x in a))
-    assert abs(n - 1.0) < 1e-6                       # L2-normalised
+    assert abs(n - 1.0) < 1e-6  # L2-normalised
 
 
 def test_store_and_exact_hit(monkeypatch):
@@ -81,9 +88,14 @@ def test_generate_modules_cache_hit_skips_model(monkeypatch):
 
     def fake_generate(prompt, system=None, *, schema=None, expect_array=False):
         calls["n"] += 1
-        return json.dumps([
-            {"title": "Cached Tool", "components": [{"id": "a", "type": "text_input", "label": "A"}]},
-        ])
+        return json.dumps(
+            [
+                {
+                    "title": "Cached Tool",
+                    "components": [{"id": "a", "type": "text_input", "label": "A"}],
+                },
+            ]
+        )
 
     monkeypatch.setattr(orchestrator.llm, "generate", fake_generate)
 

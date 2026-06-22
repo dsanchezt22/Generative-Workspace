@@ -4,6 +4,7 @@ Orchestrates CAPTURE (image → IR) → TRANSFORM (IR → ModuleConfig) → asse
 render-and-verify loop + Gemini escalation are added in Phase 2 (see verify.py /
 the plan); this MVP runs the two stages and the capability-coverage gate.
 """
+
 from __future__ import annotations
 
 from src import llm
@@ -13,8 +14,9 @@ from . import verify as verify_stage
 from .transform import transform_ir
 
 
-def capture_to_layout(data: bytes, mime: str, use_case_hint: str | None = None,
-                      *, match_colors: bool = False) -> dict:
+def capture_to_layout(
+    data: bytes, mime: str, use_case_hint: str | None = None, *, match_colors: bool = False
+) -> dict:
     """Full Phase-1 pipeline. Returns:
         { label, inspired_by, config (dict), capture_meta, confidence,
           ir_digest, structured_text }

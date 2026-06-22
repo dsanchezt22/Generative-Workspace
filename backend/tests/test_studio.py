@@ -1,7 +1,7 @@
 """Tests for the Layout Studio (use-case catalog, generation, library, promote)."""
+
 import pytest
 from fastapi.testclient import TestClient
-
 from src.main import app
 
 
@@ -75,23 +75,28 @@ _PNG = b"\x89PNG\r\n\x1a\n"  # minimal header — bytes are irrelevant when visi
 
 def test_import_without_vision_model_returns_503(client):
     # No TRUS_VISION_MODEL configured (conftest clears it) → 503.
-    r = client.post("/api/studio/use-cases/calorie/import",
-                    files={"file": ("ui.png", _PNG, "image/png")})
+    r = client.post(
+        "/api/studio/use-cases/calorie/import", files={"file": ("ui.png", _PNG, "image/png")}
+    )
     assert r.status_code == 503
 
 
 def test_import_from_screenshot_stores_layout(client, monkeypatch):
     from src.services import studio
+
     monkeypatch.setenv("TRUS_VISION_MODEL", "fake-vlm")
 
     def fake_vision(system, user_text, data, mime):
-        return ('{"title":"Imported Nutrition","components":'
-                '[{"id":"diary","type":"table","label":"Food log","columns":["Food","Cal"]},'
-                '{"id":"cals","type":"ring","label":"Calories","max":2000}]}')
+        return (
+            '{"title":"Imported Nutrition","components":'
+            '[{"id":"diary","type":"table","label":"Food log","columns":["Food","Cal"]},'
+            '{"id":"cals","type":"ring","label":"Calories","max":2000}]}'
+        )
 
     monkeypatch.setattr(studio.llm, "vision_describe", fake_vision)
-    r = client.post("/api/studio/use-cases/calorie/import",
-                    files={"file": ("ui.png", _PNG, "image/png")})
+    r = client.post(
+        "/api/studio/use-cases/calorie/import", files={"file": ("ui.png", _PNG, "image/png")}
+    )
     assert r.status_code == 200
     ly = r.json()
     assert ly["use_case"] == "calorie"
@@ -104,6 +109,8 @@ def test_import_from_screenshot_stores_layout(client, monkeypatch):
 
 def test_import_rejects_non_image(client, monkeypatch):
     monkeypatch.setenv("TRUS_VISION_MODEL", "fake-vlm")
-    r = client.post("/api/studio/use-cases/calorie/import",
-                    files={"file": ("notes.txt", b"hello", "text/plain")})
+    r = client.post(
+        "/api/studio/use-cases/calorie/import",
+        files={"file": ("notes.txt", b"hello", "text/plain")},
+    )
     assert r.status_code == 422

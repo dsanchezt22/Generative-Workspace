@@ -1,15 +1,23 @@
 import json
+from contextlib import contextmanager
 from unittest.mock import patch
 
 import pytest
-
 from src.schema import ClarifyingQuestion, RefusalError
 from src.services import orchestrator
 from src.stub_templates import pick_system
 
 
+@contextmanager
 def _fake_llm(text: str):
-    return patch("src.services.orchestrator.llm.generate", return_value=text)
+    """Exercise the orchestrator's real (non-stub) path with llm.generate mocked.
+    Without forcing non-stub, generate_modules short-circuits to stub templates
+    and never calls the mock."""
+    with (
+        patch("src.services.orchestrator.llm.is_stub_mode", return_value=False),
+        patch("src.services.orchestrator.llm.generate", return_value=text) as gen,
+    ):
+        yield gen
 
 
 def test_pick_system_broad_returns_multiple():
@@ -31,12 +39,22 @@ def test_generate_modules_stub_decomposes(monkeypatch):
 
 
 def test_generate_modules_parses_array():
-    arr = json.dumps([
-        {"title": "Itinerary", "icon": "🗓️", "accent": "sky",
-         "components": [{"id": "days", "type": "calendar", "label": "Days"}]},
-        {"title": "Budget", "icon": "💰", "accent": "amber",
-         "components": [{"id": "total", "type": "kpi", "label": "Total", "unit": "$"}]},
-    ])
+    arr = json.dumps(
+        [
+            {
+                "title": "Itinerary",
+                "icon": "🗓️",
+                "accent": "sky",
+                "components": [{"id": "days", "type": "calendar", "label": "Days"}],
+            },
+            {
+                "title": "Budget",
+                "icon": "💰",
+                "accent": "amber",
+                "components": [{"id": "total", "type": "kpi", "label": "Total", "unit": "$"}],
+            },
+        ]
+    )
     with _fake_llm(arr):
         mods = orchestrator.generate_modules("plan my trip")
     assert [m.title for m in mods] == ["Itinerary", "Budget"]
@@ -45,7 +63,12 @@ def test_generate_modules_parses_array():
 
 
 def test_generate_modules_wraps_single_object():
-    obj = json.dumps({"title": "Workout Log", "components": [{"id": "e", "type": "text_input", "label": "Exercise"}]})
+    obj = json.dumps(
+        {
+            "title": "Workout Log",
+            "components": [{"id": "e", "type": "text_input", "label": "Exercise"}],
+        }
+    )
     with _fake_llm(obj):
         mods = orchestrator.generate_modules("track workouts")
     assert len(mods) == 1
@@ -53,28 +76,38 @@ def test_generate_modules_wraps_single_object():
 
 
 def test_generate_modules_refusal():
-    with _fake_llm('{"refusal": "Out of scope."}'):
-        with pytest.raises(RefusalError):
-            orchestrator.generate_modules("do something illicit")
+    with _fake_llm('{"refusal": "Out of scope."}'), pytest.raises(RefusalError):
+        orchestrator.generate_modules("do something illicit")
 
 
 def test_generate_modules_question():
-    with _fake_llm('{"question": "Which city?"}'):
-        with pytest.raises(ClarifyingQuestion):
-            orchestrator.generate_modules("plan a trip")
+    with _fake_llm('{"question": "Which city?"}'), pytest.raises(ClarifyingQuestion):
+        orchestrator.generate_modules("plan a trip")
 
 
 def test_new_component_types_validate():
     from src.schema import ModuleConfig
-    cfg = ModuleConfig.model_validate({
-        "title": "Everything", "components": [
-            {"id": "r", "type": "rating", "label": "Rating", "max": 5},
-            {"id": "tg", "type": "tags", "label": "Tags"},
-            {"id": "k", "type": "kpi", "label": "Total", "unit": "$"},
-            {"id": "d", "type": "date", "label": "When"},
-            {"id": "tb", "type": "table", "label": "Grid", "columns": ["A", "B"]},
-            {"id": "c", "type": "calendar", "label": "Days"},
-            {"id": "ch", "type": "chart", "label": "Trend", "chart_type": "line"},
-        ],
-    })
-    assert [c.type for c in cfg.components] == ["rating", "tags", "kpi", "date", "table", "calendar", "chart"]
+
+    cfg = ModuleConfig.model_validate(
+        {
+            "title": "Everything",
+            "components": [
+                {"id": "r", "type": "rating", "label": "Rating", "max": 5},
+                {"id": "tg", "type": "tags", "label": "Tags"},
+                {"id": "k", "type": "kpi", "label": "Total", "unit": "$"},
+                {"id": "d", "type": "date", "label": "When"},
+                {"id": "tb", "type": "table", "label": "Grid", "columns": ["A", "B"]},
+                {"id": "c", "type": "calendar", "label": "Days"},
+                {"id": "ch", "type": "chart", "label": "Trend", "chart_type": "line"},
+            ],
+        }
+    )
+    assert [c.type for c in cfg.components] == [
+        "rating",
+        "tags",
+        "kpi",
+        "date",
+        "table",
+        "calendar",
+        "chart",
+    ]

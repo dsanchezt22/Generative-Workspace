@@ -6,6 +6,7 @@ a 7B/VLM to emit as valid JSON in one shot). It captures all five fidelity axes
 so nothing is lost before the lossy down-map to ModuleConfig. The raw image is
 never persisted; only a compact digest of this IR is stored.
 """
+
 from __future__ import annotations
 
 import json
@@ -20,13 +21,13 @@ class IRNode(BaseModel):
 
     id: str
     parent: str | None = None
-    role: str = ""                       # AX/ARIA open vocab (region, button, list, table, heading…)
-    ui_type: str = ""                    # OPEN semantic type — down-mapped later
+    role: str = ""  # AX/ARIA open vocab (region, button, list, table, heading…)
+    ui_type: str = ""  # OPEN semantic type — down-mapped later
     label: str = ""
-    bbox: list[float] = Field(default_factory=list)   # normalized [x,y,w,h] 0..1
+    bbox: list[float] = Field(default_factory=list)  # normalized [x,y,w,h] 0..1
     content: dict[str, Any] = Field(default_factory=dict)  # {text,value,unit,series}
-    options: list[str] | None = None     # selects/chips/tabs
-    columns: list[str] | None = None     # tables/boards
+    options: list[str] | None = None  # selects/chips/tabs
+    columns: list[str] | None = None  # tables/boards
     state: dict[str, Any] = Field(default_factory=dict)
     interactions: list[dict[str, Any]] = Field(default_factory=list)
     confidence: float = 0.5
@@ -38,8 +39,8 @@ class CaptureIR(BaseModel):
     schema_: str = Field(default="trus-capture-ir/1", alias="schema")
     viewport: dict[str, Any] = Field(default_factory=dict)
     summary: str = ""
-    app_kind: str = ""                   # free text → use-case routing + metadata
-    tokens: dict[str, Any] = Field(default_factory=dict)   # design-token sidecar
+    app_kind: str = ""  # free text → use-case routing + metadata
+    tokens: dict[str, Any] = Field(default_factory=dict)  # design-token sidecar
     nodes: list[IRNode] = Field(default_factory=list)
     capabilities: list[str] = Field(default_factory=list)  # the "lose-no-feature" contract
 
@@ -61,7 +62,9 @@ class CaptureIR(BaseModel):
                 if isinstance(v, str) and v.strip():
                     return v.strip()
         token_accent = self.tokens.get("accent") if isinstance(self.tokens, dict) else None
-        return token_accent.strip() if isinstance(token_accent, str) and token_accent.strip() else None
+        return (
+            token_accent.strip() if isinstance(token_accent, str) and token_accent.strip() else None
+        )
 
     def density_hint(self) -> str | None:
         space = self.tokens.get("space") if isinstance(self.tokens, dict) else None
@@ -117,7 +120,7 @@ def _strip_codefence(text: str) -> str:
     if s.startswith("```"):
         s = s.split("\n", 1)[-1] if "\n" in s else s
         if s.endswith("```"):
-            s = s[: -3]
+            s = s[:-3]
         # drop a leading "json" language tag if present
         if s.lstrip().lower().startswith("json"):
             s = s.lstrip()[4:]

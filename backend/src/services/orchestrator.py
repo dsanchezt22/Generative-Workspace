@@ -3,6 +3,7 @@
 The orchestrator never returns UI code. It returns a structured ModuleConfig
 that the frontend renders with its trusted component library.
 """
+
 from __future__ import annotations
 
 import json
@@ -36,6 +37,7 @@ def _retry_count() -> int:
         return max(0, int(os.environ.get("TRUS_LLM_MAX_RETRIES", "1")))
     except ValueError:
         return 1
+
 
 _COMPONENT_DOCS = """Available component types (use exactly these "type" values):
 - text_input   — free-text field.   Fields: id, label, type, placeholder?
@@ -186,7 +188,10 @@ def _module_context(modules: list[ModuleConfig]) -> str:
     if not modules:
         return ""
     lines = [f"- {m.title}: {', '.join(c.id for c in m.components)}" for m in modules]
-    return "\n\nExisting modules on canvas (reference their component ids for cross-module bindings):\n" + "\n".join(lines)
+    return (
+        "\n\nExisting modules on canvas (reference their component ids for cross-module bindings):\n"
+        + "\n".join(lines)
+    )
 
 
 def _seeded_prompt(prompt: str, existing_modules: list[ModuleConfig] | None = None) -> str:
@@ -222,8 +227,9 @@ def _parse_module_config(raw: str) -> ModuleConfig:
         raise _InvalidOutput(f"invalid ModuleConfig: {e.errors()[0]['msg']}") from e
 
 
-def _generate_validated(user: str, system: str, parse, *, schema: dict | None = None,
-                        expect_array: bool = False):
+def _generate_validated(
+    user: str, system: str, parse, *, schema: dict | None = None, expect_array: bool = False
+):
     """Generate, parse, and retry once on unparseable output. Explicit refusals
     and clarifying questions propagate immediately (they are not model slips)."""
     last: Exception | None = None
@@ -242,7 +248,9 @@ def generate_module(
     existing_modules: list[ModuleConfig] | None = None,
 ) -> ModuleConfig:
     return _generate_validated(
-        _seeded_prompt(prompt, existing_modules), SYSTEM_PROMPT, _parse_module_config,
+        _seeded_prompt(prompt, existing_modules),
+        SYSTEM_PROMPT,
+        _parse_module_config,
         schema=_MODULE_SCHEMA,
     )
 
@@ -282,8 +290,11 @@ Rules:
 """
 
 
-def _seeded_system(prompt: str, existing_modules: list[ModuleConfig] | None = None,
-                   seed_override: list | None = None) -> str:
+def _seeded_system(
+    prompt: str,
+    existing_modules: list[ModuleConfig] | None = None,
+    seed_override: list | None = None,
+) -> str:
     from src.stub_templates import pick_system
 
     # seed_override (the nearest past generation from the semantic cache) makes the
@@ -337,6 +348,7 @@ def generate_modules(
     """Decompose a request into the set of tools it needs (1-6 modules)."""
     if llm.is_stub_mode():
         from src.stub_templates import pick_system
+
         return [ModuleConfig.model_validate(c) for c in pick_system(prompt)]
     from src import semantic_cache
 
@@ -350,7 +362,9 @@ def generate_modules(
             pass  # stale/incompatible cache entry → fall through and regenerate
     result = _generate_validated(
         _seeded_system(prompt, existing_modules, seed_override=cached if mode == "seed" else None),
-        DECOMPOSE_SYSTEM_PROMPT, _parse_modules, expect_array=True,
+        DECOMPOSE_SYSTEM_PROMPT,
+        _parse_modules,
+        expect_array=True,
     )
     semantic_cache.store("system", prompt, [m.model_dump(mode="json") for m in result])
     return result
@@ -365,6 +379,7 @@ def generate_modules_from_file(
     """Build tools shaped around an uploaded document/image (Gemini multimodal)."""
     if llm.is_stub_mode():
         from src.stub_templates import pick_system
+
         return [ModuleConfig.model_validate(c) for c in pick_system(prompt)]
     user_message = (
         _seeded_system(prompt, existing_modules)
@@ -378,6 +393,7 @@ def generate_modules_from_file(
         # A provider that can't read this file type returns "{}" — fall back to templates.
         if not raw or raw.strip() in ("{}", ""):
             from src.stub_templates import pick_system
+
             return [ModuleConfig.model_validate(c) for c in pick_system(prompt)]
         try:
             return _parse_modules(raw)
@@ -401,19 +417,25 @@ def refine_module(
         f"{context}\n\n"
         f"Return the updated ModuleConfig JSON."
     )
-    return _generate_validated(user_message, REFINE_SYSTEM_PROMPT, _parse_module_config,
-                              schema=_MODULE_SCHEMA)
+    return _generate_validated(
+        user_message, REFINE_SYSTEM_PROMPT, _parse_module_config, schema=_MODULE_SCHEMA
+    )
 
 
 def synthesize_workspace(modules: list[ModuleConfig]) -> ModuleConfig:
     """Generate a dashboard module that aggregates values across all session modules."""
     if llm.is_stub_mode():
         from src.schema import Metric
+
         return ModuleConfig(
             title="Dashboard",
             components=[
-                Metric(id="total_metric", label="Total (stub)", formula="sum",
-                       source_component_id="value"),
+                Metric(
+                    id="total_metric",
+                    label="Total (stub)",
+                    formula="sum",
+                    source_component_id="value",
+                ),
             ],
         )
     summaries = json.dumps([m.model_dump() for m in modules])
@@ -422,5 +444,6 @@ def synthesize_workspace(modules: list[ModuleConfig]) -> ModuleConfig:
         f"Generate a dashboard ModuleConfig that surfaces the most important "
         f"cross-module insights using metric and progress_bar components."
     )
-    return _generate_validated(user_message, SYNTHESIZE_SYSTEM_PROMPT, _parse_module_config,
-                              schema=_MODULE_SCHEMA)
+    return _generate_validated(
+        user_message, SYNTHESIZE_SYSTEM_PROMPT, _parse_module_config, schema=_MODULE_SCHEMA
+    )

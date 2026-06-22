@@ -1,14 +1,15 @@
 """Thin SQLite layer. Stdlib only — no SQLAlchemy until we outgrow this."""
+
 from __future__ import annotations
 
 import json
 import os
 import sqlite3
 import uuid
+from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterator
 
 from src.schema import Message, ModuleConfig, ModuleVersion, Page, Snapshot, StoredModule
 
@@ -132,7 +133,9 @@ def _migrate(conn: sqlite3.Connection) -> None:
     """Idempotent column/index additions for databases created before a schema change."""
     cols = {r[1] for r in conn.execute("PRAGMA table_info(modules)").fetchall()}
     if "page_id" not in cols:
-        conn.execute("ALTER TABLE modules ADD COLUMN page_id TEXT REFERENCES pages(id) ON DELETE CASCADE")
+        conn.execute(
+            "ALTER TABLE modules ADD COLUMN page_id TEXT REFERENCES pages(id) ON DELETE CASCADE"
+        )
     if "archived" not in cols:
         conn.execute("ALTER TABLE modules ADD COLUMN archived INTEGER NOT NULL DEFAULT 0")
     # Create the page index after the column is guaranteed to exist.
@@ -176,7 +179,9 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _record_version(c: sqlite3.Connection, module_id: str, session_id: str, config_json: str, when: str) -> None:
+def _record_version(
+    c: sqlite3.Connection, module_id: str, session_id: str, config_json: str, when: str
+) -> None:
     """Append a history snapshot, skipping no-op duplicates of the latest one."""
     latest = c.execute(
         "SELECT config_json FROM module_versions WHERE module_id = ? ORDER BY seq DESC LIMIT 1",
@@ -210,8 +215,15 @@ _PAGE_COLS = "id, name, icon, parent_id, position, created_at"
 
 
 def _page_from_row(r, session_id: str) -> Page:
-    return Page(id=r["id"], name=r["name"], icon=r["icon"], parent_id=r["parent_id"],
-                position=r["position"], session_id=session_id, created_at=r["created_at"])
+    return Page(
+        id=r["id"],
+        name=r["name"],
+        icon=r["icon"],
+        parent_id=r["parent_id"],
+        position=r["position"],
+        session_id=session_id,
+        created_at=r["created_at"],
+    )
 
 
 def ensure_default_page(session_id: str) -> Page:
@@ -229,7 +241,9 @@ def ensure_default_page(session_id: str) -> Page:
             "INSERT INTO pages (id, session_id, name, icon, position, created_at) VALUES (?, ?, ?, ?, ?, ?)",
             (page_id, session_id, "Main", "🏠", 0, now),
         )
-    return Page(id=page_id, name="Main", icon="🏠", position=0, session_id=session_id, created_at=now)
+    return Page(
+        id=page_id, name="Main", icon="🏠", position=0, session_id=session_id, created_at=now
+    )
 
 
 def list_pages(session_id: str) -> list[Page]:
@@ -241,7 +255,9 @@ def list_pages(session_id: str) -> list[Page]:
     return [_page_from_row(r, session_id) for r in rows]
 
 
-def create_page(session_id: str, name: str, icon: str | None = None, parent_id: str | None = None) -> Page:
+def create_page(
+    session_id: str, name: str, icon: str | None = None, parent_id: str | None = None
+) -> Page:
     with _conn() as c:
         max_pos = c.execute(
             "SELECT COALESCE(MAX(position), -1) FROM pages WHERE session_id = ?",
@@ -255,26 +271,40 @@ def create_page(session_id: str, name: str, icon: str | None = None, parent_id: 
             "VALUES (?, ?, ?, ?, ?, ?, ?)",
             (page_id, session_id, name, icon, parent_id, position, now),
         )
-    return Page(id=page_id, name=name, icon=icon, parent_id=parent_id, position=position,
-                session_id=session_id, created_at=now)
+    return Page(
+        id=page_id,
+        name=name,
+        icon=icon,
+        parent_id=parent_id,
+        position=position,
+        session_id=session_id,
+        created_at=now,
+    )
 
 
 _UNSET = object()
 
 
-def update_page(session_id: str, page_id: str, name=_UNSET, icon=_UNSET, parent_id=_UNSET) -> Page | None:
+def update_page(
+    session_id: str, page_id: str, name=_UNSET, icon=_UNSET, parent_id=_UNSET
+) -> Page | None:
     sets, params = [], []
     if name is not _UNSET:
-        sets.append("name = ?"); params.append(name)
+        sets.append("name = ?")
+        params.append(name)
     if icon is not _UNSET:
-        sets.append("icon = ?"); params.append(icon)
+        sets.append("icon = ?")
+        params.append(icon)
     if parent_id is not _UNSET:
-        sets.append("parent_id = ?"); params.append(parent_id)
+        sets.append("parent_id = ?")
+        params.append(parent_id)
     if not sets:
         return get_page(session_id, page_id)
     params += [page_id, session_id]
     with _conn() as c:
-        cur = c.execute(f"UPDATE pages SET {', '.join(sets)} WHERE id = ? AND session_id = ?", params)
+        cur = c.execute(
+            f"UPDATE pages SET {', '.join(sets)} WHERE id = ? AND session_id = ?", params
+        )
         if cur.rowcount == 0:
             return None
         row = c.execute(f"SELECT {_PAGE_COLS} FROM pages WHERE id = ?", (page_id,)).fetchone()
@@ -292,7 +322,10 @@ def get_page(session_id: str, page_id: str) -> Page | None:
 def reorder_pages(session_id: str, ordered_ids: list[str]) -> list[Page]:
     with _conn() as c:
         for i, pid in enumerate(ordered_ids):
-            c.execute("UPDATE pages SET position = ? WHERE id = ? AND session_id = ?", (i, pid, session_id))
+            c.execute(
+                "UPDATE pages SET position = ? WHERE id = ? AND session_id = ?",
+                (i, pid, session_id),
+            )
     return list_pages(session_id)
 
 
@@ -309,9 +342,7 @@ def delete_page(session_id: str, page_id: str) -> bool:
         ).fetchone()[0]
         if count <= 1:
             return False
-        cur = c.execute(
-            "DELETE FROM pages WHERE id = ? AND session_id = ?", (page_id, session_id)
-        )
+        cur = c.execute("DELETE FROM pages WHERE id = ? AND session_id = ?", (page_id, session_id))
         return cur.rowcount > 0
 
 
@@ -319,7 +350,10 @@ def delete_page(session_id: str, page_id: str) -> bool:
 # Modules
 # ---------------------------------------------------------------------------
 
-def insert_module(session_id: str, config: ModuleConfig, page_id: str | None = None) -> StoredModule:
+
+def insert_module(
+    session_id: str, config: ModuleConfig, page_id: str | None = None
+) -> StoredModule:
     module_id = str(uuid.uuid4())
     now = _now()
     config_json = config.model_dump_json()
@@ -332,7 +366,9 @@ def insert_module(session_id: str, config: ModuleConfig, page_id: str | None = N
             (module_id, session_id, page_id, config_json, now, now),
         )
         _record_version(c, module_id, session_id, config_json, now)
-    return StoredModule(id=module_id, config=config, created_at=now, updated_at=now, page_id=page_id)
+    return StoredModule(
+        id=module_id, config=config, created_at=now, updated_at=now, page_id=page_id
+    )
 
 
 def _stored_from_row(r) -> StoredModule:
@@ -419,8 +455,14 @@ def update_module(session_id: str, module_id: str, config: ModuleConfig) -> Stor
         row = c.execute(
             "SELECT page_id, created_at, archived FROM modules WHERE id = ?", (module_id,)
         ).fetchone()
-    return StoredModule(id=module_id, config=config, created_at=row["created_at"], updated_at=now,
-                        page_id=row["page_id"], archived=bool(row["archived"]))
+    return StoredModule(
+        id=module_id,
+        config=config,
+        created_at=row["created_at"],
+        updated_at=now,
+        page_id=row["page_id"],
+        archived=bool(row["archived"]),
+    )
 
 
 def delete_module(session_id: str, module_id: str) -> bool:
@@ -454,6 +496,7 @@ def list_versions(session_id: str, module_id: str) -> list[ModuleVersion]:
 # Conversation log (the prompts that shaped a page)
 # ---------------------------------------------------------------------------
 
+
 def add_message(
     session_id: str,
     role: str,
@@ -469,8 +512,9 @@ def add_message(
             "VALUES (?, ?, ?, ?, ?, ?, ?)",
             (message_id, session_id, page_id, role, text, module_id, now),
         )
-    return Message(id=message_id, role=role, text=text, module_id=module_id,
-                   page_id=page_id, created_at=now)
+    return Message(
+        id=message_id, role=role, text=text, module_id=module_id, page_id=page_id, created_at=now
+    )
 
 
 def list_messages(session_id: str, page_id: str | None = None) -> list[Message]:
@@ -488,8 +532,14 @@ def list_messages(session_id: str, page_id: str | None = None) -> list[Message]:
                 (session_id,),
             ).fetchall()
     return [
-        Message(id=r["id"], page_id=r["page_id"], role=r["role"], text=r["text"],
-                module_id=r["module_id"], created_at=r["created_at"])
+        Message(
+            id=r["id"],
+            page_id=r["page_id"],
+            role=r["role"],
+            text=r["text"],
+            module_id=r["module_id"],
+            created_at=r["created_at"],
+        )
         for r in rows
     ]
 
@@ -497,6 +547,7 @@ def list_messages(session_id: str, page_id: str | None = None) -> list[Message]:
 # ---------------------------------------------------------------------------
 # Snapshots (point-in-time capture of a page)
 # ---------------------------------------------------------------------------
+
 
 def create_snapshot(session_id: str, page_id: str | None, label: str) -> Snapshot:
     mods = list_modules(session_id, page_id)
@@ -508,7 +559,9 @@ def create_snapshot(session_id: str, page_id: str | None, label: str) -> Snapsho
             "INSERT INTO snapshots (id, session_id, page_id, label, data_json, created_at) VALUES (?, ?, ?, ?, ?, ?)",
             (snap_id, session_id, page_id, label, data, now),
         )
-    return Snapshot(id=snap_id, page_id=page_id, label=label, module_count=len(mods), created_at=now)
+    return Snapshot(
+        id=snap_id, page_id=page_id, label=label, module_count=len(mods), created_at=now
+    )
 
 
 def list_snapshots(session_id: str, page_id: str | None = None) -> list[Snapshot]:
@@ -529,7 +582,15 @@ def list_snapshots(session_id: str, page_id: str | None = None) -> list[Snapshot
             count = len(json.loads(r["data_json"]))
         except Exception:
             count = 0
-        out.append(Snapshot(id=r["id"], page_id=r["page_id"], label=r["label"], module_count=count, created_at=r["created_at"]))
+        out.append(
+            Snapshot(
+                id=r["id"],
+                page_id=r["page_id"],
+                label=r["label"],
+                module_count=count,
+                created_at=r["created_at"],
+            )
+        )
     return out
 
 
@@ -556,7 +617,9 @@ def restore_snapshot(session_id: str, snapshot_id: str) -> bool:
 
 def delete_snapshot(session_id: str, snapshot_id: str) -> bool:
     with _conn() as c:
-        cur = c.execute("DELETE FROM snapshots WHERE id = ? AND session_id = ?", (snapshot_id, session_id))
+        cur = c.execute(
+            "DELETE FROM snapshots WHERE id = ? AND session_id = ?", (snapshot_id, session_id)
+        )
         return cur.rowcount > 0
 
 
@@ -604,6 +667,7 @@ def undo_module(session_id: str, module_id: str) -> StoredModule | None:
 
 # ── Generation cache / template library ──────────────────────────────────────
 
+
 def cache_rows(kind: str, limit: int = 1000) -> list[sqlite3.Row]:
     """Most-recent cache entries for a kind (small N → brute-force cosine upstream)."""
     with _conn() as c:
@@ -641,17 +705,27 @@ def cache_stats() -> dict:
 _LAYOUT_COLS = "id, use_case, label, inspired_by, config_json, created_at"
 
 
-def layout_add(use_case: str, label: str, inspired_by: str | None, config_json: str,
-               *, capture_meta_json: str | None = None, ir_digest_json: str | None = None,
-               confidence: float | None = None, embedding: str | None = None) -> str:
+def layout_add(
+    use_case: str,
+    label: str,
+    inspired_by: str | None,
+    config_json: str,
+    *,
+    capture_meta_json: str | None = None,
+    ir_digest_json: str | None = None,
+    confidence: float | None = None,
+    embedding: str | None = None,
+) -> str:
     """Insert a library layout. The capture_* fields are optional screenshot-capture
     metadata (None for non-vision layouts) — additive, so existing callers are unaffected."""
     lid = uuid.uuid4().hex
     cols = ["id", "use_case", "label", "inspired_by", "config_json", "created_at"]
     vals: list = [lid, use_case, label, inspired_by, config_json, _now()]
     for name, value in (
-        ("capture_meta_json", capture_meta_json), ("ir_digest_json", ir_digest_json),
-        ("confidence", confidence), ("embedding", embedding),
+        ("capture_meta_json", capture_meta_json),
+        ("ir_digest_json", ir_digest_json),
+        ("confidence", confidence),
+        ("embedding", embedding),
     ):
         if value is not None:
             cols.append(name)

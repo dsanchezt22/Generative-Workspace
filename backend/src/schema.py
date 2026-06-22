@@ -3,9 +3,10 @@
 The orchestrator emits a ModuleConfig — never raw UI code. The frontend renders
 this config using a trusted component library (Part II.4 of the design doc).
 """
+
 from __future__ import annotations
 
-from typing import Annotated, Any, Literal, Union
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -48,7 +49,7 @@ class Slider(ComponentBase):
 class ProgressBar(ComponentBase):
     type: Literal["progress_bar"] = "progress_bar"
     max: float = 100
-    bound_to: str | None = None          # intra-module: reads state[bound_to]
+    bound_to: str | None = None  # intra-module: reads state[bound_to]
     source_module_id: str | None = None  # cross-module: reads that module's state[bound_to]
 
 
@@ -60,6 +61,7 @@ class ListField(ComponentBase):
 
 class Metric(ComponentBase):
     """Read-only derived number aggregated across all session modules."""
+
     type: Literal["metric"] = "metric"
     formula: Literal["sum", "count", "avg", "max", "min"] = "sum"
     source_component_id: str  # aggregate state[this] across modules
@@ -68,41 +70,48 @@ class Metric(ComponentBase):
 
 class Rating(ComponentBase):
     """Star/number rating. state[id] = number."""
+
     type: Literal["rating"] = "rating"
     max: int = 5
 
 
 class Tags(ComponentBase):
     """Free-form chip labels. state[id] = list[str]."""
+
     type: Literal["tags"] = "tags"
     placeholder: str | None = None
 
 
 class Kpi(ComponentBase):
     """A single headline figure with a label. state[id] = number."""
+
     type: Literal["kpi"] = "kpi"
     unit: str | None = None
 
 
 class DatePicker(ComponentBase):
     """A date (or date-time). state[id] = ISO string."""
+
     type: Literal["date"] = "date"
     include_time: bool = False
 
 
 class Table(ComponentBase):
     """Structured grid. state[id] = list[list[str]] (rows of cells)."""
+
     type: Literal["table"] = "table"
     columns: list[str] = Field(default_factory=lambda: ["Item", "Value"])
 
 
 class Calendar(ComponentBase):
     """Month calendar. state[id] = list[str] of ISO dates (marked days)."""
+
     type: Literal["calendar"] = "calendar"
 
 
 class Chart(ComponentBase):
     """Chart drawn from a data series. state[id] = list[{label,value}]."""
+
     type: Literal["chart"] = "chart"
     chart_type: Literal["bar", "line", "area", "pie"] = "bar"
     unit: str | None = None
@@ -110,29 +119,34 @@ class Chart(ComponentBase):
 
 class Dropdown(ComponentBase):
     """Pick one from set options. state[id] = selected string."""
+
     type: Literal["dropdown"] = "dropdown"
     options: list[str] = Field(default_factory=list)
 
 
 class ChoiceChips(ComponentBase):
     """Pick one option shown as chips. state[id] = selected string."""
+
     type: Literal["choice_chips"] = "choice_chips"
     options: list[str] = Field(default_factory=list)
 
 
 class ColorField(ComponentBase):
     """A colour swatch. state[id] = hex string."""
+
     type: Literal["color"] = "color"
 
 
 class Sparkline(ComponentBase):
     """Tiny inline trend line. state[id] = list[number]."""
+
     type: Literal["sparkline"] = "sparkline"
     unit: str | None = None
 
 
 class Ring(ComponentBase):
     """Circular progress ring. state[id] (or bound_to) = number against max."""
+
     type: Literal["ring"] = "ring"
     max: float = 100
     bound_to: str | None = None
@@ -140,12 +154,14 @@ class Ring(ComponentBase):
 
 class Timeline(ComponentBase):
     """Chronological event strip. state[id] = list[{date,label}]."""
+
     type: Literal["timeline"] = "timeline"
 
 
 class Button(ComponentBase):
     """An action button. action: calculator|timer open a utility; increment +1s a
     number field (target); add_item appends to a list field (target)."""
+
     type: Literal["button"] = "button"
     action: Literal["calculator", "timer", "increment", "add_item"] = "calculator"
     target: str | None = None
@@ -153,29 +169,34 @@ class Button(ComponentBase):
 
 class Section(ComponentBase):
     """A labelled section header to group fields — gives a tool structure."""
+
     type: Literal["section"] = "section"
 
 
 class Divider(ComponentBase):
     """A thin horizontal rule. label optional."""
+
     type: Literal["divider"] = "divider"
     label: str = ""
 
 
 class Kanban(ComponentBase):
     """A board with named columns of cards. state[id] = {column: list[str]}."""
+
     type: Literal["kanban"] = "kanban"
     columns: list[str] = Field(default_factory=lambda: ["To do", "Doing", "Done"])
 
 
 class Heatmap(ComponentBase):
     """A calendar contribution/streak grid. state[id] = {dateISO: level 0-4}."""
+
     type: Literal["heatmap"] = "heatmap"
     unit: str | None = None
 
 
 class Gauge(ComponentBase):
     """A radial meter. state[id] (or bound_to) = number against max."""
+
     type: Literal["gauge"] = "gauge"
     min: float = 0
     max: float = 100
@@ -184,16 +205,19 @@ class Gauge(ComponentBase):
 
 class Checklist(ComponentBase):
     """Checkable items with a progress bar. state[id] = list[{text,done}]."""
+
     type: Literal["checklist"] = "checklist"
 
 
 class Gallery(ComponentBase):
     """A grid of image thumbnails. state[id] = list[url]."""
+
     type: Literal["gallery"] = "gallery"
 
 
 class Note(ComponentBase):
     """A multi-line free-text note. state[id] = string."""
+
     type: Literal["note"] = "note"
     placeholder: str | None = None
 
@@ -202,18 +226,43 @@ class Tracker(ComponentBase):
     """Multi-subject tracker: each row/subject has its OWN streak + completion,
     and the 'today' tick resets each period. state[id] = {rows:[{name, done:[ISO]}]}.
     Use for habit trackers, daily routines, per-person/per-item check-ins."""
+
     type: Literal["tracker"] = "tracker"
     period: Literal["day", "week"] = "day"
     goal: int | None = None  # optional per-subject target (e.g. 30-day goal)
 
 
 Component = Annotated[
-    Union[
-        TextInput, NumberInput, Checkbox, Slider, ProgressBar, ListField, Metric,
-        Rating, Tags, Kpi, DatePicker, Table, Calendar, Chart,
-        Dropdown, ChoiceChips, ColorField, Sparkline, Ring, Timeline, Button,
-        Section, Divider, Kanban, Heatmap, Gauge, Checklist, Gallery, Note, Tracker,
-    ],
+    TextInput
+    | NumberInput
+    | Checkbox
+    | Slider
+    | ProgressBar
+    | ListField
+    | Metric
+    | Rating
+    | Tags
+    | Kpi
+    | DatePicker
+    | Table
+    | Calendar
+    | Chart
+    | Dropdown
+    | ChoiceChips
+    | ColorField
+    | Sparkline
+    | Ring
+    | Timeline
+    | Button
+    | Section
+    | Divider
+    | Kanban
+    | Heatmap
+    | Gauge
+    | Checklist
+    | Gallery
+    | Note
+    | Tracker,
     Field(discriminator="type"),
 ]
 
@@ -227,6 +276,7 @@ class ModuleLayout(BaseModel):
 
 class Automation(BaseModel):
     """A plain-language rule: when <when_id> <when> <when_value?>, then <then> <then_id>."""
+
     id: str
     when_id: str
     when: Literal["checked", "over", "under", "changes"] = "checked"
@@ -255,7 +305,7 @@ class ModuleConfig(BaseModel):
     # Constrained design layer (closed-enum, no raw CSS) — raises re-skin fidelity for
     # screenshot captures while preserving config-not-code. All Optional so existing
     # configs and normal generation render identically.
-    radius: Literal["sharp", "rounded", "pill"] | None = None      # corner scale token
+    radius: Literal["sharp", "rounded", "pill"] | None = None  # corner scale token
     type_scale: Literal["compact", "regular", "large"] | None = None  # font scale token
     # When True, the captured `accent` hue is honored by the renderer (a themed import);
     # otherwise the brand-blue ethos default applies. Default False → no visual change.
@@ -304,6 +354,7 @@ class ModuleVersion(BaseModel):
 
 class Message(BaseModel):
     """One turn in a page's conversation log (the prompts that shaped it)."""
+
     id: str
     role: Literal["user", "assistant"]
     text: str
@@ -314,6 +365,7 @@ class Message(BaseModel):
 
 class Snapshot(BaseModel):
     """A point-in-time capture of a page's modules (read-only until restored)."""
+
     id: str
     page_id: str | None = None
     label: str

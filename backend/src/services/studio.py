@@ -7,6 +7,7 @@ configs informed by well-known app patterns it already knows. The output is the
 same artifact a scraper would aim for — a per-use-case database of layouts — in
 the format the app actually renders, and it feeds the generation seed pool.
 """
+
 from __future__ import annotations
 
 import json
@@ -28,54 +29,114 @@ from src.services.orchestrator import (
 # describes the characteristic on-screen elements; `seed_prompts` drive the
 # offline fallback AND the key used when a layout is promoted into the seed pool.
 USE_CASES: list[dict] = [
-    {"key": "calorie", "title": "Calorie & nutrition", "icon": "leaf", "accent": "coral",
-     "apps": ["Cronometer", "MyFitnessPal", "Cal AI", "MacroFactor", "Lose It!"],
-     "brief": "a food/meal diary (table or list), a calorie & macro budget shown as rings/gauges/progress bars, a micronutrient breakdown, a weight-trend chart, water intake",
-     "seed_prompts": ["calorie tracker", "nutrition log", "food diary"]},
-    {"key": "fitness", "title": "Fitness & workouts", "icon": "activity", "accent": "emerald",
-     "apps": ["Strava", "Strong", "Hevy", "Apple Fitness", "Nike Training Club"],
-     "brief": "a workout log (exercise/sets/reps/weight table), a weekly training-volume chart, personal-record KPIs, a streak heatmap, a rest timer",
-     "seed_prompts": ["workout tracker", "gym log", "training plan"]},
-    {"key": "travel", "title": "Travel planning", "icon": "plane", "accent": "sky",
-     "apps": ["TripIt", "Wanderlog", "Google Trips", "Roadtrippers"],
-     "brief": "a day-by-day itinerary calendar/timeline, a trip budget (chart + total KPI), a packing checklist, a bookings/reservations table",
-     "seed_prompts": ["travel planner", "trip itinerary", "vacation plan"]},
-    {"key": "finance", "title": "Personal finance", "icon": "dollar", "accent": "gold",
-     "apps": ["YNAB", "Mint", "Copilot", "Monarch", "Rocket Money"],
-     "brief": "a budget-by-category breakdown (chart / progress bars), a spending-over-time chart, a net-worth/balance KPI, a transactions table, savings-goal rings",
-     "seed_prompts": ["budget tracker", "expense tracker", "personal finance dashboard"]},
-    {"key": "productivity", "title": "Tasks & productivity", "icon": "check", "accent": "violet",
-     "apps": ["Todoist", "Things", "TickTick", "Notion", "Sunsama"],
-     "brief": "a task list with priorities, a kanban board (To do / Doing / Done), a today/agenda view, a project tracker, progress toward a goal",
-     "seed_prompts": ["to-do list", "task manager", "project board"]},
-    {"key": "habits", "title": "Habits & routines", "icon": "repeat", "accent": "teal",
-     "apps": ["Streaks", "Habitica", "Way of Life", "Done"],
-     "brief": "a multi-subject habit tracker (each habit its own streak + completion), a contribution heatmap, a daily checklist, streak KPIs",
-     "seed_prompts": ["habit tracker", "daily routine", "streak tracker"]},
-    {"key": "reading", "title": "Reading & learning", "icon": "book", "accent": "amber",
-     "apps": ["Goodreads", "StoryGraph", "Audible", "Anki"],
-     "brief": "a reading-list table (title/author/status/rating), a pages-read progress bar, a yearly reading-goal ring, a ratings breakdown chart",
-     "seed_prompts": ["reading list", "book tracker", "study tracker"]},
-    {"key": "wellness", "title": "Sleep & wellness", "icon": "moon", "accent": "sky",
-     "apps": ["Oura", "Whoop", "Sleep Cycle", "Calm"],
-     "brief": "a sleep-duration chart, a readiness/score gauge, a mood/energy rating, a hydration or meditation streak",
-     "seed_prompts": ["sleep tracker", "wellness dashboard"]},
-    {"key": "mood", "title": "Mood & journaling", "icon": "smile", "accent": "rose",
-     "apps": ["Daylio", "Reflectly", "Stoic", "Journey"],
-     "brief": "a daily mood rating or choice chips, a journal note, a mood-over-time chart, a gratitude list, a calendar/heatmap of entries",
-     "seed_prompts": ["mood journal", "gratitude journal", "daily journal"]},
-    {"key": "home", "title": "Home & chores", "icon": "home", "accent": "emerald",
-     "apps": ["Tody", "Sweepy", "OurHome", "Cozi"],
-     "brief": "a recurring-chores checklist/tracker, a household-tasks kanban, a shopping list, a chore-rotation table",
-     "seed_prompts": ["chore tracker", "cleaning schedule", "household tasks"]},
-    {"key": "events", "title": "Events & planning", "icon": "calendar", "accent": "violet",
-     "apps": ["The Knot", "Zola", "Eventbrite"],
-     "brief": "a guest-list table (name / RSVP), a budget chart, a planning-timeline calendar, a vendor or to-do checklist",
-     "seed_prompts": ["event planner", "wedding planner", "party checklist"]},
-    {"key": "content", "title": "Content & creators", "icon": "film", "accent": "coral",
-     "apps": ["Later", "Buffer", "Notion content calendars", "Trello"],
-     "brief": "a content calendar, an idea-backlog kanban, a publishing checklist, per-platform metric KPIs",
-     "seed_prompts": ["content calendar", "social media planner", "creator dashboard"]},
+    {
+        "key": "calorie",
+        "title": "Calorie & nutrition",
+        "icon": "leaf",
+        "accent": "coral",
+        "apps": ["Cronometer", "MyFitnessPal", "Cal AI", "MacroFactor", "Lose It!"],
+        "brief": "a food/meal diary (table or list), a calorie & macro budget shown as rings/gauges/progress bars, a micronutrient breakdown, a weight-trend chart, water intake",
+        "seed_prompts": ["calorie tracker", "nutrition log", "food diary"],
+    },
+    {
+        "key": "fitness",
+        "title": "Fitness & workouts",
+        "icon": "activity",
+        "accent": "emerald",
+        "apps": ["Strava", "Strong", "Hevy", "Apple Fitness", "Nike Training Club"],
+        "brief": "a workout log (exercise/sets/reps/weight table), a weekly training-volume chart, personal-record KPIs, a streak heatmap, a rest timer",
+        "seed_prompts": ["workout tracker", "gym log", "training plan"],
+    },
+    {
+        "key": "travel",
+        "title": "Travel planning",
+        "icon": "plane",
+        "accent": "sky",
+        "apps": ["TripIt", "Wanderlog", "Google Trips", "Roadtrippers"],
+        "brief": "a day-by-day itinerary calendar/timeline, a trip budget (chart + total KPI), a packing checklist, a bookings/reservations table",
+        "seed_prompts": ["travel planner", "trip itinerary", "vacation plan"],
+    },
+    {
+        "key": "finance",
+        "title": "Personal finance",
+        "icon": "dollar",
+        "accent": "gold",
+        "apps": ["YNAB", "Mint", "Copilot", "Monarch", "Rocket Money"],
+        "brief": "a budget-by-category breakdown (chart / progress bars), a spending-over-time chart, a net-worth/balance KPI, a transactions table, savings-goal rings",
+        "seed_prompts": ["budget tracker", "expense tracker", "personal finance dashboard"],
+    },
+    {
+        "key": "productivity",
+        "title": "Tasks & productivity",
+        "icon": "check",
+        "accent": "violet",
+        "apps": ["Todoist", "Things", "TickTick", "Notion", "Sunsama"],
+        "brief": "a task list with priorities, a kanban board (To do / Doing / Done), a today/agenda view, a project tracker, progress toward a goal",
+        "seed_prompts": ["to-do list", "task manager", "project board"],
+    },
+    {
+        "key": "habits",
+        "title": "Habits & routines",
+        "icon": "repeat",
+        "accent": "teal",
+        "apps": ["Streaks", "Habitica", "Way of Life", "Done"],
+        "brief": "a multi-subject habit tracker (each habit its own streak + completion), a contribution heatmap, a daily checklist, streak KPIs",
+        "seed_prompts": ["habit tracker", "daily routine", "streak tracker"],
+    },
+    {
+        "key": "reading",
+        "title": "Reading & learning",
+        "icon": "book",
+        "accent": "amber",
+        "apps": ["Goodreads", "StoryGraph", "Audible", "Anki"],
+        "brief": "a reading-list table (title/author/status/rating), a pages-read progress bar, a yearly reading-goal ring, a ratings breakdown chart",
+        "seed_prompts": ["reading list", "book tracker", "study tracker"],
+    },
+    {
+        "key": "wellness",
+        "title": "Sleep & wellness",
+        "icon": "moon",
+        "accent": "sky",
+        "apps": ["Oura", "Whoop", "Sleep Cycle", "Calm"],
+        "brief": "a sleep-duration chart, a readiness/score gauge, a mood/energy rating, a hydration or meditation streak",
+        "seed_prompts": ["sleep tracker", "wellness dashboard"],
+    },
+    {
+        "key": "mood",
+        "title": "Mood & journaling",
+        "icon": "smile",
+        "accent": "rose",
+        "apps": ["Daylio", "Reflectly", "Stoic", "Journey"],
+        "brief": "a daily mood rating or choice chips, a journal note, a mood-over-time chart, a gratitude list, a calendar/heatmap of entries",
+        "seed_prompts": ["mood journal", "gratitude journal", "daily journal"],
+    },
+    {
+        "key": "home",
+        "title": "Home & chores",
+        "icon": "home",
+        "accent": "emerald",
+        "apps": ["Tody", "Sweepy", "OurHome", "Cozi"],
+        "brief": "a recurring-chores checklist/tracker, a household-tasks kanban, a shopping list, a chore-rotation table",
+        "seed_prompts": ["chore tracker", "cleaning schedule", "household tasks"],
+    },
+    {
+        "key": "events",
+        "title": "Events & planning",
+        "icon": "calendar",
+        "accent": "violet",
+        "apps": ["The Knot", "Zola", "Eventbrite"],
+        "brief": "a guest-list table (name / RSVP), a budget chart, a planning-timeline calendar, a vendor or to-do checklist",
+        "seed_prompts": ["event planner", "wedding planner", "party checklist"],
+    },
+    {
+        "key": "content",
+        "title": "Content & creators",
+        "icon": "film",
+        "accent": "coral",
+        "apps": ["Later", "Buffer", "Notion content calendars", "Trello"],
+        "brief": "a content calendar, an idea-backlog kanban, a publishing checklist, per-platform metric KPIs",
+        "seed_prompts": ["content calendar", "social media planner", "creator dashboard"],
+    },
 ]
 
 _BY_KEY = {u["key"]: u for u in USE_CASES}
@@ -137,11 +198,13 @@ def _parse_layouts(raw: str) -> list[dict]:
             mc = ModuleConfig.model_validate(cfg)
         except ValidationError:
             continue
-        out.append({
-            "label": str(item.get("label") or mc.title or "Layout"),
-            "inspired_by": str(item.get("inspired_by") or ""),
-            "config": mc.model_dump(mode="json"),
-        })
+        out.append(
+            {
+                "label": str(item.get("label") or mc.title or "Layout"),
+                "inspired_by": str(item.get("inspired_by") or ""),
+                "config": mc.model_dump(mode="json"),
+            }
+        )
     if not out:
         raise _Invalid("no valid layouts")
     return out
@@ -156,11 +219,13 @@ def _stub_layouts(uc: dict, n: int) -> list[dict]:
     out: list[dict] = []
     for i, sp in enumerate(seeds[: max(1, n)]):
         cfg = pick_template(sp)
-        out.append({
-            "label": cfg.get("title") or sp.title(),
-            "inspired_by": apps[i % len(apps)],
-            "config": cfg,
-        })
+        out.append(
+            {
+                "label": cfg.get("title") or sp.title(),
+                "inspired_by": apps[i % len(apps)],
+                "config": cfg,
+            }
+        )
     return out
 
 
@@ -184,7 +249,8 @@ def generate_layouts(use_case_key: str, n: int = 4) -> list[dict]:
         try:
             raw = llm.generate(
                 user if attempt == 0 else user + _RETRY_NOTE,
-                system=STUDIO_SYSTEM, expect_array=True,
+                system=STUDIO_SYSTEM,
+                expect_array=True,
             )
             return _parse_layouts(raw)[:n]
         except _Invalid as e:
@@ -261,7 +327,9 @@ def import_from_image(use_case_key: str, data: bytes, mime: str) -> dict:
     )
     last: Exception | None = None
     for attempt in range(2):  # one retry — vision models occasionally slip on JSON
-        raw = llm.vision_describe(STUDIO_IMPORT_SYSTEM, user if attempt == 0 else user + _RETRY_NOTE, data, mime)
+        raw = llm.vision_describe(
+            STUDIO_IMPORT_SYSTEM, user if attempt == 0 else user + _RETRY_NOTE, data, mime
+        )
         try:
             mc = _parse_one(raw)
             return {
@@ -274,7 +342,9 @@ def import_from_image(use_case_key: str, data: bytes, mime: str) -> dict:
     raise RefusalError(f"Couldn't read a usable layout from that image ({last}).")
 
 
-def capture_layout(use_case_key: str, data: bytes, mime: str, *, match_colors: bool = False) -> dict:
+def capture_layout(
+    use_case_key: str, data: bytes, mime: str, *, match_colors: bool = False
+) -> dict:
     """Staged screenshot → layout: CAPTURE the image into a full-fidelity IR, then
     TRANSFORM it onto the trusted component library (re-skinned, no feature dropped),
     score capability coverage, and return an enriched layout dict

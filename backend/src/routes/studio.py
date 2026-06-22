@@ -1,5 +1,6 @@
 """Layout Studio API — build/browse a use-case-indexed library of candidate
 ModuleConfig layouts, and promote chosen ones into the generation seed pool."""
+
 import json
 import os
 import urllib.error
@@ -16,7 +17,12 @@ _MAX_IMAGE_BYTES = 12 * 1024 * 1024
 
 
 def _autopromote_enabled() -> bool:
-    return os.environ.get("TRUS_CAPTURE_AUTOPROMOTE", "on").strip().lower() not in ("off", "0", "false", "no")
+    return os.environ.get("TRUS_CAPTURE_AUTOPROMOTE", "on").strip().lower() not in (
+        "off",
+        "0",
+        "false",
+        "no",
+    )
 
 
 router = APIRouter(prefix="/studio")
@@ -38,8 +44,8 @@ class StudioLayout(BaseModel):
     inspired_by: str | None = None
     config: ModuleConfig
     created_at: str | None = None
-    capture_meta: dict | None = None   # screenshot-capture metadata (capture endpoint)
-    confidence: float | None = None    # capability-coverage confidence (capture endpoint)
+    capture_meta: dict | None = None  # screenshot-capture metadata (capture endpoint)
+    confidence: float | None = None  # capability-coverage confidence (capture endpoint)
 
 
 class PromoteResponse(BaseModel):
@@ -50,8 +56,12 @@ class PromoteResponse(BaseModel):
 
 def _row_to_layout(r) -> StudioLayout:
     return StudioLayout(
-        id=r["id"], use_case=r["use_case"], label=r["label"], inspired_by=r["inspired_by"],
-        config=ModuleConfig.model_validate_json(r["config_json"]), created_at=r["created_at"],
+        id=r["id"],
+        use_case=r["use_case"],
+        label=r["label"],
+        inspired_by=r["inspired_by"],
+        config=ModuleConfig.model_validate_json(r["config_json"]),
+        created_at=r["created_at"],
     )
 
 
@@ -59,9 +69,14 @@ def _row_to_layout(r) -> StudioLayout:
 def list_use_cases() -> list[StudioUseCase]:
     counts = db.layout_counts()
     return [
-        StudioUseCase(key=u["key"], title=u["title"], icon=u.get("icon"),
-                      accent=u.get("accent"), apps=u.get("apps", []),
-                      count=counts.get(u["key"], 0))
+        StudioUseCase(
+            key=u["key"],
+            title=u["title"],
+            icon=u.get("icon"),
+            accent=u.get("accent"),
+            apps=u.get("apps", []),
+            count=counts.get(u["key"], 0),
+        )
         for u in studio.use_cases()
     ]
 
@@ -76,9 +91,15 @@ def generate(key: str, n: int = Query(default=4, ge=1, le=8)) -> list[StudioLayo
     stored: list[StudioLayout] = []
     for ly in layouts:
         lid = db.layout_add(key, ly["label"], ly.get("inspired_by"), json.dumps(ly["config"]))
-        stored.append(StudioLayout(id=lid, use_case=key, label=ly["label"],
-                                   inspired_by=ly.get("inspired_by"),
-                                   config=ModuleConfig.model_validate(ly["config"])))
+        stored.append(
+            StudioLayout(
+                id=lid,
+                use_case=key,
+                label=ly["label"],
+                inspired_by=ly.get("inspired_by"),
+                config=ModuleConfig.model_validate(ly["config"]),
+            )
+        )
     return stored
 
 
@@ -131,8 +152,13 @@ async def import_layout(
     except LLMError as e:
         raise HTTPException(status_code=503, detail=str(e))
     lid = db.layout_add(key, ly["label"], ly.get("inspired_by"), json.dumps(ly["config"]))
-    return StudioLayout(id=lid, use_case=key, label=ly["label"], inspired_by=ly.get("inspired_by"),
-                        config=ModuleConfig.model_validate(ly["config"]))
+    return StudioLayout(
+        id=lid,
+        use_case=key,
+        label=ly["label"],
+        inspired_by=ly.get("inspired_by"),
+        config=ModuleConfig.model_validate(ly["config"]),
+    )
 
 
 @router.post("/use-cases/{key}/capture", response_model=StudioLayout)
@@ -157,7 +183,10 @@ async def capture_layout(
         raise HTTPException(status_code=503, detail=str(e))
 
     lid = db.layout_add(
-        key, ly["label"], ly.get("inspired_by"), json.dumps(ly["config"]),
+        key,
+        ly["label"],
+        ly.get("inspired_by"),
+        json.dumps(ly["config"]),
         capture_meta_json=json.dumps(ly.get("capture_meta")),
         ir_digest_json=json.dumps(ly.get("ir_digest")),
         confidence=ly.get("confidence"),
@@ -169,12 +198,18 @@ async def capture_layout(
     if _autopromote_enabled() and quality == "high":
         uc = studio.get_use_case(key)
         seed_prompt = (uc.get("seed_prompts") or [ly["label"]])[0] if uc else ly["label"]
-        semantic_cache.store_structured("system", ly.get("structured_text", ""), seed_prompt, [ly["config"]])
+        semantic_cache.store_structured(
+            "system", ly.get("structured_text", ""), seed_prompt, [ly["config"]]
+        )
 
     return StudioLayout(
-        id=lid, use_case=key, label=ly["label"], inspired_by=ly.get("inspired_by"),
+        id=lid,
+        use_case=key,
+        label=ly["label"],
+        inspired_by=ly.get("inspired_by"),
         config=ModuleConfig.model_validate(ly["config"]),
-        capture_meta=ly.get("capture_meta"), confidence=ly.get("confidence"),
+        capture_meta=ly.get("capture_meta"),
+        confidence=ly.get("confidence"),
     )
 
 

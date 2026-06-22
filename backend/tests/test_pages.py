@@ -2,9 +2,7 @@ from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
-
 from src.main import app
-from src import db
 
 VALID_RAW = '{"title":"T","components":[{"id":"x","type":"text_input","label":"X"}]}'
 
@@ -29,6 +27,7 @@ def _ensure_session(client):
 # ---------------------------------------------------------------------------
 # Page CRUD
 # ---------------------------------------------------------------------------
+
 
 def test_list_pages_returns_default(client):
     resp = client.get("/api/pages")
@@ -97,6 +96,7 @@ def test_pages_scoped_to_session(client, client2):
 # Module-page scoping
 # ---------------------------------------------------------------------------
 
+
 def test_modules_belong_to_active_page(client):
     _ensure_session(client)
     page1_id = client.get("/api/pages").json()[0]["id"]
@@ -104,7 +104,9 @@ def test_modules_belong_to_active_page(client):
 
     with patch("src.services.orchestrator.llm.generate", return_value=VALID_RAW):
         m1 = client.post(f"/api/modules/generate?page_id={page1_id}", json={"prompt": "p1"}).json()
-        m2 = client.post(f"/api/modules/generate?page_id={page2['id']}", json={"prompt": "p2"}).json()
+        m2 = client.post(
+            f"/api/modules/generate?page_id={page2['id']}", json={"prompt": "p2"}
+        ).json()
 
     assert m1["module"]["page_id"] == page1_id
     assert m2["module"]["page_id"] == page2["id"]

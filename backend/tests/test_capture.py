@@ -4,14 +4,13 @@ All model calls are monkeypatched, so these run in stub mode with no network:
 - `llm.vision_capture` returns a canned IR (the CAPTURE stage output),
 - `llm.generate` returns a canned ModuleConfig (the TRANSFORM stage output).
 """
+
 import json
 
 import pytest
 from fastapi.testclient import TestClient
-
 from src import llm
 from src.main import app
-from src.services.capture import transform
 from src.services.capture.ir import parse_ir
 from src.services.capture.transform import map_ui_type, transform_ir
 
@@ -21,10 +20,20 @@ _IR = {
     "schema": "trus-capture-ir/1",
     "app_kind": "nutrition tracker",
     "summary": "A nutrition dashboard with a food diary, calorie ring and weight trend.",
-    "tokens": {"color": {"accent": "emerald"}, "space": {"density": "comfortable"},
-               "radius": {"scale": "rounded"}, "type": {"scale": "regular"}},
+    "tokens": {
+        "color": {"accent": "emerald"},
+        "space": {"density": "comfortable"},
+        "radius": {"scale": "rounded"},
+        "type": {"scale": "regular"},
+    },
     "nodes": [
-        {"id": "n1", "ui_type": "food_table", "role": "table", "label": "Food diary", "columns": ["Food", "Calories"]},
+        {
+            "id": "n1",
+            "ui_type": "food_table",
+            "role": "table",
+            "label": "Food diary",
+            "columns": ["Food", "Calories"],
+        },
         {"id": "n2", "ui_type": "macro_rings", "role": "region", "label": "Calories"},
         {"id": "n3", "ui_type": "weight_chart", "role": "chart", "label": "Weight trend"},
         {"id": "bad", "label": 123},  # malformed node — must be dropped, not fatal
@@ -33,7 +42,9 @@ _IR = {
 }
 
 _FULL_CONFIG = {
-    "title": "Nutrition Tracker", "columns": 2, "density": "comfortable",
+    "title": "Nutrition Tracker",
+    "columns": 2,
+    "density": "comfortable",
     "components": [
         {"id": "food", "type": "table", "label": "Food diary", "columns": ["Food", "Calories"]},
         {"id": "cals", "type": "ring", "label": "Calories", "max": 2000},
@@ -52,6 +63,7 @@ _DROPPED_CONFIG = {
 
 
 # ---------------------------------------------------------------- unit ----
+
 
 def test_ir_parses_lenient_and_digests():
     ir = parse_ir(json.dumps(_IR))
@@ -108,6 +120,7 @@ def test_transform_no_match_colors_keeps_brand(monkeypatch):
 
 # ---------------------------------------------------------------- route ---
 
+
 @pytest.fixture
 def client(monkeypatch):
     monkeypatch.setenv("TRUS_LLM_PROVIDER", "stub")
@@ -118,12 +131,15 @@ def client(monkeypatch):
 
 def test_capture_route_end_to_end_and_autoseed(client, monkeypatch):
     from src import semantic_cache
+
     monkeypatch.setattr(llm, "vision_capture", lambda *a, **k: json.dumps(_IR))
     monkeypatch.setattr(llm, "generate", lambda *a, **k: json.dumps(_FULL_CONFIG))
 
-    r = client.post("/api/studio/use-cases/calorie/capture",
-                    data={"match_colors": "true"},
-                    files={"file": ("ui.png", _PNG, "image/png")})
+    r = client.post(
+        "/api/studio/use-cases/calorie/capture",
+        data={"match_colors": "true"},
+        files={"file": ("ui.png", _PNG, "image/png")},
+    )
     assert r.status_code == 200
     ly = r.json()
     assert ly["use_case"] == "calorie" and ly["id"]
@@ -143,11 +159,13 @@ def test_capture_route_end_to_end_and_autoseed(client, monkeypatch):
 
 def test_capture_low_confidence_not_seeded(client, monkeypatch):
     from src import semantic_cache
+
     monkeypatch.setattr(llm, "vision_capture", lambda *a, **k: json.dumps(_IR))
     monkeypatch.setattr(llm, "generate", lambda *a, **k: json.dumps(_DROPPED_CONFIG))
 
-    r = client.post("/api/studio/use-cases/calorie/capture",
-                    files={"file": ("ui.png", _PNG, "image/png")})
+    r = client.post(
+        "/api/studio/use-cases/calorie/capture", files={"file": ("ui.png", _PNG, "image/png")}
+    )
     assert r.status_code == 200
     ly = r.json()
     assert ly["capture_meta"]["capture_quality"] != "high"
@@ -158,6 +176,7 @@ def test_capture_low_confidence_not_seeded(client, monkeypatch):
 
 
 def test_capture_unknown_use_case_404(client):
-    r = client.post("/api/studio/use-cases/not-real/capture",
-                    files={"file": ("ui.png", _PNG, "image/png")})
+    r = client.post(
+        "/api/studio/use-cases/not-real/capture", files={"file": ("ui.png", _PNG, "image/png")}
+    )
     assert r.status_code == 404

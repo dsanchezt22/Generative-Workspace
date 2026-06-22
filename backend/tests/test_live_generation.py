@@ -7,11 +7,11 @@ funds billing, `GEMINI_LIVE=1 pytest tests/test_live_generation.py` proves the
 model adapts a module to specifics in the prompt (prefilling stated values),
 not just returning a fixed template.
 """
+
 import json
 import os
 
 import pytest
-
 from src.services import orchestrator
 
 _LIVE = os.environ.get("GEMINI_LIVE") == "1"
@@ -23,9 +23,7 @@ pytestmark = pytest.mark.skipif(
 
 
 def test_budget_prompt_adapts_to_stated_specifics():
-    config = orchestrator.generate_module(
-        "budget for a 5-day Japan trip, $3000 total"
-    )
+    config = orchestrator.generate_module("budget for a 5-day Japan trip, $3000 total")
     blob = json.dumps(config.model_dump()).lower()
     # Adapt-to-content: the concrete amount and/or destination should appear,
     # proving the module was shaped by the request rather than returned generic.
@@ -34,8 +32,6 @@ def test_budget_prompt_adapts_to_stated_specifics():
 
 
 def test_off_catalog_prompt_still_generates_something_sensible():
-    config = orchestrator.generate_module(
-        "track which DJ tracks I've practiced mixing"
-    )
+    config = orchestrator.generate_module("track which DJ tracks I've practiced mixing")
     assert config.title
     assert config.components

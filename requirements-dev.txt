@@ -1,0 +1,6 @@
+ruff
+mypy
+pytest
+pytest-cov
+pip-audit
+pre-commit

@@ -1,0 +1,11 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      { "matcher": "Write|Edit|MultiEdit",
+        "hooks": [{ "type": "command", "command": ".claude/hooks/py-format.sh", "timeout": 30 }] }
+    ],
+    "Stop": [
+      { "hooks": [{ "type": "command", "command": ".claude/hooks/py-gate.sh", "timeout": 300 }] }
+    ]
+  }
+}

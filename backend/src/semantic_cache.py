@@ -12,6 +12,7 @@ near-duplicate intents with no model or heavy library. For deeper semantic
 matching, set TRUS_EMBED_BASE_URL + TRUS_EMBED_MODEL to any OpenAI-compatible
 /embeddings endpoint (e.g. Ollama `nomic-embed-text`).
 """
+
 from __future__ import annotations
 
 import json
@@ -65,7 +66,7 @@ def _hash_embed(text: str) -> list[float]:
     tokens = _WORD.findall(normalize(text))
     feats: list[str] = list(tokens)
     joined = " ".join(tokens)
-    feats += [joined[i:i + 3] for i in range(max(0, len(joined) - 2))]
+    feats += [joined[i : i + 3] for i in range(max(0, len(joined) - 2))]
     if not feats:
         return vec
     for f in feats:
@@ -113,9 +114,9 @@ def _cosine(a: list[float], b: list[float]) -> float:
 
 def lookup(kind: str, prompt: str) -> tuple[str | None, list | None]:
     """Return (mode, configs):
-      "hit"  → reuse this result directly (zero model cost),
-      "seed" → use it as the generation seed (still generate),
-      None   → nothing close enough."""
+    "hit"  → reuse this result directly (zero model cost),
+    "seed" → use it as the generation seed (still generate),
+    None   → nothing close enough."""
     if not enabled():
         return (None, None)
     rows = db.cache_rows(kind)

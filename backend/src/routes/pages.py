@@ -8,6 +8,7 @@ router = APIRouter()
 
 def _session_id(request: Request) -> str:
     from src.routes.modules import _session_id as _sid
+
     return _sid(request)
 
 
