@@ -102,8 +102,9 @@ def test_generate_modules_cache_hit_skips_model(monkeypatch):
     prompt = "a very specific unique caching prompt"
     r1 = orchestrator.generate_modules(prompt)
     assert [m.title for m in r1] == ["Cached Tool"]
-    assert calls["n"] == 1
+    # A cache MISS now costs two model calls: the intent decode + the generation.
+    assert calls["n"] == 2
 
     r2 = orchestrator.generate_modules(prompt)  # exact match → from cache
     assert [m.title for m in r2] == ["Cached Tool"]
-    assert calls["n"] == 1  # model NOT called again
+    assert calls["n"] == 2  # cache hit → model NOT called again (decode is skipped too)

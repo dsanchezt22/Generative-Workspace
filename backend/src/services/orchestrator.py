@@ -289,11 +289,24 @@ Rules:
 8. Output ONLY the JSON array (or the single refusal/question object). No prose.
 """
 
+# The archetype menu is static, so appending it here keeps Gemini's implicit prefix
+# caching effective. It tells the model which named formats exist and when each fits.
+from src.archetypes import archetype_menu as _archetype_menu  # noqa: E402
+
+DECOMPOSE_SYSTEM_PROMPT = (
+    DECOMPOSE_SYSTEM_PROMPT
+    + "\n\n"
+    + _archetype_menu()
+    + "\nBuild each tool in the format of its best-matching archetype unless a clearly "
+    "better one fits. Keep one coherent theme (accents/icons) across the set."
+)
+
 
 def _seeded_system(
     prompt: str,
     existing_modules: list[ModuleConfig] | None = None,
     seed_override: list | None = None,
+    archetype_hint: str | None = None,
 ) -> str:
     from src.stub_templates import pick_system
 
@@ -302,11 +315,12 @@ def _seeded_system(
     # cache has nothing close.
     seed = json.dumps(seed_override if seed_override is not None else pick_system(prompt))
     context = _module_context(existing_modules or [])
+    hint = f"\n\n{archetype_hint}" if archetype_hint else ""
     return (
         f"User request: {prompt}\n\n"
         f"Example starting system (adapt freely — change the number of tools, fields, components, "
         f"labels, icons, accents, and prefill state to match the request; do not return it as-is):\n{seed}"
-        f"{context}\n\n"
+        f"{hint}{context}\n\n"
         f"Return the adapted ModuleConfig JSON array."
     )
 
@@ -350,7 +364,7 @@ def generate_modules(
         from src.stub_templates import pick_system
 
         return [ModuleConfig.model_validate(c) for c in pick_system(prompt)]
-    from src import semantic_cache
+    from src import archetypes, semantic_cache
 
     # Cache: an (almost) identical past prompt is reused for free; a near match
     # becomes the generation seed (so the library grows with real usage).
@@ -360,8 +374,32 @@ def generate_modules(
             return [ModuleConfig.model_validate(c) for c in cached]
         except ValidationError:
             pass  # stale/incompatible cache entry → fall through and regenerate
+
+    # Hybrid decode (gating "always when live"): an LLM intent decode picks the best
+    # archetypes/theme; on any failure it returns None and we fall back to the
+    # deterministic selector. A cache "seed" neighbour takes precedence as the seed.
+    archetype_hint: str | None = None
+    if not (mode == "seed" and cached):
+        decoded = archetypes.decode_intent(prompt)
+        if decoded:
+            keys = decoded["archetypes"]
+            theme = decoded.get("theme") or archetypes.theme_for(prompt)
+        else:
+            keys = [a.key for a in archetypes.select_archetypes(prompt)]
+            theme = archetypes.theme_for(prompt)
+        if keys:
+            archetype_hint = (
+                f"Best-matching archetype(s): {', '.join(keys)}. "
+                f"Theme: accent={theme.get('accent')}, icon={theme.get('icon')}."
+            )
+
     result = _generate_validated(
-        _seeded_system(prompt, existing_modules, seed_override=cached if mode == "seed" else None),
+        _seeded_system(
+            prompt,
+            existing_modules,
+            seed_override=cached if mode == "seed" else None,
+            archetype_hint=archetype_hint,
+        ),
         DECOMPOSE_SYSTEM_PROMPT,
         _parse_modules,
         expect_array=True,

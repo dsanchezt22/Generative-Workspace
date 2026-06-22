@@ -89,3 +89,17 @@ def test_v2_routing_spot_check():
     assert pick_template("weekly retro")["title"] == "Weekly Retro"
     # 'category' must not mis-route to the 'cat' (pet) template.
     assert "Pet" not in pick_template("expense categories")["title"]
+
+
+def test_workout_template_is_calendar_led():
+    cfg = pick_template("track my workouts at the gym")
+    assert "workout" in cfg["title"].lower()
+    types = [c["type"] for c in cfg["components"]]
+    assert "calendar" in types  # the format now models "log per day"
+
+
+def test_generic_visuals_are_domain_aware():
+    from src.stub_templates import _visual_for
+
+    _, accent = _visual_for("monthly budget and savings")
+    assert accent in ("amber", "gold")

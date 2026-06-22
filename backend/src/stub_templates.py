@@ -141,19 +141,21 @@ def _mod(title, icon, accent, components, summary=None, columns=1):
 
 # --- single-tool templates (each a distinct visual style) -------------------
 def _workout():
+    # A workout log is fundamentally "what did I do on which day" — lead with a
+    # calendar of training days so the tool LOOKS like the activity it models.
     return _mod(
         "Workout Log",
         "🏋️",
         "emerald",
         [
-            _t("exercise", "Exercise", "e.g. Bench press"),
+            _cal("days", "Workout days"),
+            _t("exercise", "Today's focus", "e.g. Push day — bench, dips"),
             _n("sets", "Sets"),
-            _n("reps", "Reps"),
-            _sl("weight", "Weight", 0, 315, 5, "lb"),
-            _chk("done", "Done today"),
+            _sl("weight", "Top set weight", 0, 315, 5, "lb"),
             _pr("weekly", "Weekly sessions", 5, "sets"),
         ],
-        "weekly",
+        "days",
+        columns=2,
     )
 
 
@@ -1659,6 +1661,21 @@ _GENERIC_ICONS = ("🗂️", "📝", "📌", "🧭", "🎯", "📦", "🗓️", 
 
 
 def _visual_for(prompt: str) -> tuple[str, str]:
+    # Prefer a domain-coherent look; fall back to a stable per-prompt hash so even
+    # unrouted prompts still vary instead of all defaulting to one accent.
+    from src.archetypes import theme_for
+
+    icons = {
+        "activity": "🏋️",
+        "dollar": "💰",
+        "plane": "✈️",
+        "heart": "💗",
+        "sparkles": "✨",
+        "leaf": "🥗",
+    }
+    t = theme_for(prompt)
+    if t["accent"] != "teal":  # "teal" is theme_for's neutral default = no domain hit
+        return icons.get(t["icon"], "✨"), t["accent"]
     h = sum(ord(ch) for ch in prompt.strip().lower()) if prompt.strip() else 0
     return _GENERIC_ICONS[h % len(_GENERIC_ICONS)], _GENERIC_ACCENTS[h % len(_GENERIC_ACCENTS)]
 

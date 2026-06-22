@@ -287,8 +287,9 @@ def test_generate_passes_existing_modules_context(client):
     with patch("src.services.orchestrator.llm.generate", return_value=VALID_RAW) as mock_gen:
         client.post("/api/modules/generate", json={"prompt": "workout"})
         client.post("/api/modules/generate", json={"prompt": "another module"})
-    # Second call should have received context with existing modules
-    second_call_prompt = mock_gen.call_args_list[1][0][0]
+    # The second request's GENERATION call (the last llm.generate call — each request
+    # now also makes an intent-decode call first) should carry the existing-module context.
+    second_call_prompt = mock_gen.call_args_list[-1][0][0]
     assert "Existing modules" in second_call_prompt
 
 

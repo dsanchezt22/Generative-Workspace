@@ -111,3 +111,20 @@ def test_new_component_types_validate():
         "calendar",
         "chart",
     ]
+
+
+def test_decode_runs_then_generation_is_last_call():
+    """decode_intent makes the first generate() call; the seeded GENERATION call is
+    last and still carries existing-module context."""
+    from src.schema import ModuleConfig, TextInput
+
+    existing = [ModuleConfig(title="Meal Log", components=[TextInput(id="meal", label="Meal")])]
+    arr = json.dumps(
+        [{"title": "T", "components": [{"id": "d", "type": "calendar", "label": "Days"}]}]
+    )
+    with _fake_llm(arr) as gen:
+        mods = orchestrator.generate_modules("plan my fitness", existing_modules=existing)
+    assert mods[0].components[0].type == "calendar"
+    # last call is the generation call and includes the existing module context
+    assert "Meal Log" in gen.call_args[0][0]
+    assert gen.call_count >= 2  # decode + generate
