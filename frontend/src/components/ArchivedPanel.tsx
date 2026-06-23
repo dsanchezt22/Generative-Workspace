@@ -23,7 +23,7 @@ export function ArchivedPanel({ items, onClose, onRestore, onDelete }: Props) {
       <div className="flex-1 overflow-y-auto p-3 flex flex-col gap-2">
         {items.length === 0 ? (
           <p className="text-xs text-[var(--muted)] leading-relaxed px-1 pt-2">
-            Nothing archived. Archive a tool from its inspector to tuck it away here — it stays safe and restorable.
+            Nothing archived. Archive a tool from its inspector to tuck it away here, safe and restorable.
           </p>
         ) : (
           items.map((m) => (

@@ -19,7 +19,7 @@ export function EmptyState({ onPick }: { onPick: (text: string) => void }) {
         </div>
         <h2 className="text-lg font-semibold tracking-tight">What do you want to organize?</h2>
         <p className="text-sm text-[var(--muted)] leading-relaxed">
-          Describe a tool in a sentence and it appears — a tracker, planner, log,
+          Describe a tool in one sentence and it appears: a tracker, planner, log,
           or list. Or start with one of these:
         </p>
         <div className="flex flex-wrap justify-center gap-2">

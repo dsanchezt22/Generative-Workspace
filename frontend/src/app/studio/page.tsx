@@ -58,7 +58,7 @@ export default function StudioPage() {
       await reloadUseCases();
       flash("Mined 4 candidate layouts.");
     } catch {
-      flash("Generation failed — is the backend running?");
+      flash("Generation failed. Is the backend running?");
     } finally {
       setGenerating(false);
     }
@@ -75,7 +75,7 @@ export default function StudioPage() {
       setImportUrl("");
       const conf = typeof ly.confidence === "number" ? ` · ${Math.round(ly.confidence * 100)}% match` : "";
       const seeded = (ly.capture_meta?.capture_quality as string) === "high"
-        ? " — added to the generation library." : ".";
+        ? ", added to the generation library." : ".";
       flash(`Captured a layout from the screenshot${conf}${seeded}`);
     } catch (e) {
       const msg = e instanceof ApiError
@@ -91,7 +91,7 @@ export default function StudioPage() {
     if (!id) return;
     try {
       const r = await api.studioPromote(id);
-      flash(`Added to the generation library — ${r.library.entries} template${r.library.entries === 1 ? "" : "s"} now seed real-time generation.`);
+      flash(`Added to the generation library. ${r.library.entries} template${r.library.entries === 1 ? "" : "s"} now seed real-time generation.`);
     } catch { flash("Couldn't add to library."); }
   };
 
@@ -152,7 +152,7 @@ export default function StudioPage() {
             <div className="text-xs text-[var(--muted)] truncate">
               {activeUC
                 ? `Layouts modelled after ${activeUC.apps.slice(0, 4).join(", ")}${activeUC.apps.length > 4 ? "…" : ""}`
-                : "A library of layout patterns per use case — to seed real-time generation"}
+                : "A library of layout patterns per use case, to seed real-time generation"}
             </div>
           </div>
           <div className="ml-auto flex items-center gap-2">
@@ -186,7 +186,7 @@ export default function StudioPage() {
               type="button"
               onClick={() => fileRef.current?.click()}
               disabled={importing || !active}
-              title="Import a reference screenshot — a vision model turns it into a layout"
+              title="Import a reference screenshot. A vision model turns it into a layout"
               className={`${btn} press border border-[var(--border)] text-[var(--muted)] hover:text-[var(--foreground)] disabled:opacity-40 flex items-center gap-1.5`}
             >
               <Icon name="camera" size={14} />

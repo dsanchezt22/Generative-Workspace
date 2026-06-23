@@ -564,7 +564,7 @@ export default function Home() {
         <Link
           href="/studio"
           className="shrink-0 flex items-center gap-1.5 rounded-md border border-[var(--border)] px-2.5 py-1 text-xs text-[var(--muted)] hover:text-[var(--foreground)] transition"
-          title="Layout Studio — browse layout patterns per use case"
+          title="Layout Studio: browse layout patterns per use case"
         >
           <Icon name="grid" size={14} />
           <span className="hidden sm:inline">Studio</span>

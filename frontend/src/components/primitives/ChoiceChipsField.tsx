@@ -32,7 +32,7 @@ export function ChoiceChipsField({ spec, value, onChange }: Props) {
             </button>
           );
         })}
-        {opts.length === 0 && <span className="text-xs text-[var(--muted)] italic">No options — add some in the inspector.</span>}
+        {opts.length === 0 && <span className="text-xs text-[var(--muted)] italic">No options yet. Add some in the inspector.</span>}
       </div>
     </div>
   );

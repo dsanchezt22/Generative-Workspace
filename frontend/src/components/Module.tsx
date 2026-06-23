@@ -412,7 +412,7 @@ export function Module({
             );
           })}
           {components.length === 0 && (
-            <p className="text-xs text-[var(--muted)] italic col-span-2">No fields yet — open the inspector to add some.</p>
+            <p className="text-xs text-[var(--muted)] italic col-span-2">No fields yet. Open the inspector to add some.</p>
           )}
         </div>
       )}

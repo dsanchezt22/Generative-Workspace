@@ -31,7 +31,7 @@ export function ChartField({ spec, value, onChange }: Props) {
   const acc = "var(--accent)";
 
   const renderChart = () => {
-    if (data.length === 0) return <p className="text-xs text-[var(--muted)] italic py-4 text-center">No data yet — add points below.</p>;
+    if (data.length === 0) return <p className="text-xs text-[var(--muted)] italic py-4 text-center">No data yet. Add points below.</p>;
     const innerW = W - PAD * 2, innerH = H - PAD * 2;
     if (type === "pie") {
       const total = data.reduce((s, d) => s + (Number(d.value) || 0), 0) || 1;

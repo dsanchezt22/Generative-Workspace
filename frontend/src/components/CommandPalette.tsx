@@ -101,7 +101,7 @@ export function CommandPalette({ open, onClose, pages, allModules, actions, onGo
             else if (e.key === "Enter") { e.preventDefault(); if (rows[sel]) choose(rows[sel]); }
             else if (e.key === "Escape") { e.preventDefault(); onClose(); }
           }}
-          placeholder="Search tools, pages, entries — or type a command…"
+          placeholder="Search tools, pages, entries, or type a command…"
           className="w-full bg-transparent px-4 py-3.5 text-sm focus:outline-none border-b border-[var(--border)] placeholder:text-[var(--muted)]"
         />
         <div className="max-h-[50vh] overflow-y-auto py-1">

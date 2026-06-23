@@ -52,7 +52,7 @@ export function ConversationPanel({ messages, pageName, onClose, onClear, onReus
         {messages.length === 0 ? (
           <p className="text-xs text-[var(--muted)] leading-relaxed px-1 pt-2">
             No prompts yet on this tab. Generate a tool and your prompts will be
-            saved here — click any of them to run it again.
+            saved here. Click any of them to run it again.
           </p>
         ) : (
           messages.map((m) =>

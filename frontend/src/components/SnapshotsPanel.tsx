@@ -40,7 +40,7 @@ export function SnapshotsPanel({ snapshots, pageName, onClose, onSave, onRestore
       <div className="flex-1 overflow-y-auto p-3 flex flex-col gap-2">
         {snapshots.length === 0 ? (
           <p className="text-xs text-[var(--muted)] leading-relaxed px-1 pt-2">
-            No snapshots yet. Save one before a big change — you can return to exactly how this page looked, anytime.
+            No snapshots yet. Save one before a big change, then return to exactly how this page looked anytime.
           </p>
         ) : (
           snapshots.map((s) => (

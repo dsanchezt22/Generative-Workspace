@@ -56,7 +56,7 @@ export function PromptBar({ onModule, activePageId, refineTarget, onRefineModule
     };
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     rec.onerror = (e: any) => {
-      setError(e.error === "not-allowed" ? "Microphone blocked — allow access to use voice." : "Didn't catch that — try again.");
+      setError(e.error === "not-allowed" ? "Microphone blocked. Allow access to use voice." : "Didn't catch that. Try again.");
       setRecording(false);
     };
     rec.onend = () => setRecording(false);
@@ -173,10 +173,10 @@ export function PromptBar({ onModule, activePageId, refineTarget, onRefineModule
   const placeholder = pendingQuestion
     ? `${pendingQuestion}`
     : previewing
-      ? "Adjust these — e.g. make the budget a chart, add a notes field"
+      ? "Adjust these, e.g. make the budget a chart or add a notes field"
       : isRefining
-        ? "Describe what to change — e.g. add a rest day checkbox"
-        : "Describe what you want to organize — e.g. track my workouts";
+        ? "Describe what to change, e.g. add a rest day checkbox"
+        : "Describe what you want to organize, e.g. track my workouts";
 
   const buttonLabel = loading
     ? (isRefining ? "Refining…" : file ? "Building…" : previewing ? "Refining…" : "Generating…")
@@ -201,7 +201,7 @@ export function PromptBar({ onModule, activePageId, refineTarget, onRefineModule
           <div className="flex flex-col gap-3 px-3 pt-3 pb-1 max-h-[60vh] overflow-y-auto">
             <div className="flex items-center gap-2 px-1">
               <span className="text-[10px] uppercase tracking-wide text-[var(--muted)] font-mono">
-                {previews.length} tool{previews.length === 1 ? "" : "s"} proposed — preview &amp; edit
+                {previews.length} tool{previews.length === 1 ? "" : "s"} ready to preview &amp; edit
               </span>
               <button type="button" onClick={addAll}
                 className="ml-auto rounded-md bg-[var(--accent)] text-[var(--accent-fg)] px-2.5 py-1 text-xs font-medium hover:brightness-110 transition">
