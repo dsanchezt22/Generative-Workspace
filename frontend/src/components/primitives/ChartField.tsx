@@ -83,7 +83,7 @@ export function ChartField({ spec, value, onChange }: Props) {
   return (
     <div className="flex flex-col gap-1.5">
       <span className="text-xs uppercase tracking-wide text-[var(--muted)]">{spec.label}</span>
-      <div className="rounded-md bg-[var(--surface-elevated)] p-2">{renderChart()}</div>
+      <div className="rounded-sm bg-[var(--surface-elevated)] p-2">{renderChart()}</div>
       <div className="flex flex-col gap-1">
         {data.map((d, i) => (
           <div key={i} className="flex items-center gap-2 text-xs">
@@ -96,12 +96,12 @@ export function ChartField({ spec, value, onChange }: Props) {
       </div>
       <div className="flex gap-1.5">
         <input value={label} onChange={(e) => setLabel(e.target.value)} placeholder="Label"
-          className="flex-1 min-w-0 rounded-md border border-[var(--border)] bg-[var(--surface-elevated)] px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-[var(--accent)]/40" />
+          className="flex-1 min-w-0 rounded-sm border border-[var(--border)] bg-[var(--surface-elevated)] px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-[var(--accent)]/40" />
         <input value={val} onChange={(e) => setVal(e.target.value)} type="number" placeholder="0"
           onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); add(); } }}
-          className="w-16 rounded-md border border-[var(--border)] bg-[var(--surface-elevated)] px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-[var(--accent)]/40" />
+          className="w-16 rounded-sm border border-[var(--border)] bg-[var(--surface-elevated)] px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-[var(--accent)]/40" />
         <button type="button" onClick={add}
-          className="rounded-md bg-[var(--accent)] text-[var(--accent-fg)] px-2 py-1 text-xs font-medium hover:brightness-110 transition">Add</button>
+          className="rounded-sm bg-[var(--accent)] text-[var(--accent-fg)] px-2 py-1 text-xs font-medium hover:brightness-110 transition">Add</button>
       </div>
     </div>
   );

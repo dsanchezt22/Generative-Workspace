@@ -59,7 +59,7 @@ export function CalendarField({ spec, value, onChange }: Props) {
               key={i}
               type="button"
               onClick={() => toggle(d)}
-              className="aspect-square grid place-items-center rounded-md text-xs transition"
+              className="aspect-square grid place-items-center rounded-sm text-xs transition"
               style={{
                 background: marked ? "var(--accent)" : "transparent",
                 color: marked ? "var(--accent-fg)" : "var(--foreground)",

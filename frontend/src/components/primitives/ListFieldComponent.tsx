@@ -31,7 +31,7 @@ export function ListFieldComponent({ spec, value, onChange }: Props) {
         {items.map((it, i) => (
           <li
             key={i}
-            className="flex items-center justify-between gap-2 rounded-md bg-[var(--surface-elevated)] px-3 py-1.5 text-sm"
+            className="flex items-center justify-between gap-2 rounded-sm bg-[var(--surface-elevated)] px-3 py-1.5 text-sm"
           >
             <span className="truncate">{it}</span>
             <button
@@ -61,12 +61,12 @@ export function ListFieldComponent({ spec, value, onChange }: Props) {
             }
           }}
           placeholder={spec.placeholder ?? `Add ${spec.item_label.toLowerCase()}…`}
-          className="flex-1 rounded-md border border-[var(--border)] bg-[var(--surface-elevated)] px-3 py-1.5 text-sm placeholder:text-[var(--muted)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]/40"
+          className="flex-1 rounded-sm border border-[var(--border)] bg-[var(--surface-elevated)] px-3 py-1.5 text-sm placeholder:text-[var(--muted)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]/40"
         />
         <button
           type="button"
           onClick={add}
-          className="rounded-md bg-[var(--accent)] text-[var(--accent-fg)] px-3 py-1.5 text-sm font-medium hover:brightness-110 transition"
+          className="rounded-sm bg-[var(--accent)] text-[var(--accent-fg)] px-3 py-1.5 text-sm font-medium hover:brightness-110 transition"
         >
           Add
         </button>

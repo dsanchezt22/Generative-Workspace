@@ -58,7 +58,7 @@ export function ChecklistField({ spec, value, onChange }: Props) {
         onChange={(e) => setDraft(e.target.value)}
         onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); add(); } }}
         placeholder="Add item…"
-        className="rounded-md border border-[var(--border)] bg-[var(--surface-elevated)] px-2.5 py-1.5 text-sm placeholder:text-[var(--muted)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]/40"
+        className="rounded-sm border border-[var(--border)] bg-[var(--surface-elevated)] px-2.5 py-1.5 text-sm placeholder:text-[var(--muted)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]/40"
       />
     </div>
   );

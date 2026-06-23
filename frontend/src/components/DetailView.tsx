@@ -26,10 +26,10 @@ export function DetailView({ module, crossModuleValues, inspectorOpen, onClose, 
       <header className="h-14 shrink-0 px-4 flex items-center gap-3 border-b border-[var(--border)]"
         style={{ ["--accent" as string]: theme.accent } as React.CSSProperties}>
         <button type="button" onClick={onClose}
-          className="flex items-center gap-1.5 rounded-md border border-[var(--border)] px-2.5 py-1 text-xs text-[var(--muted)] hover:text-[var(--foreground)] transition">
+          className="flex items-center gap-1.5 rounded-sm border border-[var(--border)] px-2.5 py-1 text-xs text-[var(--muted)] hover:text-[var(--foreground)] transition">
           <Icon name="chevronLeft" size={14} /> Canvas
         </button>
-        <span className="shrink-0 grid place-items-center w-6 h-6 rounded-md" style={{ background: "color-mix(in srgb, var(--accent) 20%, transparent)", color: "var(--accent)" }}>
+        <span className="shrink-0 grid place-items-center w-6 h-6 rounded-sm" style={{ background: "color-mix(in srgb, var(--accent) 20%, transparent)", color: "var(--accent)" }}>
           <Icon name={icon} size={15} />
         </span>
         <span className="text-sm font-semibold tracking-tight truncate">{module.config.title}</span>

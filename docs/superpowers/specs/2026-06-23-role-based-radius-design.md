@@ -87,10 +87,11 @@ reference (with a role-legend comment) for the few inline/SVG cases.
    4 semantic tokens + role-legend comment.
 2. **Module.tsx sync points (must match):** shell `rounded-2xl`→`rounded-lg`
    (`:280`), sheen overlay `rounded-2xl`→`rounded-lg` (`:315`), border-trace SVG
-   `rx="16"`/`ry="16"`→`8` (`:311`), per-module default radius `16`→`8` in the
-   `RADIUS` map (`:258`), icon tile `rounded-md`→`rounded-sm` (`:365`). The
-   screenshot-import override (`sharp/rounded/pill`) **stays** — that is
-   intentional source-matching variation, not AI uniformity.
+   `rx="16"`/`ry="16"`→`8` (`:311`), icon tile `rounded-md`→`rounded-sm` (`:365`).
+   The screenshot-import `RADIUS` override map (`:258`, `sharp/rounded/pill` =
+   8/16/28px) is **left untouched** — it is an explicit import-fidelity feature
+   outside the role system (closed-enum design layer from a screenshot capture),
+   and the default uniform look is already fixed by the shell change above.
 3. **Data-surface + pill-demotion exceptions** (rules 6–7): `TableField`,
    `KanbanField`, `TrackerField`, `ChoiceChipsField`, `EmptyState`.
 4. **Mechanical sweep** (rules 1–3) across all remaining chrome + primitive

@@ -88,7 +88,7 @@ export function CommandPalette({ open, onClose, pages, allModules, actions, onGo
   return (
     <div className="fixed inset-0 z-50 flex items-start justify-center pt-[12vh] bg-black/30 animate-fade" onMouseDown={onClose}>
       <div
-        className="w-[min(560px,calc(100%-2rem))] rounded-2xl border border-[var(--border)] bg-[var(--surface)] shadow-2xl shadow-black/40 overflow-hidden animate-scale-in"
+        className="w-[min(560px,calc(100%-2rem))] rounded-lg border border-[var(--border)] bg-[var(--surface)] shadow-2xl shadow-black/40 overflow-hidden animate-scale-in"
         onMouseDown={(e) => e.stopPropagation()}
       >
         <input

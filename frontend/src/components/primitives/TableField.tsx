@@ -28,7 +28,7 @@ export function TableField({ spec, value, onChange }: Props) {
   return (
     <div className="flex flex-col gap-1.5">
       <span className="text-xs uppercase tracking-wide text-[var(--muted)]">{spec.label}</span>
-      <div className="overflow-x-auto rounded-md border border-[var(--border)]">
+      <div className="overflow-x-auto rounded-none border border-[var(--border)]">
         <table className="w-full text-sm border-collapse">
           <thead>
             <tr className="bg-[var(--surface-elevated)]">

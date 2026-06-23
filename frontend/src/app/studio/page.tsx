@@ -102,7 +102,7 @@ export default function StudioPage() {
     reloadUseCases();
   };
 
-  const btn = "rounded-md px-2.5 py-1 text-xs font-medium transition";
+  const btn = "rounded-sm px-2.5 py-1 text-xs font-medium transition";
 
   return (
     <div className="flex h-screen w-full bg-[var(--background)] text-[var(--foreground)]">
@@ -180,7 +180,7 @@ export default function StudioPage() {
               placeholder="image URL ↵"
               disabled={importing || !active}
               aria-label="Import a layout from an image URL"
-              className="w-36 rounded-md border border-[var(--border)] bg-[var(--surface)] px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-[var(--accent)]/50 disabled:opacity-40"
+              className="w-36 rounded-sm border border-[var(--border)] bg-[var(--surface)] px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-[var(--accent)]/50 disabled:opacity-40"
             />
             <button
               type="button"
@@ -228,7 +228,7 @@ export default function StudioPage() {
           ) : (
             <div className="flex flex-wrap gap-4 items-start">
               {layouts.map((ly, i) => (
-                <div key={ly.id ?? i} className="w-[340px] rounded-2xl border border-[var(--border)] bg-[var(--surface)]/40 p-3 flex flex-col gap-2 animate-pop">
+                <div key={ly.id ?? i} className="w-[340px] rounded-lg border border-[var(--border)] bg-[var(--surface)]/40 p-3 flex flex-col gap-2 animate-pop">
                   <div className="flex items-start justify-between gap-2 px-0.5">
                     <div className="min-w-0">
                       <div className="text-sm font-semibold truncate">{ly.label}</div>
@@ -268,7 +268,7 @@ export default function StudioPage() {
       </main>
 
       {toast && (
-        <div className="fixed bottom-5 left-1/2 -translate-x-1/2 z-30 rounded-xl border border-[var(--border)] bg-[var(--surface)] px-4 py-2 text-sm shadow-lg animate-pop">
+        <div className="fixed bottom-5 left-1/2 -translate-x-1/2 z-30 rounded-lg border border-[var(--border)] bg-[var(--surface)] px-4 py-2 text-sm shadow-lg animate-pop">
           {toast}
         </div>
       )}

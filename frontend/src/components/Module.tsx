@@ -277,7 +277,7 @@ export function Module({
     <div
       ref={rootRef}
       onMouseDown={isCanvas ? () => onSelect(module.id) : undefined}
-      className={`rounded-2xl border bg-[var(--surface)] flex flex-col ${
+      className={`rounded-lg border bg-[var(--surface)] flex flex-col ${
         isCanvas ? "absolute shadow-lg shadow-black/30 transition-[transform,box-shadow] duration-200 hover:shadow-xl hover:shadow-black/40 hover:-translate-y-0.5 will-change-transform" : "relative w-full shadow-none"
       }`}
       style={!isCanvas ? ({
@@ -308,11 +308,11 @@ export function Module({
         <>
           {/* Beat 2 — the border traces itself. */}
           <svg data-assembly="border-svg" className="pointer-events-none absolute inset-0 z-20 opacity-0" preserveAspectRatio="none" aria-hidden>
-            <rect data-assembly="border" fill="none" stroke="var(--accent)" strokeWidth="1.5" rx="16" ry="16" />
+            <rect data-assembly="border" fill="none" stroke="var(--accent)" strokeWidth="1.5" rx="8" ry="8" />
           </svg>
           {/* Beat 4 — the canonical matte sheen band sweeps across (matches the
               marketing site's .module-scan: triple-stop --white-matte band at 36% width). */}
-          <div className="pointer-events-none absolute inset-0 z-20 overflow-hidden rounded-2xl" aria-hidden>
+          <div className="pointer-events-none absolute inset-0 z-20 overflow-hidden rounded-lg" aria-hidden>
             <div data-assembly="scan" className="absolute inset-y-0 left-0 opacity-0"
               style={{
                 width: "36%",
@@ -362,7 +362,7 @@ export function Module({
           </button>
         )}
 
-        <span className="shrink-0 grid place-items-center w-6 h-6 rounded-md leading-none select-none"
+        <span className="shrink-0 grid place-items-center w-6 h-6 rounded-sm leading-none select-none"
           style={{ background: "color-mix(in srgb, var(--accent) 20%, transparent)", color: "var(--accent)" }} aria-hidden>
           <Icon name={iconName} size={15} />
         </span>

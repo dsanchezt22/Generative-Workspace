@@ -107,7 +107,7 @@ export function Inspector({ module, onChange, onClose, onRefine, onDelete, onDup
   const theme = resolveAccent(draft.accent, draft.title);
   const iconName = resolveIconName(draft.icon, draft.title);
 
-  const seg = "flex-1 text-xs px-2 py-1 rounded-md transition capitalize";
+  const seg = "flex-1 text-xs px-2 py-1 rounded-sm transition capitalize";
   const segOn = "bg-[var(--accent)] text-[var(--accent-fg)]";
   const segOff = "text-[var(--muted)] hover:text-[var(--foreground)]";
 
@@ -128,7 +128,7 @@ export function Inspector({ module, onChange, onClose, onRefine, onDelete, onDup
           <input
             value={draft.title}
             onChange={(e) => update((d) => ({ ...d, title: e.target.value }))}
-            className="rounded-md border border-[var(--border)] bg-[var(--surface-elevated)] px-2.5 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-[var(--accent)]/40"
+            className="rounded-sm border border-[var(--border)] bg-[var(--surface-elevated)] px-2.5 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-[var(--accent)]/40"
             aria-label="Module name"
           />
         </section>
@@ -179,7 +179,7 @@ export function Inspector({ module, onChange, onClose, onRefine, onDelete, onDup
                 }, true);
                 setDragId(null);
               }}
-              className="rounded-md border border-[var(--border)] bg-[var(--surface-elevated)] px-2 py-2 flex flex-col gap-1.5"
+              className="rounded-sm border border-[var(--border)] bg-[var(--surface-elevated)] px-2 py-2 flex flex-col gap-1.5"
             >
               <div className="flex items-center gap-1.5">
                 <span className="cursor-grab text-[var(--muted)] text-xs select-none" title="Drag to reorder">⠿</span>
@@ -224,7 +224,7 @@ export function Inspector({ module, onChange, onClose, onRefine, onDelete, onDup
             {COMPONENT_TYPES.map((t) => (
               <button key={t.type} type="button"
                 onClick={() => update((d) => ({ ...d, components: [...d.components, makeComponent(t.type)] }), true)}
-                className="rounded-md border border-[var(--border)] px-2 py-1 text-xs hover:border-[var(--accent)] hover:text-[var(--accent)] transition">+ {t.label}</button>
+                className="rounded-sm border border-[var(--border)] px-2 py-1 text-xs hover:border-[var(--accent)] hover:text-[var(--accent)] transition">+ {t.label}</button>
             ))}
           </div>
         </section>
@@ -233,7 +233,7 @@ export function Inspector({ module, onChange, onClose, onRefine, onDelete, onDup
         <section className="flex flex-col gap-2">
           <span className="text-[10px] uppercase tracking-wide text-[var(--muted)]">Automations</span>
           {draft.automations.map((a) => (
-            <div key={a.id} className="rounded-md border border-[var(--border)] bg-[var(--surface-elevated)] p-2 flex flex-col gap-1.5 text-xs">
+            <div key={a.id} className="rounded-sm border border-[var(--border)] bg-[var(--surface-elevated)] p-2 flex flex-col gap-1.5 text-xs">
               <div className="flex items-center gap-1 flex-wrap">
                 <span className="text-[var(--muted)]">When</span>
                 <Select value={a.when_id} ariaLabel="When field" className="max-w-[96px]"
@@ -267,21 +267,21 @@ export function Inspector({ module, onChange, onClose, onRefine, onDelete, onDup
                 const num = d.components.find((c) => ["number_input", "kpi", "slider", "ring"].includes(c.type))?.id ?? first;
                 return { ...d, automations: [...d.automations, { id: `r_${Date.now()}`, when_id: first, when: "checked", then: "increment", then_id: num }] };
               }, true)}
-              className="self-start rounded-md border border-[var(--border)] px-2 py-1 text-xs hover:border-[var(--accent)] hover:text-[var(--accent)] transition">+ Add rule</button>
+              className="self-start rounded-sm border border-[var(--border)] px-2 py-1 text-xs hover:border-[var(--accent)] hover:text-[var(--accent)] transition">+ Add rule</button>
           )}
         </section>
       </div>
 
       <div className="p-3 border-t border-[var(--border)] flex flex-col gap-2 shrink-0">
         <button type="button" onClick={() => onRefine(module.id)}
-          className="press w-full rounded-md bg-[var(--accent)] text-[var(--accent-fg)] px-3 py-1.5 text-sm font-medium hover:brightness-110 transition">✦ Edit with AI</button>
+          className="press w-full rounded-sm bg-[var(--accent)] text-[var(--accent-fg)] px-3 py-1.5 text-sm font-medium hover:brightness-110 transition">✦ Edit with AI</button>
         <div className="flex items-center gap-2">
           <button type="button" onClick={() => onDuplicate(module.id)}
-            className="flex-1 rounded-md border border-[var(--border)] px-3 py-1.5 text-xs text-[var(--muted)] hover:text-[var(--foreground)] transition">Duplicate</button>
+            className="flex-1 rounded-sm border border-[var(--border)] px-3 py-1.5 text-xs text-[var(--muted)] hover:text-[var(--foreground)] transition">Duplicate</button>
           <button type="button" onClick={() => onArchive(module.id)}
-            className="flex-1 rounded-md border border-[var(--border)] px-3 py-1.5 text-xs text-[var(--muted)] hover:text-[var(--foreground)] transition">Archive</button>
+            className="flex-1 rounded-sm border border-[var(--border)] px-3 py-1.5 text-xs text-[var(--muted)] hover:text-[var(--foreground)] transition">Archive</button>
           <button type="button" onClick={() => onDelete(module.id)}
-            className="flex-1 rounded-md border border-[var(--border)] px-3 py-1.5 text-xs text-[var(--muted)] hover:text-[var(--danger)] hover:border-[var(--danger)] transition">Delete</button>
+            className="flex-1 rounded-sm border border-[var(--border)] px-3 py-1.5 text-xs text-[var(--muted)] hover:text-[var(--danger)] hover:border-[var(--danger)] transition">Delete</button>
         </div>
       </div>
     </aside>

@@ -42,11 +42,11 @@ export function TimelineField({ spec, value, onChange }: Props) {
       </ol>
       <div className="flex gap-1.5">
         <input type="date" value={date} onChange={(e) => setDate(e.target.value)}
-          className="rounded-md border border-[var(--border)] bg-[var(--surface-elevated)] px-2 py-1 text-xs focus:outline-none" />
+          className="rounded-sm border border-[var(--border)] bg-[var(--surface-elevated)] px-2 py-1 text-xs focus:outline-none" />
         <input value={label} onChange={(e) => setLabel(e.target.value)} placeholder="Event"
           onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); add(); } }}
-          className="flex-1 min-w-0 rounded-md border border-[var(--border)] bg-[var(--surface-elevated)] px-2 py-1 text-xs focus:outline-none" />
-        <button type="button" onClick={add} className="rounded-md bg-[var(--accent)] text-[var(--accent-fg)] px-2 py-1 text-xs font-medium hover:brightness-110 transition">Add</button>
+          className="flex-1 min-w-0 rounded-sm border border-[var(--border)] bg-[var(--surface-elevated)] px-2 py-1 text-xs focus:outline-none" />
+        <button type="button" onClick={add} className="rounded-sm bg-[var(--accent)] text-[var(--accent-fg)] px-2 py-1 text-xs font-medium hover:brightness-110 transition">Add</button>
       </div>
     </div>
   );

@@ -16,7 +16,7 @@ export function DateField({ spec, value, onChange }: Props) {
         type={spec.include_time ? "datetime-local" : "date"}
         value={value ?? ""}
         onChange={(e) => onChange(e.target.value)}
-        className="rounded-md border border-[var(--border)] bg-[var(--surface-elevated)] px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[var(--accent)]/40"
+        className="rounded-sm border border-[var(--border)] bg-[var(--surface-elevated)] px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[var(--accent)]/40"
       />
     </div>
   );

@@ -71,7 +71,7 @@ export function TrackerField({ spec, value, onChange }: Props) {
         <span className="text-xs uppercase tracking-wide text-[var(--muted)]">{spec.label}</span>
         <span className="text-[10px] text-[var(--muted)]">resets each {period}</span>
       </div>
-      <div className="flex flex-col divide-y divide-[var(--border)] rounded-lg border border-[var(--border)] overflow-hidden">
+      <div className="flex flex-col divide-y divide-[var(--border)] rounded-none border border-[var(--border)] overflow-hidden">
         {rows.map((r, i) => {
           const doneNow = r.done.includes(todayKey);
           const st = streak(r.done);
@@ -112,7 +112,7 @@ export function TrackerField({ spec, value, onChange }: Props) {
         onChange={(e) => setDraft(e.target.value)}
         onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); add(); } }}
         placeholder={`Add a ${period === "week" ? "weekly " : ""}subject…`}
-        className="rounded-md border border-[var(--border)] bg-[var(--surface-elevated)] px-2.5 py-1.5 text-sm placeholder:text-[var(--muted)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]/40"
+        className="rounded-sm border border-[var(--border)] bg-[var(--surface-elevated)] px-2.5 py-1.5 text-sm placeholder:text-[var(--muted)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]/40"
       />
     </div>
   );

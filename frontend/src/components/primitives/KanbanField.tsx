@@ -28,13 +28,13 @@ export function KanbanField({ spec, value, onChange }: Props) {
       <span className="text-xs uppercase tracking-wide text-[var(--muted)]">{spec.label}</span>
       <div className="flex gap-2 overflow-x-auto no-scrollbar pb-1">
         {cols.map((c) => (
-          <div key={c} className="shrink-0 w-40 rounded-lg bg-[var(--surface-elevated)] p-1.5 flex flex-col gap-1.5">
+          <div key={c} className="shrink-0 w-40 rounded-none bg-[var(--surface-elevated)] p-1.5 flex flex-col gap-1.5">
             <div className="flex items-center justify-between px-1">
               <span className="text-[11px] font-medium uppercase tracking-wide text-[var(--muted)] truncate">{c}</span>
               <span className="text-[10px] text-[var(--muted)]">{cards(c).length}</span>
             </div>
             {cards(c).map((card, i) => (
-              <div key={i} className="group rounded-md bg-[var(--surface)] border border-[var(--border)] px-2 py-1.5 text-xs flex items-start gap-1">
+              <div key={i} className="group rounded-sm bg-[var(--surface)] border border-[var(--border)] px-2 py-1.5 text-xs flex items-start gap-1">
                 <span className="flex-1 break-words">{card}</span>
                 <button type="button" onClick={() => remove(c, i)} className="text-[var(--muted)] hover:text-[var(--danger)] opacity-0 group-hover:opacity-100" aria-label="Remove card">×</button>
               </div>

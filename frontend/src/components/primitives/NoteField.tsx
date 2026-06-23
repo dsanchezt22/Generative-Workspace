@@ -17,7 +17,7 @@ export function NoteField({ spec, value, onChange }: Props) {
         onChange={(e) => onChange(e.target.value)}
         placeholder={spec.placeholder ?? "Write…"}
         rows={4}
-        className="resize-y min-h-[5rem] rounded-md border border-[var(--border)] bg-[var(--surface-elevated)] px-3 py-2 text-sm leading-relaxed placeholder:text-[var(--muted)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]/40"
+        className="resize-y min-h-[5rem] rounded-sm border border-[var(--border)] bg-[var(--surface-elevated)] px-3 py-2 text-sm leading-relaxed placeholder:text-[var(--muted)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]/40"
       />
     </div>
   );

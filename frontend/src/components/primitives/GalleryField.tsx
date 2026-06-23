@@ -26,7 +26,7 @@ export function GalleryField({ spec, value, onChange }: Props) {
       {imgs.length > 0 && (
         <div className="grid grid-cols-3 gap-1.5">
           {imgs.map((src, i) => (
-            <div key={i} className="group relative aspect-square rounded-md overflow-hidden bg-[var(--surface-elevated)]">
+            <div key={i} className="group relative aspect-square rounded-sm overflow-hidden bg-[var(--surface-elevated)]">
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img src={src} alt="" className="w-full h-full object-cover" onError={(e) => { (e.target as HTMLImageElement).style.opacity = "0"; }} />
               <button type="button" onClick={() => onChange(imgs.filter((_, idx) => idx !== i))}
@@ -41,9 +41,9 @@ export function GalleryField({ spec, value, onChange }: Props) {
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); add(); } }}
           placeholder="Paste image URL…"
-          className="flex-1 min-w-0 rounded-md border border-[var(--border)] bg-[var(--surface-elevated)] px-2.5 py-1.5 text-sm placeholder:text-[var(--muted)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]/40"
+          className="flex-1 min-w-0 rounded-sm border border-[var(--border)] bg-[var(--surface-elevated)] px-2.5 py-1.5 text-sm placeholder:text-[var(--muted)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]/40"
         />
-        <button type="button" onClick={add} className="rounded-md bg-[var(--accent)] text-[var(--accent-fg)] px-3 py-1.5 text-sm font-medium hover:brightness-110 transition">Add</button>
+        <button type="button" onClick={add} className="rounded-sm bg-[var(--accent)] text-[var(--accent-fg)] px-3 py-1.5 text-sm font-medium hover:brightness-110 transition">Add</button>
       </div>
     </div>
   );

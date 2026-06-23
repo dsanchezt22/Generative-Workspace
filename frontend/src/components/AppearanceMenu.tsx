@@ -20,7 +20,7 @@ export function AppearanceMenu() {
   }, [open]);
 
   const seg =
-    "flex-1 text-xs px-2 py-1 rounded-md transition capitalize";
+    "flex-1 text-xs px-2 py-1 rounded-sm transition capitalize";
   const segOn = "bg-[var(--accent)] text-[var(--accent-fg)]";
   const segOff = "text-[var(--muted)] hover:text-[var(--foreground)]";
 
@@ -37,7 +37,7 @@ export function AppearanceMenu() {
       </button>
 
       {open && (
-        <div className="absolute right-0 top-9 z-40 w-60 rounded-xl border border-[var(--border)] bg-[var(--surface)] shadow-2xl shadow-black/30 p-3 flex flex-col gap-3">
+        <div className="absolute right-0 top-9 z-40 w-60 rounded-lg border border-[var(--border)] bg-[var(--surface)] shadow-2xl shadow-black/30 p-3 flex flex-col gap-3">
           <div>
             <p className="text-[10px] uppercase tracking-wide text-[var(--muted)] mb-1.5">Theme</p>
             <div className="flex gap-1 rounded-lg bg-[var(--surface-elevated)] p-1">

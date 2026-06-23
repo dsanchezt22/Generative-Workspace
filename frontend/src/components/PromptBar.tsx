@@ -195,7 +195,7 @@ export function PromptBar({ onModule, activePageId, refineTarget, onRefineModule
       onSubmit={submit}
       className="absolute left-1/2 -translate-x-1/2 bottom-6 w-[min(720px,calc(100%-2rem))] z-10"
     >
-      <div className="flex flex-col rounded-2xl border border-[var(--border)] bg-[var(--surface)]/95 backdrop-blur shadow-2xl shadow-black/40 overflow-hidden">
+      <div className="flex flex-col rounded-lg border border-[var(--border)] bg-[var(--surface)]/95 backdrop-blur shadow-2xl shadow-black/40 overflow-hidden">
 
         {previews.length > 0 && (
           <div className="flex flex-col gap-3 px-3 pt-3 pb-1 max-h-[60vh] overflow-y-auto">
@@ -204,7 +204,7 @@ export function PromptBar({ onModule, activePageId, refineTarget, onRefineModule
                 {previews.length} tool{previews.length === 1 ? "" : "s"} ready to preview &amp; edit
               </span>
               <button type="button" onClick={addAll}
-                className="ml-auto rounded-md bg-[var(--accent)] text-[var(--accent-fg)] px-2.5 py-1 text-xs font-medium hover:brightness-110 transition">
+                className="ml-auto rounded-sm bg-[var(--accent)] text-[var(--accent-fg)] px-2.5 py-1 text-xs font-medium hover:brightness-110 transition">
                 Add all to canvas
               </button>
               <button type="button" onClick={dismissAll}
@@ -224,7 +224,7 @@ export function PromptBar({ onModule, activePageId, refineTarget, onRefineModule
                 <div className="flex items-center gap-2 mt-1 px-1">
                   <span className="text-[10px] text-[var(--muted)]">Edit fields inline, then</span>
                   <button type="button" onClick={() => addOne(i)}
-                    className="ml-auto rounded-md border border-[var(--accent)] text-[var(--accent)] px-2.5 py-0.5 text-xs hover:bg-[var(--accent)] hover:text-[var(--accent-fg)] transition">Add to canvas</button>
+                    className="ml-auto rounded-sm border border-[var(--accent)] text-[var(--accent)] px-2.5 py-0.5 text-xs hover:bg-[var(--accent)] hover:text-[var(--accent-fg)] transition">Add to canvas</button>
                   <button type="button" onClick={() => dismissOne(i)}
                     className="text-[var(--muted)] hover:text-[var(--danger)] text-xs" aria-label="Dismiss">Dismiss</button>
                 </div>
@@ -318,7 +318,7 @@ export function PromptBar({ onModule, activePageId, refineTarget, onRefineModule
           <button
             type="submit"
             disabled={(!prompt.trim() && !file) || loading}
-            className={`rounded-md bg-[var(--accent)] text-[var(--accent-fg)] px-3 py-1.5 text-sm font-medium disabled:opacity-40 disabled:cursor-not-allowed hover:brightness-110 active:scale-95 transition shrink-0 ${loading ? "animate-pulse" : ""}`}
+            className={`rounded-sm bg-[var(--accent)] text-[var(--accent-fg)] px-3 py-1.5 text-sm font-medium disabled:opacity-40 disabled:cursor-not-allowed hover:brightness-110 active:scale-95 transition shrink-0 ${loading ? "animate-pulse" : ""}`}
           >
             {buttonLabel}
           </button>

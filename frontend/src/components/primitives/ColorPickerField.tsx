@@ -20,7 +20,7 @@ export function ColorPickerField({ spec, value, onChange }: Props) {
           type="color"
           value={current}
           onChange={(e) => onChange(e.target.value)}
-          className="w-8 h-8 rounded-md border border-[var(--border)] bg-transparent cursor-pointer"
+          className="w-8 h-8 rounded-sm border border-[var(--border)] bg-transparent cursor-pointer"
           aria-label={`${spec.label} colour`}
         />
         {SWATCHES.map((c) => (

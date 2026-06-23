@@ -64,7 +64,7 @@ export function Select({ value, options, onChange, className, ariaLabel }: Props
         type="button"
         onClick={(e) => { e.stopPropagation(); setOpen((v) => !v); }}
         aria-label={ariaLabel}
-        className={`flex items-center justify-between gap-1.5 rounded-md border border-[var(--border)] bg-[var(--surface)] px-2 py-1 text-xs text-[var(--foreground)] hover:border-[var(--accent)] transition ${className ?? ""}`}
+        className={`flex items-center justify-between gap-1.5 rounded-sm border border-[var(--border)] bg-[var(--surface)] px-2 py-1 text-xs text-[var(--foreground)] hover:border-[var(--accent)] transition ${className ?? ""}`}
       >
         <span className="truncate">{current?.label ?? "Select…"}</span>
         <Icon name="chevronDown" size={12} className="text-[var(--muted)] shrink-0" />

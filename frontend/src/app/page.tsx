@@ -57,7 +57,7 @@ function HeaderInsights({
         type="button"
         onClick={run}
         disabled={loading}
-        className="shrink-0 flex items-center gap-1.5 rounded-md border border-[var(--border)] px-2.5 py-1 text-xs text-[var(--muted)] hover:text-[var(--foreground)] transition disabled:opacity-40"
+        className="shrink-0 flex items-center gap-1.5 rounded-sm border border-[var(--border)] px-2.5 py-1 text-xs text-[var(--muted)] hover:text-[var(--foreground)] transition disabled:opacity-40"
         title="Generate a dashboard that aggregates this tab's modules"
       >
         <Icon name="sparkles" size={14} className={loading ? "animate-pulse" : ""} />
@@ -544,7 +544,7 @@ export default function Home() {
         <button
           type="button"
           onClick={() => setConvoOpen((v) => { const n = !v; if (n) { setSelectedId(null); setInspectorId(null); setArchivedOpen(false); setSnapshotsOpen(false); } return n; })}
-          className={`shrink-0 flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs transition ${
+          className={`shrink-0 flex items-center gap-1.5 rounded-sm border px-2.5 py-1 text-xs transition ${
             convoOpen
               ? "border-[var(--accent)] text-[var(--foreground)]"
               : "border-[var(--border)] text-[var(--muted)] hover:text-[var(--foreground)]"
@@ -563,7 +563,7 @@ export default function Home() {
 
         <Link
           href="/studio"
-          className="shrink-0 flex items-center gap-1.5 rounded-md border border-[var(--border)] px-2.5 py-1 text-xs text-[var(--muted)] hover:text-[var(--foreground)] transition"
+          className="shrink-0 flex items-center gap-1.5 rounded-sm border border-[var(--border)] px-2.5 py-1 text-xs text-[var(--muted)] hover:text-[var(--foreground)] transition"
           title="Layout Studio: browse layout patterns per use case"
         >
           <Icon name="grid" size={14} />
@@ -592,7 +592,7 @@ export default function Home() {
       {!loading && activeModules.length === 0 && <EmptyState onPick={handlePickChip} />}
 
       {showWelcome && (
-        <div className="absolute top-[4.5rem] left-1/2 -translate-x-1/2 z-20 flex items-center gap-2.5 rounded-xl border border-[var(--border)] bg-[var(--surface)]/95 backdrop-blur px-4 py-2.5 shadow-lg max-w-[90vw] animate-pop">
+        <div className="absolute top-[4.5rem] left-1/2 -translate-x-1/2 z-20 flex items-center gap-2.5 rounded-lg border border-[var(--border)] bg-[var(--surface)]/95 backdrop-blur px-4 py-2.5 shadow-lg max-w-[90vw] animate-pop">
           <span className="shrink-0 text-[var(--accent)]"><Icon name="sparkles" size={16} /></span>
           <span className="text-sm">
             This is your space. Tell me what you&apos;d like to organize, or edit what&apos;s here.

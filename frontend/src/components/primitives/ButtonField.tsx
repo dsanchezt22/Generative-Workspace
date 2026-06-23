@@ -29,7 +29,7 @@ export function ButtonField({ spec, onAction, count }: Props) {
       <button
         type="button"
         onClick={() => (utility ? setOpen((v) => !v) : onAction())}
-        className="press w-full flex items-center justify-center gap-1.5 rounded-md bg-[var(--accent)] text-[var(--accent-fg)] px-3 py-2 text-sm font-medium hover:brightness-110 transition"
+        className="press w-full flex items-center justify-center gap-1.5 rounded-sm bg-[var(--accent)] text-[var(--accent-fg)] px-3 py-2 text-sm font-medium hover:brightness-110 transition"
       >
         <Icon name={iconName} size={15} />
         <span className="truncate">{spec.label}</span>
@@ -38,7 +38,7 @@ export function ButtonField({ spec, onAction, count }: Props) {
         )}
       </button>
       {open && utility && (
-        <div className="absolute z-20 mt-1 left-0 rounded-xl border border-[var(--border)] bg-[var(--surface)] shadow-2xl shadow-black/30 p-2">
+        <div className="absolute z-20 mt-1 left-0 rounded-lg border border-[var(--border)] bg-[var(--surface)] shadow-2xl shadow-black/30 p-2">
           {spec.action === "calculator" ? <Calculator /> : <Timer />}
         </div>
       )}
@@ -76,12 +76,12 @@ function Calculator() {
 
   const Btn = ({ children, onClick, cls = "" }: { children: React.ReactNode; onClick: () => void; cls?: string }) => (
     <button type="button" onClick={onClick}
-      className={`w-9 h-9 rounded-md text-sm bg-[var(--surface-elevated)] hover:bg-[var(--border)] transition ${cls}`}>{children}</button>
+      className={`w-9 h-9 rounded-sm text-sm bg-[var(--surface-elevated)] hover:bg-[var(--border)] transition ${cls}`}>{children}</button>
   );
 
   return (
     <div className="flex flex-col gap-1.5 w-[156px]">
-      <div className="rounded-md bg-[var(--surface-elevated)] px-2 py-1.5 text-right text-lg tabular-nums truncate">{display}</div>
+      <div className="rounded-sm bg-[var(--surface-elevated)] px-2 py-1.5 text-right text-lg tabular-nums truncate">{display}</div>
       <div className="grid grid-cols-4 gap-1">
         <Btn onClick={clear} cls="col-span-2 !bg-[var(--danger)]/20">C</Btn>
         <Btn onClick={() => chooseOp("÷")}>÷</Btn>
@@ -129,9 +129,9 @@ function Timer() {
       )}
       <div className="flex gap-1.5">
         <button type="button" onClick={() => setRunning((r) => !r)}
-          className="px-3 py-1 rounded-md bg-[var(--accent)] text-[var(--accent-fg)] text-xs font-medium">{running ? "Pause" : "Start"}</button>
+          className="px-3 py-1 rounded-sm bg-[var(--accent)] text-[var(--accent-fg)] text-xs font-medium">{running ? "Pause" : "Start"}</button>
         <button type="button" onClick={() => { setRunning(false); setSecs(300); }}
-          className="px-3 py-1 rounded-md border border-[var(--border)] text-xs">Reset</button>
+          className="px-3 py-1 rounded-sm border border-[var(--border)] text-xs">Reset</button>
       </div>
     </div>
   );

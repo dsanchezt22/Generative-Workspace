@@ -19,7 +19,7 @@ export function TextInputField({ spec, value, onChange }: Props) {
         placeholder={spec.placeholder ?? ""}
         value={value ?? ""}
         onChange={(e) => onChange(e.target.value)}
-        className="rounded-md border border-[var(--border)] bg-[var(--surface-elevated)] px-3 py-2 text-sm placeholder:text-[var(--muted)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]/40"
+        className="rounded-sm border border-[var(--border)] bg-[var(--surface-elevated)] px-3 py-2 text-sm placeholder:text-[var(--muted)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]/40"
       />
     </label>
   );

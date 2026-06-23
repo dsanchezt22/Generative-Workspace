@@ -33,7 +33,7 @@ export function SnapshotsPanel({ snapshots, pageName, onClose, onSave, onRestore
       </header>
       <div className="p-3 border-b border-[var(--border)]">
         <button type="button" onClick={onSave}
-          className="press w-full flex items-center justify-center gap-1.5 rounded-md bg-[var(--accent)] text-[var(--accent-fg)] px-3 py-1.5 text-sm font-medium hover:brightness-110 transition">
+          className="press w-full flex items-center justify-center gap-1.5 rounded-sm bg-[var(--accent)] text-[var(--accent-fg)] px-3 py-1.5 text-sm font-medium hover:brightness-110 transition">
           <Icon name="layers" size={15} /> Save this page as a snapshot
         </button>
       </div>

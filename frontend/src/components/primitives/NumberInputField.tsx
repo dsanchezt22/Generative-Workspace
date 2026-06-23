@@ -26,7 +26,7 @@ export function NumberInputField({ spec, value, onChange }: Props) {
         onChange={(e) =>
           onChange(e.target.value === "" ? "" : Number(e.target.value))
         }
-        className="rounded-md border border-[var(--border)] bg-[var(--surface-elevated)] px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[var(--accent)]/40"
+        className="rounded-sm border border-[var(--border)] bg-[var(--surface-elevated)] px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[var(--accent)]/40"
       />
     </label>
   );

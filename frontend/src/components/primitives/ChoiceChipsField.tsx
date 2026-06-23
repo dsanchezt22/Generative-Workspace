@@ -21,7 +21,7 @@ export function ChoiceChipsField({ spec, value, onChange }: Props) {
               key={o}
               type="button"
               onClick={() => onChange(on ? "" : o)}
-              className="rounded-full px-3 py-1 text-xs border transition"
+              className="rounded-sm px-3 py-1 text-xs border transition"
               style={{
                 background: on ? "var(--accent)" : "transparent",
                 color: on ? "var(--accent-fg)" : "var(--foreground)",
