@@ -128,3 +128,45 @@ def test_decode_runs_then_generation_is_last_call():
     # last call is the generation call and includes the existing module context
     assert "Meal Log" in gen.call_args[0][0]
     assert gen.call_count >= 2  # decode + generate
+
+
+def test_decode_intent_theme_flows_into_generation_hint():
+    """When the LLM decode succeeds, its archetypes + theme are injected into the
+    generation prompt (covers the live decode branch of generate_modules)."""
+    from unittest.mock import patch
+
+    arr = json.dumps(
+        [{"title": "T", "components": [{"id": "a", "type": "text_input", "label": "A"}]}]
+    )
+    decoded = {"archetypes": ["habit_heatmap"], "theme": {"accent": "emerald", "icon": "repeat"}}
+    with (
+        patch("src.services.orchestrator.llm.is_stub_mode", return_value=False),
+        patch("src.semantic_cache.lookup", return_value=("miss", None)),
+        patch("src.semantic_cache.store"),
+        patch("src.archetypes.decode_intent", return_value=decoded),
+        patch("src.services.orchestrator.llm.generate", return_value=arr) as gen,
+    ):
+        orchestrator.generate_modules("track my habits")
+    prompt = gen.call_args[0][0]
+    assert "habit_heatmap" in prompt
+    assert "accent=emerald" in prompt and "icon=repeat" in prompt
+
+
+def test_generate_modules_falls_back_to_selector_when_decode_none():
+    """Decode returning None falls back to the deterministic selector + archetype theme."""
+    from unittest.mock import patch
+
+    arr = json.dumps(
+        [{"title": "T", "components": [{"id": "a", "type": "text_input", "label": "A"}]}]
+    )
+    with (
+        patch("src.services.orchestrator.llm.is_stub_mode", return_value=False),
+        patch("src.semantic_cache.lookup", return_value=("miss", None)),
+        patch("src.semantic_cache.store"),
+        patch("src.archetypes.decode_intent", return_value=None),
+        patch("src.services.orchestrator.llm.generate", return_value=arr) as gen,
+    ):
+        orchestrator.generate_modules("a workout log")
+    prompt = gen.call_args[0][0]
+    assert "workout_calendar" in prompt  # deterministic selector chose it
+    assert "None" not in prompt  # no literal None in the theme hint

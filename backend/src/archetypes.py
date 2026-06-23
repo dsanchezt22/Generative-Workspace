@@ -279,10 +279,34 @@ def select_archetypes(prompt: str, limit: int = 3) -> list[Archetype]:
 # into the generation hint (the orchestrator falls back per-field when absent).
 _ACCENTS = {"amber", "emerald", "sky", "rose", "violet", "coral", "teal", "gold"}
 _ICONS = {
-    "activity", "leaf", "dollar", "check", "book", "repeat", "smile", "calendar",
-    "plane", "music", "cap", "briefcase", "droplet", "moon", "film", "cart", "star",
-    "target", "list", "grid", "chart", "camera", "heart", "home", "folder", "bell",
-    "paw", "sparkles",
+    "activity",
+    "leaf",
+    "dollar",
+    "check",
+    "book",
+    "repeat",
+    "smile",
+    "calendar",
+    "plane",
+    "music",
+    "cap",
+    "briefcase",
+    "droplet",
+    "moon",
+    "film",
+    "cart",
+    "star",
+    "target",
+    "list",
+    "grid",
+    "chart",
+    "camera",
+    "heart",
+    "home",
+    "folder",
+    "bell",
+    "paw",
+    "sparkles",
 }
 
 DECODE_SYSTEM_PROMPT = (
@@ -321,12 +345,14 @@ def decode_intent(prompt: str) -> dict[str, Any] | None:
     keys = [k for k in data.get("archetypes", []) if k in valid]
     if not keys:
         return None
-    raw_theme = data.get("theme") if isinstance(data.get("theme"), dict) else {}
+    rt = data.get("theme")
+    raw_theme: dict[str, Any] = rt if isinstance(rt, dict) else {}
     # Keep only in-vocabulary fields; missing/invalid ones are dropped so the
     # orchestrator can fall back per-field (no literal "None" reaches the hint).
+    accent, icon = raw_theme.get("accent"), raw_theme.get("icon")
     theme: dict[str, Any] = {}
-    if raw_theme.get("accent") in _ACCENTS:
-        theme["accent"] = raw_theme["accent"]
-    if raw_theme.get("icon") in _ICONS:
-        theme["icon"] = raw_theme["icon"]
+    if isinstance(accent, str) and accent in _ACCENTS:
+        theme["accent"] = accent
+    if isinstance(icon, str) and icon in _ICONS:
+        theme["icon"] = icon
     return {"summary": str(data.get("summary", "")), "archetypes": keys, "theme": theme}

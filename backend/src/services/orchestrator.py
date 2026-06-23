@@ -8,11 +8,15 @@ from __future__ import annotations
 
 import json
 import os
+from collections.abc import Callable
+from typing import Any, TypeVar
 
 from pydantic import ValidationError
 
 from src import llm
 from src.schema import ClarifyingQuestion, ModuleConfig, RefusalError
+
+_T = TypeVar("_T")
 
 
 class _InvalidOutput(Exception):
@@ -228,8 +232,13 @@ def _parse_module_config(raw: str) -> ModuleConfig:
 
 
 def _generate_validated(
-    user: str, system: str, parse, *, schema: dict | None = None, expect_array: bool = False
-):
+    user: str,
+    system: str,
+    parse: Callable[[str], _T],
+    *,
+    schema: dict[str, Any] | None = None,
+    expect_array: bool = False,
+) -> _T:
     """Generate, parse, and retry once on unparseable output. Explicit refusals
     and clarifying questions propagate immediately (they are not model slips)."""
     last: Exception | None = None
@@ -305,7 +314,7 @@ DECOMPOSE_SYSTEM_PROMPT = (
 def _seeded_system(
     prompt: str,
     existing_modules: list[ModuleConfig] | None = None,
-    seed_override: list | None = None,
+    seed_override: list[dict[str, Any]] | None = None,
     archetype_hint: str | None = None,
 ) -> str:
     from src.stub_templates import pick_system
@@ -336,10 +345,7 @@ def _parse_modules(raw: str) -> list[ModuleConfig]:
             raise RefusalError(str(data["refusal"]))
         if "question" in data and len(data) == 1:
             raise ClarifyingQuestion(str(data["question"]))
-        if isinstance(data.get("modules"), list):
-            data = data["modules"]
-        else:
-            data = [data]  # a single config object
+        data = data["modules"] if isinstance(data.get("modules"), list) else [data]
     if not isinstance(data, list):
         raise _InvalidOutput("did not return a list of modules.")
     out: list[ModuleConfig] = []

@@ -23,6 +23,9 @@ repos:
       - id: mypy
         args: [--config-file=pyproject.toml]
         files: ^backend/src/
+        # The hook runs in an isolated env; give it the typed deps the source uses
+        # so its results match local mypy (otherwise pydantic models read as Any).
+        additional_dependencies: [pydantic]
 
   - repo: https://github.com/gitleaks/gitleaks
     rev: v8.18.4
