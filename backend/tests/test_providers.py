@@ -81,7 +81,7 @@ def test_openai_generate_posts_chat_completions(monkeypatch):
 
     monkeypatch.setattr(llm.urllib.request, "urlopen", fake_urlopen)
     out = llm.generate("make a tracker", system="SYS")
-    assert json.loads(out)["title"] == "X"
+    assert json.loads(out.text)["title"] == "X"
     assert captured["url"] == "http://localhost:11434/v1/chat/completions"
     assert captured["auth"] is None  # no key → no auth header (local server)
     assert captured["body"]["model"] == "qwen3:4b"
@@ -135,7 +135,8 @@ def test_openai_cascade_to_stub_when_unreachable(monkeypatch):
 
     monkeypatch.setattr(llm.urllib.request, "urlopen", boom)
     out = llm.generate("a workout tracker")  # no gemini key → degrade to templates
-    assert "components" in json.loads(out)
+    assert "components" in json.loads(out.text)
+    assert out.degraded is True
 
 
 def test_cascade_off_raises(monkeypatch):

@@ -3,6 +3,7 @@ from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
+from src import llm
 from src.main import app
 from src.schema import ModuleConfig, TextInput
 
@@ -12,6 +13,10 @@ VALID_RAW = json.dumps(
         "components": [{"id": "exercise", "type": "text_input", "label": "Exercise"}],
     }
 )
+
+
+def _gr(text: str) -> llm.GenResult:
+    return llm.GenResult(text=text, provider="stub", model="stub")
 
 
 @pytest.fixture(autouse=True)
@@ -42,7 +47,7 @@ def test_health(client):
 
 
 def test_generate_returns_module_and_sets_session(client):
-    with patch("src.services.orchestrator.llm.generate", return_value=VALID_RAW):
+    with patch("src.services.orchestrator.llm.generate", return_value=_gr(VALID_RAW)):
         resp = client.post("/api/modules/generate", json={"prompt": "track my workouts"})
     assert resp.status_code == 200, resp.text
     body = resp.json()
@@ -58,7 +63,7 @@ def test_generate_rejects_empty_prompt(client):
 def test_generate_surfaces_refusal_as_422(client):
     with patch(
         "src.services.orchestrator.llm.generate",
-        return_value='{"refusal": "Out of scope."}',
+        return_value=_gr('{"refusal": "Out of scope."}'),
     ):
         resp = client.post("/api/modules/generate", json={"prompt": "build a 3D movie"})
     assert resp.status_code == 422
@@ -66,14 +71,14 @@ def test_generate_surfaces_refusal_as_422(client):
 
 
 def test_list_modules_is_scoped_to_session(client, second_client):
-    with patch("src.services.orchestrator.llm.generate", return_value=VALID_RAW):
+    with patch("src.services.orchestrator.llm.generate", return_value=_gr(VALID_RAW)):
         client.post("/api/modules/generate", json={"prompt": "track my workouts"})
     assert client.get("/api/modules").json()
     assert second_client.get("/api/modules").json() == []
 
 
 def test_patch_module_updates_config(client):
-    with patch("src.services.orchestrator.llm.generate", return_value=VALID_RAW):
+    with patch("src.services.orchestrator.llm.generate", return_value=_gr(VALID_RAW)):
         created = client.post("/api/modules/generate", json={"prompt": "track my workouts"}).json()
     module_id = created["module"]["id"]
 
@@ -96,7 +101,7 @@ def test_patch_unknown_module_returns_404(client):
 
 
 def test_delete_module_removes_it(client):
-    with patch("src.services.orchestrator.llm.generate", return_value=VALID_RAW):
+    with patch("src.services.orchestrator.llm.generate", return_value=_gr(VALID_RAW)):
         created = client.post("/api/modules/generate", json={"prompt": "track my workouts"}).json()
     module_id = created["module"]["id"]
     resp = client.delete(f"/api/modules/{module_id}")
@@ -122,7 +127,7 @@ def test_generate_surfaces_llm_failure_as_503(client):
 
 
 def test_delete_is_scoped_to_session(client, second_client):
-    with patch("src.services.orchestrator.llm.generate", return_value=VALID_RAW):
+    with patch("src.services.orchestrator.llm.generate", return_value=_gr(VALID_RAW)):
         created = client.post("/api/modules/generate", json={"prompt": "track my workouts"}).json()
     module_id = created["module"]["id"]
     # A different session must not be able to delete it.
@@ -131,7 +136,7 @@ def test_delete_is_scoped_to_session(client, second_client):
 
 
 def test_undo_endpoint_reverts_module(client):
-    with patch("src.services.orchestrator.llm.generate", return_value=VALID_RAW):
+    with patch("src.services.orchestrator.llm.generate", return_value=_gr(VALID_RAW)):
         created = client.post("/api/modules/generate", json={"prompt": "track my workouts"}).json()
     module_id = created["module"]["id"]
     renamed = ModuleConfig(title="Renamed", components=[TextInput(id="exercise", label="Exercise")])
@@ -143,7 +148,7 @@ def test_undo_endpoint_reverts_module(client):
 
 
 def test_undo_with_nothing_to_undo_returns_409(client):
-    with patch("src.services.orchestrator.llm.generate", return_value=VALID_RAW):
+    with patch("src.services.orchestrator.llm.generate", return_value=_gr(VALID_RAW)):
         created = client.post("/api/modules/generate", json={"prompt": "track my workouts"}).json()
     module_id = created["module"]["id"]
     resp = client.post(f"/api/modules/{module_id}/undo")
@@ -151,7 +156,7 @@ def test_undo_with_nothing_to_undo_returns_409(client):
 
 
 def test_history_endpoint_lists_versions(client):
-    with patch("src.services.orchestrator.llm.generate", return_value=VALID_RAW):
+    with patch("src.services.orchestrator.llm.generate", return_value=_gr(VALID_RAW)):
         created = client.post("/api/modules/generate", json={"prompt": "track my workouts"}).json()
     module_id = created["module"]["id"]
     renamed = ModuleConfig(title="Renamed", components=[TextInput(id="exercise", label="Exercise")])
@@ -173,11 +178,11 @@ REFINED_RAW = json.dumps(
 
 
 def test_refine_endpoint_updates_module(client):
-    with patch("src.services.orchestrator.llm.generate", return_value=VALID_RAW):
+    with patch("src.services.orchestrator.llm.generate", return_value=_gr(VALID_RAW)):
         created = client.post("/api/modules/generate", json={"prompt": "track my workouts"}).json()
     module_id = created["module"]["id"]
 
-    with patch("src.services.orchestrator.llm.generate", return_value=REFINED_RAW):
+    with patch("src.services.orchestrator.llm.generate", return_value=_gr(REFINED_RAW)):
         resp = client.post(
             f"/api/modules/{module_id}/refine", json={"prompt": "add a rest day checkbox"}
         )
@@ -187,7 +192,7 @@ def test_refine_endpoint_updates_module(client):
 
 
 def test_refine_endpoint_rejects_empty_prompt(client):
-    with patch("src.services.orchestrator.llm.generate", return_value=VALID_RAW):
+    with patch("src.services.orchestrator.llm.generate", return_value=_gr(VALID_RAW)):
         created = client.post("/api/modules/generate", json={"prompt": "track my workouts"}).json()
     module_id = created["module"]["id"]
     resp = client.post(f"/api/modules/{module_id}/refine", json={"prompt": "  "})
@@ -200,12 +205,12 @@ def test_refine_endpoint_returns_404_for_unknown_module(client):
 
 
 def test_refine_endpoint_surfaces_refusal_as_422(client):
-    with patch("src.services.orchestrator.llm.generate", return_value=VALID_RAW):
+    with patch("src.services.orchestrator.llm.generate", return_value=_gr(VALID_RAW)):
         created = client.post("/api/modules/generate", json={"prompt": "track my workouts"}).json()
     module_id = created["module"]["id"]
     with patch(
         "src.services.orchestrator.llm.generate",
-        return_value='{"refusal": "Cannot embed video."}',
+        return_value=_gr('{"refusal": "Cannot embed video."}'),
     ):
         resp = client.post(f"/api/modules/{module_id}/refine", json={"prompt": "embed a video"})
     assert resp.status_code == 422
@@ -213,11 +218,11 @@ def test_refine_endpoint_surfaces_refusal_as_422(client):
 
 
 def test_refine_creates_history_entry(client):
-    with patch("src.services.orchestrator.llm.generate", return_value=VALID_RAW):
+    with patch("src.services.orchestrator.llm.generate", return_value=_gr(VALID_RAW)):
         created = client.post("/api/modules/generate", json={"prompt": "track my workouts"}).json()
     module_id = created["module"]["id"]
 
-    with patch("src.services.orchestrator.llm.generate", return_value=REFINED_RAW):
+    with patch("src.services.orchestrator.llm.generate", return_value=_gr(REFINED_RAW)):
         client.post(f"/api/modules/{module_id}/refine", json={"prompt": "add a rest day checkbox"})
 
     history = client.get(f"/api/modules/{module_id}/history").json()
@@ -225,7 +230,7 @@ def test_refine_creates_history_entry(client):
 
 
 def test_refine_scoped_to_session(client, second_client):
-    with patch("src.services.orchestrator.llm.generate", return_value=VALID_RAW):
+    with patch("src.services.orchestrator.llm.generate", return_value=_gr(VALID_RAW)):
         created = client.post("/api/modules/generate", json={"prompt": "track my workouts"}).json()
     module_id = created["module"]["id"]
     resp = second_client.post(f"/api/modules/{module_id}/refine", json={"prompt": "add a checkbox"})
@@ -249,7 +254,7 @@ METRIC_RAW = json.dumps(
 
 
 def test_generate_module_with_metric_component(client):
-    with patch("src.services.orchestrator.llm.generate", return_value=METRIC_RAW):
+    with patch("src.services.orchestrator.llm.generate", return_value=_gr(METRIC_RAW)):
         resp = client.post("/api/modules/generate", json={"prompt": "dashboard"})
     assert resp.status_code == 200, resp.text
     comp = resp.json()["module"]["config"]["components"][0]
@@ -259,11 +264,11 @@ def test_generate_module_with_metric_component(client):
 
 
 def test_workspace_insights_returns_module(client):
-    with patch("src.services.orchestrator.llm.generate", return_value=VALID_RAW):
+    with patch("src.services.orchestrator.llm.generate", return_value=_gr(VALID_RAW)):
         client.post("/api/modules/generate", json={"prompt": "workout"})
         client.post("/api/modules/generate", json={"prompt": "meals"})
 
-    with patch("src.services.orchestrator.llm.generate", return_value=METRIC_RAW):
+    with patch("src.services.orchestrator.llm.generate", return_value=_gr(METRIC_RAW)):
         resp = client.post("/api/workspace/insights")
     assert resp.status_code == 200, resp.text
     assert resp.json()["module"]["config"]["title"] == "Dashboard"
@@ -275,7 +280,7 @@ def test_workspace_insights_requires_modules(client):
 
 
 def test_workspace_insights_scoped_to_session(client, second_client):
-    with patch("src.services.orchestrator.llm.generate", return_value=VALID_RAW):
+    with patch("src.services.orchestrator.llm.generate", return_value=_gr(VALID_RAW)):
         client.post("/api/modules/generate", json={"prompt": "workout"})
         client.post("/api/modules/generate", json={"prompt": "meals"})
     # second_client has no modules — should get 422
@@ -284,7 +289,7 @@ def test_workspace_insights_scoped_to_session(client, second_client):
 
 
 def test_generate_passes_existing_modules_context(client):
-    with patch("src.services.orchestrator.llm.generate", return_value=VALID_RAW) as mock_gen:
+    with patch("src.services.orchestrator.llm.generate", return_value=_gr(VALID_RAW)) as mock_gen:
         client.post("/api/modules/generate", json={"prompt": "workout"})
         client.post("/api/modules/generate", json={"prompt": "another module"})
     # Second call should have received context with existing modules
@@ -295,7 +300,7 @@ def test_generate_passes_existing_modules_context(client):
 def test_generate_returns_question_when_clarification_needed(client):
     with patch(
         "src.services.orchestrator.llm.generate",
-        return_value='{"question": "How many meals per day?"}',
+        return_value=_gr('{"question": "How many meals per day?"}'),
     ):
         resp = client.post("/api/modules/generate", json={"prompt": "track food"})
     assert resp.status_code == 200
@@ -305,7 +310,7 @@ def test_generate_returns_question_when_clarification_needed(client):
 
 
 def test_generate_with_combined_prompt_produces_module(client):
-    with patch("src.services.orchestrator.llm.generate", return_value=VALID_RAW):
+    with patch("src.services.orchestrator.llm.generate", return_value=_gr(VALID_RAW)):
         resp = client.post(
             "/api/modules/generate",
             json={"prompt": "track food — 3 meals per day"},

@@ -3,7 +3,7 @@ from typing import Literal
 
 from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile
 
-from src import db
+from src import db, llm
 from src.schema import (
     ClarifyingQuestion,
     CreateSnapshotRequest,
@@ -70,7 +70,8 @@ def generate_module(
     _log(sid, "user", prompt, page_id=stored[0].page_id)
     for s in stored:
         _log(sid, "assistant", f"Created {s.config.title}", page_id=s.page_id, module_id=s.id)
-    return GenerateResponse(module=stored[0], modules=stored)
+    deg = llm.last_call.get()
+    return GenerateResponse(module=stored[0], modules=stored, degraded=bool(deg and deg.degraded))
 
 
 @router.post("/modules/preview", response_model=GenerateResponse)
@@ -96,7 +97,8 @@ def preview_modules(
             status_code=503,
             detail="AI generation is temporarily unavailable. Please try again in a moment.",
         ) from None
-    return GenerateResponse(previews=configs)
+    deg = llm.last_call.get()
+    return GenerateResponse(previews=configs, degraded=bool(deg and deg.degraded))
 
 
 @router.post("/modules", response_model=list[StoredModule], status_code=201)
@@ -266,12 +268,13 @@ def refine_module(module_id: str, body: RefineRequest, request: Request) -> Stor
         new_config = orchestrator.refine_module(
             existing.config, prompt, existing_modules=other_modules
         )
+    except ClarifyingQuestion as e:
+        raise HTTPException(status_code=422, detail={"question": e.question}) from e
     except RefusalError as e:
         raise HTTPException(status_code=422, detail={"refusal": e.reason}) from e
-    except LLMError:
+    except LLMError as e:
         raise HTTPException(
-            status_code=503,
-            detail="AI generation is temporarily unavailable. Please try again in a moment.",
+            status_code=503, detail=str(e) or "AI generation is temporarily unavailable."
         ) from None
     updated = db.update_module(sid, module_id, new_config)
     if updated is None:
@@ -341,12 +344,13 @@ def workspace_insights(
     existing_configs = [m.config for m in modules]
     try:
         config = orchestrator.synthesize_workspace(existing_configs)
+    except ClarifyingQuestion as e:
+        raise HTTPException(status_code=422, detail={"question": e.question}) from e
     except RefusalError as e:
         raise HTTPException(status_code=422, detail={"refusal": e.reason}) from e
-    except LLMError:
+    except LLMError as e:
         raise HTTPException(
-            status_code=503,
-            detail="AI generation is temporarily unavailable. Please try again in a moment.",
+            status_code=503, detail=str(e) or "AI generation is temporarily unavailable."
         ) from None
     stored = db.insert_module(sid, config, page_id=page_id)
     return GenerateResponse(module=stored)

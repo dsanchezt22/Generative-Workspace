@@ -3,7 +3,8 @@ from contextlib import contextmanager
 from unittest.mock import patch
 
 import pytest
-from src.schema import RefusalError
+from src import llm
+from src.schema import LLMError, RefusalError
 from src.services import orchestrator
 
 VALID = json.dumps(
@@ -23,9 +24,10 @@ def _fake_llm(text: str):
     """Exercise the orchestrator's real (non-stub) path with llm.generate mocked.
     Without forcing non-stub, generate_modules/refine_module short-circuit to
     stub templates and never call the mock."""
+    result = llm.GenResult(text=text, provider="stub", model="stub")
     with (
         patch("src.services.orchestrator.llm.is_stub_mode", return_value=False),
-        patch("src.services.orchestrator.llm.generate", return_value=text) as gen,
+        patch("src.services.orchestrator.llm.generate", return_value=result) as gen,
     ):
         yield gen
 
@@ -126,12 +128,11 @@ def test_refine_module_raises_refusal_on_non_json():
         orchestrator.refine_module(_make_config(), "anything")
 
 
-def test_refine_module_stub_returns_config_unchanged(monkeypatch):
+def test_refine_module_stub_raises_llm_error(monkeypatch):
+    """R-1104: stub mode must not silently pretend a refine succeeded."""
     monkeypatch.setenv("GEMINI_API_KEY", "stub-test")
-    original = _make_config()
-    result = orchestrator.refine_module(original, "add a rest day checkbox")
-    assert result.title == original.title
-    assert len(result.components) == len(original.components)
+    with pytest.raises(LLMError):
+        orchestrator.refine_module(_make_config(), "add a rest day checkbox")
 
 
 # --- context injection tests ---

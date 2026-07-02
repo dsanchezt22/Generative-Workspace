@@ -207,7 +207,7 @@ def transform_ir(ir: CaptureIR, *, match_colors: bool = False) -> tuple[ModuleCo
                 system=system,
                 schema=ModuleConfig.model_json_schema(),
                 expect_array=False,
-            )
+            ).text
             config = _parse_config(raw)
             break
         except (ValueError, ValidationError, json.JSONDecodeError) as e:

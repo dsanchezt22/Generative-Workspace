@@ -92,7 +92,9 @@ def test_map_ui_type():
 
 
 def test_transform_preserves_all_capabilities(monkeypatch):
-    monkeypatch.setattr(llm, "generate", lambda *a, **k: json.dumps(_FULL_CONFIG))
+    monkeypatch.setattr(
+        llm, "generate", lambda *a, **k: llm.GenResult(json.dumps(_FULL_CONFIG), "stub", "stub")
+    )
     ir = parse_ir(json.dumps(_IR))
     config, report = transform_ir(ir, match_colors=True)
     assert report["coverage"] == 1.0 and report["uncovered"] == []
@@ -104,7 +106,11 @@ def test_transform_preserves_all_capabilities(monkeypatch):
 
 
 def test_transform_flags_dropped_feature(monkeypatch):
-    monkeypatch.setattr(llm, "generate", lambda *a, **k: json.dumps(_DROPPED_CONFIG))
+    monkeypatch.setattr(
+        llm,
+        "generate",
+        lambda *a, **k: llm.GenResult(json.dumps(_DROPPED_CONFIG), "stub", "stub"),
+    )
     ir = parse_ir(json.dumps(_IR))
     _, report = transform_ir(ir, match_colors=False)
     assert report["coverage"] < 1.0
@@ -112,7 +118,9 @@ def test_transform_flags_dropped_feature(monkeypatch):
 
 
 def test_transform_no_match_colors_keeps_brand(monkeypatch):
-    monkeypatch.setattr(llm, "generate", lambda *a, **k: json.dumps(_FULL_CONFIG))
+    monkeypatch.setattr(
+        llm, "generate", lambda *a, **k: llm.GenResult(json.dumps(_FULL_CONFIG), "stub", "stub")
+    )
     ir = parse_ir(json.dumps(_IR))
     config, _ = transform_ir(ir, match_colors=False)
     assert config.theme_opt_in is False
@@ -133,7 +141,9 @@ def test_capture_route_end_to_end_and_autoseed(client, monkeypatch):
     from src import semantic_cache
 
     monkeypatch.setattr(llm, "vision_capture", lambda *a, **k: json.dumps(_IR))
-    monkeypatch.setattr(llm, "generate", lambda *a, **k: json.dumps(_FULL_CONFIG))
+    monkeypatch.setattr(
+        llm, "generate", lambda *a, **k: llm.GenResult(json.dumps(_FULL_CONFIG), "stub", "stub")
+    )
 
     r = client.post(
         "/api/studio/use-cases/calorie/capture",
@@ -161,7 +171,11 @@ def test_capture_low_confidence_not_seeded(client, monkeypatch):
     from src import semantic_cache
 
     monkeypatch.setattr(llm, "vision_capture", lambda *a, **k: json.dumps(_IR))
-    monkeypatch.setattr(llm, "generate", lambda *a, **k: json.dumps(_DROPPED_CONFIG))
+    monkeypatch.setattr(
+        llm,
+        "generate",
+        lambda *a, **k: llm.GenResult(json.dumps(_DROPPED_CONFIG), "stub", "stub"),
+    )
 
     r = client.post(
         "/api/studio/use-cases/calorie/capture", files={"file": ("ui.png", _PNG, "image/png")}

@@ -48,6 +48,7 @@ export interface GenerateResponse {
   modules?: StoredModule[] | null;
   previews?: ModuleConfig[] | null;
   question?: string | null;
+  degraded?: boolean | null;
 }
 
 export const api = {

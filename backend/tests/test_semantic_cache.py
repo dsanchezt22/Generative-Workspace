@@ -3,6 +3,7 @@
 import json
 import math
 
+from src import llm
 from src import semantic_cache as sc
 
 _VARS = (
@@ -88,7 +89,7 @@ def test_generate_modules_cache_hit_skips_model(monkeypatch):
 
     def fake_generate(prompt, system=None, *, schema=None, expect_array=False):
         calls["n"] += 1
-        return json.dumps(
+        text = json.dumps(
             [
                 {
                     "title": "Cached Tool",
@@ -96,6 +97,7 @@ def test_generate_modules_cache_hit_skips_model(monkeypatch):
                 },
             ]
         )
+        return llm.GenResult(text=text, provider="openai", model="m")
 
     monkeypatch.setattr(orchestrator.llm, "generate", fake_generate)
 

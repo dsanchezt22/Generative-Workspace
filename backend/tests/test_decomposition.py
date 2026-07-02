@@ -3,6 +3,7 @@ from contextlib import contextmanager
 from unittest.mock import patch
 
 import pytest
+from src import llm
 from src.schema import ClarifyingQuestion, RefusalError
 from src.services import orchestrator
 from src.stub_templates import pick_system
@@ -13,9 +14,10 @@ def _fake_llm(text: str):
     """Exercise the orchestrator's real (non-stub) path with llm.generate mocked.
     Without forcing non-stub, generate_modules short-circuits to stub templates
     and never calls the mock."""
+    result = llm.GenResult(text=text, provider="stub", model="stub")
     with (
         patch("src.services.orchestrator.llm.is_stub_mode", return_value=False),
-        patch("src.services.orchestrator.llm.generate", return_value=text) as gen,
+        patch("src.services.orchestrator.llm.generate", return_value=result) as gen,
     ):
         yield gen
 

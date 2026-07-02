@@ -390,6 +390,7 @@ class GenerateResponse(BaseModel):
     modules: list[StoredModule] | None = None  # full system when decomposed
     previews: list[ModuleConfig] | None = None  # proposed (not yet persisted) tools
     question: str | None = None  # set when the orchestrator needs clarification
+    degraded: bool = False  # true when the result came from a cascade fallback
 
 
 class InsertModulesRequest(BaseModel):

@@ -26,10 +26,12 @@ Env for the openai provider:
 """
 
 import base64
+import contextvars
 import json
 import os
 import urllib.error
 import urllib.request
+from dataclasses import dataclass
 
 from dotenv import load_dotenv
 
@@ -41,6 +43,21 @@ _client = None
 
 DEFAULT_MODEL = "gemini-flash-latest"
 DEFAULT_TEMPERATURE = 0.4
+
+
+@dataclass
+class GenResult:
+    text: str
+    provider: str
+    model: str
+    degraded: bool = False
+    tokens_in: int | None = None
+    tokens_out: int | None = None
+
+
+last_call: contextvars.ContextVar[GenResult | None] = contextvars.ContextVar(
+    "llm_last_call", default=None
+)
 
 
 def _timeout() -> float:
@@ -181,7 +198,7 @@ def _gemini_generate_file(user_message: str, system: str | None, data: bytes, mi
 
 def _openai_chat(
     messages: list[dict], schema: dict | None = None, expect_array: bool = False
-) -> str:
+) -> tuple[str, dict]:
     base = os.environ.get("TRUS_LLM_BASE_URL", "").strip().rstrip("/")
     model = os.environ.get("TRUS_LLM_MODEL", "").strip()
     if not base or not model:
@@ -230,7 +247,7 @@ def _openai_chat(
         raise LLMError(f"Unexpected LLM response shape: {str(payload)[:300]}") from e
     if not text or not text.strip():
         raise LLMError("The model returned an empty response.")
-    return text
+    return text, payload.get("usage", {})
 
 
 # ------------------------------------------------------------- public --------
@@ -242,30 +259,55 @@ def generate(
     *,
     schema: dict | None = None,
     expect_array: bool = False,
-) -> str:
+) -> GenResult:
     provider = _resolve_provider()
-    if provider == "stub":
+    model = os.environ.get("TRUS_LLM_MODEL") or os.environ.get("GEMINI_MODEL") or "stub"
+
+    def _done(r: GenResult) -> GenResult:
+        last_call.set(r)
+        return r
+
+    def _stub_text() -> str:
+        if expect_array:
+            from src.stub_templates import pick_system
+
+            return json.dumps(pick_system(prompt))
         return _stub_module_for(prompt)
+
+    if provider == "stub":
+        return _done(GenResult(_stub_text(), "stub", "stub"))
     if provider == "openai":
         messages: list[dict] = []
         if system:
             messages.append({"role": "system", "content": system})
         messages.append({"role": "user", "content": prompt})
         try:
-            return _openai_chat(messages, schema=schema, expect_array=expect_array)
+            text, usage = _openai_chat(messages, schema=schema, expect_array=expect_array)
+            return _done(
+                GenResult(
+                    text,
+                    "openai",
+                    model,
+                    tokens_in=usage.get("prompt_tokens"),
+                    tokens_out=usage.get("completion_tokens"),
+                )
+            )
         except LLMError:
             # Local/hosted endpoint unreachable → degrade gracefully.
             if not _cascade_enabled():
                 raise
             if not _is_stub_key(os.environ.get("GEMINI_API_KEY")):
-                return _gemini_generate(prompt, system)
-            return _stub_module_for(prompt)
-    return _gemini_generate(prompt, system)
+                return _done(
+                    GenResult(_gemini_generate(prompt, system), "gemini", model, degraded=True)
+                )
+            return _done(GenResult(_stub_text(), "stub", "stub", degraded=True))
+    return _done(GenResult(_gemini_generate(prompt, system), "gemini", model))
 
 
 def generate_from_file(user_message: str, system: str | None, data: bytes, mime: str) -> str:
     """Multimodal generation. Gemini handles any file; the openai provider handles
-    images (data URL); unsupported inputs return "{}" so callers fall back to templates."""
+    images (data URL); unsupported inputs return "{}" so callers can refuse honestly
+    instead of silently degrading to a template."""
     provider = _resolve_provider()
     if provider == "stub":
         return "{}"
@@ -284,7 +326,8 @@ def generate_from_file(user_message: str, system: str | None, data: bytes, mime:
                     ],
                 }
             )
-            return _openai_chat(messages, expect_array=True)
+            text, _usage = _openai_chat(messages, expect_array=True)
+            return text
         return "{}"  # non-image documents aren't portable across openai-compat servers
     return _gemini_generate_file(user_message, system, data, mime)
 

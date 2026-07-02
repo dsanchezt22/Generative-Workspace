@@ -14,7 +14,7 @@ from typing import TypeVar
 from pydantic import ValidationError
 
 from src import llm
-from src.schema import ClarifyingQuestion, ModuleConfig, RefusalError
+from src.schema import ClarifyingQuestion, LLMError, ModuleConfig, RefusalError
 
 _T = TypeVar("_T")
 
@@ -244,7 +244,7 @@ def _generate_validated(
     last: Exception | None = None
     for attempt in range(1 + _retry_count()):
         msg = user if attempt == 0 else user + _RETRY_NOTE
-        raw = llm.generate(msg, system=system, schema=schema, expect_array=expect_array)
+        raw = llm.generate(msg, system=system, schema=schema, expect_array=expect_array).text
         try:
             return parse(raw)
         except _InvalidOutput as e:
@@ -373,7 +373,9 @@ def generate_modules(
         _parse_modules,
         expect_array=True,
     )
-    semantic_cache.store("system", prompt, [m.model_dump(mode="json") for m in result])
+    last = llm.last_call.get()
+    if last is None or not last.degraded:
+        semantic_cache.store("system", prompt, [m.model_dump(mode="json") for m in result])
     return result
 
 
@@ -397,11 +399,11 @@ def generate_modules_from_file(
     for attempt in range(1 + _retry_count()):
         msg = user_message if attempt == 0 else user_message + _RETRY_NOTE
         raw = llm.generate_from_file(msg, DECOMPOSE_SYSTEM_PROMPT, data, mime)
-        # A provider that can't read this file type returns "{}" — fall back to templates.
         if not raw or raw.strip() in ("{}", ""):
-            from src.stub_templates import pick_system
-
-            return [ModuleConfig.model_validate(c) for c in pick_system(prompt)]
+            raise RefusalError(
+                "This file type can't be read with the current model configuration — "
+                "try an image, or paste the document's text into the prompt."
+            )
         try:
             return _parse_modules(raw)
         except _InvalidOutput as e:
@@ -414,9 +416,8 @@ def refine_module(
     prompt: str,
     existing_modules: list[ModuleConfig] | None = None,
 ) -> ModuleConfig:
-    # Stub mode: Gemini isn't available, so return the config unchanged.
     if llm.is_stub_mode():
-        return config
+        raise LLMError("Refine needs a live model; the app is in offline template mode.")
     context = _module_context(existing_modules or [])
     user_message = (
         f"Current ModuleConfig:\n{config.model_dump_json()}\n\n"

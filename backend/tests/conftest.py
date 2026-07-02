@@ -3,6 +3,7 @@ import os
 import tempfile
 
 import pytest
+from src import llm
 
 
 @pytest.fixture(autouse=True)
@@ -40,3 +41,14 @@ def _isolate_llm_env(monkeypatch):
         "TRUS_EMBED_API_KEY",
     ):
         monkeypatch.delenv(k, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_llm_last_call():
+    """llm.last_call is a module-level contextvar — reset it so a real generate()
+    call in one test can't leak its provenance/degraded state into the next
+    (production requests are isolated per-thread via anyio's context.run(), but
+    sequential direct calls in the same test process share the ambient context)."""
+    token = llm.last_call.set(None)
+    yield
+    llm.last_call.reset(token)

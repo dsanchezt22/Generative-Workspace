@@ -8,6 +8,7 @@ import { Module } from "./Module";
 
 const NOW = new Date().toISOString();
 const noop = () => {};
+const DEGRADED_NOTICE = "Offline fallback: built from a local template, not the AI model.";
 
 interface Props {
   onModule: (m: StoredModule) => void;
@@ -98,6 +99,7 @@ export function PromptBar({ onModule, activePageId, refineTarget, onRefineModule
         const result = await api.previewModules(combined, activePageId);
         if (result.question) setPendingQuestion(result.question);
         else if (result.previews?.length) { setPreviews(result.previews); lastPromptRef.current = combined; }
+        if (result.degraded) setError(DEGRADED_NOTICE);
         setPrompt("");
       } else if (isRefining && refineTarget && onRefineModule) {
         const updated = await api.refineModule(refineTarget.id, v);
@@ -107,6 +109,7 @@ export function PromptBar({ onModule, activePageId, refineTarget, onRefineModule
         const result = await api.generateModuleFromFile(file, v, activePageId);
         if (result.modules?.length) result.modules.forEach((m) => onModule(m));
         else if (result.module) onModule(result.module);
+        if (result.degraded) setError(DEGRADED_NOTICE);
         setPrompt("");
         setFile(null);
         clearClarification();
@@ -130,6 +133,7 @@ export function PromptBar({ onModule, activePageId, refineTarget, onRefineModule
           setPendingQuestion(null);
           originalPromptRef.current = "";
         }
+        if (result.degraded) setError(DEGRADED_NOTICE);
       }
     } catch (err) {
       if (err instanceof ApiError && err.refusal) {

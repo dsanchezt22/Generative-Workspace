@@ -250,7 +250,7 @@ def generate_layouts(use_case_key: str, n: int = 4) -> list[dict]:
                 user if attempt == 0 else user + _RETRY_NOTE,
                 system=STUDIO_SYSTEM,
                 expect_array=True,
-            )
+            ).text
             return _parse_layouts(raw)[:n]
         except _Invalid:
             continue
