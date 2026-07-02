@@ -2,9 +2,11 @@ from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
+from src import llm
 from src.main import app
 
 VALID_RAW = '{"title":"T","components":[{"id":"x","type":"text_input","label":"X"}]}'
+_VALID_RESULT = llm.GenResult(text=VALID_RAW, provider="test", model="test")
 
 
 @pytest.fixture
@@ -102,7 +104,7 @@ def test_modules_belong_to_active_page(client):
     page1_id = client.get("/api/pages").json()[0]["id"]
     page2 = client.post("/api/pages", json={"name": "Work"}).json()
 
-    with patch("src.services.orchestrator.llm.generate", return_value=VALID_RAW):
+    with patch("src.services.orchestrator.llm.generate", return_value=_VALID_RESULT):
         m1 = client.post(f"/api/modules/generate?page_id={page1_id}", json={"prompt": "p1"}).json()
         m2 = client.post(
             f"/api/modules/generate?page_id={page2['id']}", json={"prompt": "p2"}
@@ -122,7 +124,7 @@ def test_list_modules_without_page_returns_all(client):
     page1_id = client.get("/api/pages").json()[0]["id"]
     page2 = client.post("/api/pages", json={"name": "Work"}).json()
 
-    with patch("src.services.orchestrator.llm.generate", return_value=VALID_RAW):
+    with patch("src.services.orchestrator.llm.generate", return_value=_VALID_RESULT):
         client.post(f"/api/modules/generate?page_id={page1_id}", json={"prompt": "p1"})
         client.post(f"/api/modules/generate?page_id={page2['id']}", json={"prompt": "p2"})
 

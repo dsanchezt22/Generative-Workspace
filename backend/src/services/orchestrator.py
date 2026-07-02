@@ -374,7 +374,9 @@ def generate_modules(
         expect_array=True,
     )
     last = llm.last_call.get()
-    if last is None or not last.degraded:
+    # R-403: only a definitely-non-degraded call may seed the cache — an unknown
+    # provenance (last is None) is not safe to treat as "not degraded".
+    if last is not None and not last.degraded:
         semantic_cache.store("system", prompt, [m.model_dump(mode="json") for m in result])
     return result
 

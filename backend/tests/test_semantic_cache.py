@@ -97,7 +97,9 @@ def test_generate_modules_cache_hit_skips_model(monkeypatch):
                 },
             ]
         )
-        return llm.GenResult(text=text, provider="openai", model="m")
+        result = llm.GenResult(text=text, provider="openai", model="m")
+        llm.last_call.set(result)  # mirrors what the real llm.generate() does
+        return result
 
     monkeypatch.setattr(orchestrator.llm, "generate", fake_generate)
 

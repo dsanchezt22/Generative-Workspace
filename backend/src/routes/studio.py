@@ -2,6 +2,7 @@
 ModuleConfig layouts, and promote chosen ones into the generation seed pool."""
 
 import json
+import logging
 import os
 import urllib.error
 import urllib.request
@@ -9,9 +10,11 @@ import urllib.request
 from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
 from pydantic import BaseModel
 
-from src import db, semantic_cache
+from src import db, llm, semantic_cache
 from src.schema import LLMError, ModuleConfig, RefusalError
 from src.services import studio
+
+_logger = logging.getLogger(__name__)
 
 _MAX_IMAGE_BYTES = 12 * 1024 * 1024
 
@@ -182,6 +185,15 @@ def capture_layout(
     except LLMError as e:
         raise HTTPException(status_code=503, detail=str(e)) from e
 
+    # R-403: the TRANSFORM stage's llm.generate() call can cascade-degrade even
+    # though capability coverage still scores "high" — record that on the
+    # layout's capture_meta so neither auto-promote below, nor a later manual
+    # promote (see promote_layout), can seed a degraded result.
+    last = llm.last_call.get()
+    degraded = bool(last is not None and last.degraded)
+    if ly.get("capture_meta") is not None:
+        ly["capture_meta"]["degraded"] = degraded
+
     lid = db.layout_add(
         key,
         ly["label"],
@@ -196,11 +208,14 @@ def capture_layout(
     # prompts for similar tools immediately benefit (decided: auto-seed ON).
     quality = (ly.get("capture_meta") or {}).get("capture_quality")
     if _autopromote_enabled() and quality == "high":
-        uc = studio.get_use_case(key)
-        seed_prompt = (uc.get("seed_prompts") or [ly["label"]])[0] if uc else ly["label"]
-        semantic_cache.store_structured(
-            "system", ly.get("structured_text", ""), seed_prompt, [ly["config"]]
-        )
+        if degraded:
+            _logger.warning("degraded capture not seeded (use_case=%s)", key)
+        else:
+            uc = studio.get_use_case(key)
+            seed_prompt = (uc.get("seed_prompts") or [ly["label"]])[0] if uc else ly["label"]
+            semantic_cache.store_structured(
+                "system", ly.get("structured_text", ""), seed_prompt, [ly["config"]]
+            )
 
     return StudioLayout(
         id=lid,
@@ -231,6 +246,13 @@ def promote_layout(layout_id: str) -> PromoteResponse:
     row = db.layout_get(layout_id)
     if row is None:
         raise HTTPException(status_code=404, detail="Layout not found")
+    capture_meta = json.loads(row["capture_meta_json"]) if row["capture_meta_json"] else None
+    if capture_meta and capture_meta.get("degraded"):
+        raise HTTPException(
+            status_code=409,
+            detail="This layout came from a degraded capture and cannot be "
+            "promoted to the generation seed pool.",
+        )
     uc = studio.get_use_case(row["use_case"])
     seed_prompt = (uc.get("seed_prompts") or [row["label"]])[0] if uc else row["label"]
     config = json.loads(row["config_json"])

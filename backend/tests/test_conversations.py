@@ -3,7 +3,7 @@ from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
-from src import db
+from src import db, llm
 from src.main import app
 
 VALID_RAW = json.dumps(
@@ -14,6 +14,7 @@ VALID_RAW = json.dumps(
         "components": [{"id": "exercise", "type": "text_input", "label": "Exercise"}],
     }
 )
+_VALID_RESULT = llm.GenResult(text=VALID_RAW, provider="test", model="test")
 
 
 @pytest.fixture
@@ -60,7 +61,7 @@ def test_clear_messages_for_page_only():
 
 
 def test_generate_logs_a_conversation_turn(client):
-    with patch("src.services.orchestrator.llm.generate", return_value=VALID_RAW):
+    with patch("src.services.orchestrator.llm.generate", return_value=_VALID_RESULT):
         client.post("/api/modules/generate", json={"prompt": "track my workouts"})
     convo = client.get("/api/conversations").json()
     roles = [m["role"] for m in convo]
@@ -69,7 +70,7 @@ def test_generate_logs_a_conversation_turn(client):
 
 
 def test_clear_conversation_endpoint(client):
-    with patch("src.services.orchestrator.llm.generate", return_value=VALID_RAW):
+    with patch("src.services.orchestrator.llm.generate", return_value=_VALID_RESULT):
         client.post("/api/modules/generate", json={"prompt": "track my workouts"})
     assert client.get("/api/conversations").json()  # non-empty
     resp = client.delete("/api/conversations")
@@ -78,7 +79,7 @@ def test_clear_conversation_endpoint(client):
 
 
 def test_conversation_is_scoped_to_session(client):
-    with patch("src.services.orchestrator.llm.generate", return_value=VALID_RAW):
+    with patch("src.services.orchestrator.llm.generate", return_value=_VALID_RESULT):
         client.post("/api/modules/generate", json={"prompt": "track my workouts"})
     with TestClient(app) as other:
         assert other.get("/api/conversations").json() == []

@@ -705,7 +705,7 @@ def cache_stats() -> dict:
 
 # ── Layout Studio library ────────────────────────────────────────────────────
 
-_LAYOUT_COLS = "id, use_case, label, inspired_by, config_json, created_at"
+_LAYOUT_COLS = "id, use_case, label, inspired_by, config_json, created_at, capture_meta_json"
 
 
 def layout_add(
