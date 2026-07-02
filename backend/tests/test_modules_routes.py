@@ -5,7 +5,7 @@ import pytest
 from fastapi.testclient import TestClient
 from src import llm
 from src.main import app
-from src.schema import ModuleConfig, TextInput
+from src.schema import LLMError, ModuleConfig, TextInput
 
 VALID_RAW = json.dumps(
     {
@@ -115,8 +115,6 @@ def test_delete_unknown_module_returns_404(client):
 
 
 def test_generate_surfaces_llm_failure_as_503(client):
-    from src.schema import LLMError
-
     with patch(
         "src.services.orchestrator.llm.generate",
         side_effect=LLMError("429 prepayment credits depleted"),
@@ -317,3 +315,209 @@ def test_generate_with_combined_prompt_produces_module(client):
         )
     assert resp.status_code == 200
     assert resp.json()["module"] is not None
+
+
+# ---------------------------------------------------------------------------
+# Preview-then-accept: POST /modules/preview proposes without persisting;
+# POST /modules persists what the caller accepts.
+# ---------------------------------------------------------------------------
+
+
+def test_preview_does_not_persist_modules(client):
+    with patch("src.services.orchestrator.llm.generate", return_value=_gr(VALID_RAW)):
+        resp = client.post("/api/modules/preview", json={"prompt": "track my workouts"})
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["module"] is None  # preview never returns a stored module
+    assert body["previews"][0]["title"] == "Workout Log"
+    # Nothing was written to the canvas.
+    assert client.get("/api/modules").json() == []
+
+
+def test_accept_preview_persists_modules(client):
+    with patch("src.services.orchestrator.llm.generate", return_value=_gr(VALID_RAW)):
+        previewed = client.post("/api/modules/preview", json={"prompt": "track my workouts"}).json()
+    assert client.get("/api/modules").json() == []  # still nothing persisted
+
+    accepted = client.post(
+        "/api/modules",
+        json={"configs": previewed["previews"], "prompt": "track my workouts"},
+    )
+    assert accepted.status_code == 201
+    stored = accepted.json()
+    assert stored[0]["config"]["title"] == "Workout Log"
+    assert len(client.get("/api/modules").json()) == 1
+
+    # The accepted prompt is logged as a conversation turn.
+    convo = client.get("/api/conversations").json()
+    assert any(m["text"] == "track my workouts" for m in convo)
+
+
+def test_preview_rejects_empty_prompt(client):
+    resp = client.post("/api/modules/preview", json={"prompt": "   "})
+    assert resp.status_code == 422
+
+
+def test_preview_returns_question_when_clarification_needed(client):
+    with patch(
+        "src.services.orchestrator.llm.generate",
+        return_value=_gr('{"question": "How many meals per day?"}'),
+    ):
+        resp = client.post("/api/modules/preview", json={"prompt": "track food"})
+    assert resp.status_code == 200
+    assert resp.json()["previews"] is None
+    assert "meals" in resp.json()["question"].lower()
+
+
+def test_preview_surfaces_refusal_as_422(client):
+    with patch(
+        "src.services.orchestrator.llm.generate",
+        return_value=_gr('{"refusal": "Out of scope."}'),
+    ):
+        resp = client.post("/api/modules/preview", json={"prompt": "build a 3D movie"})
+    assert resp.status_code == 422
+    assert resp.json()["detail"]["refusal"] == "Out of scope."
+
+
+def test_preview_surfaces_llm_failure_as_503(client):
+    with patch(
+        "src.services.orchestrator.llm.generate",
+        side_effect=LLMError("429 prepayment credits depleted"),
+    ):
+        resp = client.post("/api/modules/preview", json={"prompt": "track my workouts"})
+    assert resp.status_code == 503
+
+
+def test_insert_modules_without_prompt_does_not_log(client):
+    """No `prompt` on the accept payload → no conversation turn logged."""
+    resp = client.post(
+        "/api/modules",
+        json={
+            "configs": [
+                {"title": "T", "components": [{"id": "a", "type": "text_input", "label": "A"}]}
+            ]
+        },
+    )
+    assert resp.status_code == 201
+    convo = client.get("/api/conversations").json()
+    assert not any(m["role"] == "user" for m in convo)
+
+
+# ---------------------------------------------------------------------------
+# Onboarding seed — no LLM cost, never reseeds an existing workspace.
+# ---------------------------------------------------------------------------
+
+
+def test_seed_onboarding_creates_starter_modules(client):
+    resp = client.post("/api/onboarding/seed")
+    assert resp.status_code == 200, resp.text
+    seeded = resp.json()
+    assert len(seeded) == 3
+    titles = {m["config"]["title"] for m in seeded}
+    assert "Today" in titles
+    assert client.get("/api/modules").json()  # persisted
+
+
+def test_seed_onboarding_does_not_reseed_existing_workspace(client):
+    with patch("src.services.orchestrator.llm.generate", return_value=_gr(VALID_RAW)):
+        client.post("/api/modules/generate", json={"prompt": "track my workouts"})
+    assert len(client.get("/api/modules").json()) == 1
+
+    seeded_again = client.post("/api/onboarding/seed").json()
+    assert len(seeded_again) == 1  # unchanged, not reseeded
+    assert len(client.get("/api/modules").json()) == 1
+
+
+# ---------------------------------------------------------------------------
+# Archive / restore / duplicate
+# ---------------------------------------------------------------------------
+
+
+def _insert_direct(client, title="Original") -> dict:
+    resp = client.post(
+        "/api/modules",
+        json={
+            "configs": [
+                {"title": title, "components": [{"id": "a", "type": "text_input", "label": "A"}]}
+            ]
+        },
+    )
+    return resp.json()[0]
+
+
+def test_archive_then_restore_module_via_routes(client):
+    m = _insert_direct(client)
+    archived = client.post(f"/api/modules/{m['id']}/archive")
+    assert archived.status_code == 200
+    assert archived.json()["archived"] is True
+    assert client.get("/api/modules").json() == []
+    assert [a["id"] for a in client.get("/api/modules/archived").json()] == [m["id"]]
+
+    restored = client.post(f"/api/modules/{m['id']}/restore")
+    assert restored.status_code == 200
+    assert restored.json()["archived"] is False
+    assert len(client.get("/api/modules").json()) == 1
+    assert client.get("/api/modules/archived").json() == []
+
+
+def test_archive_unknown_module_returns_404(client):
+    assert client.post("/api/modules/nope/archive").status_code == 404
+
+
+def test_restore_unknown_module_returns_404(client):
+    assert client.post("/api/modules/nope/restore").status_code == 404
+
+
+def test_duplicate_module_via_route(client):
+    m = _insert_direct(client, "Original")
+    dup = client.post(f"/api/modules/{m['id']}/duplicate")
+    assert dup.status_code == 200
+    assert dup.json()["config"]["title"] == "Original copy"
+    assert dup.json()["id"] != m["id"]
+    assert len(client.get("/api/modules").json()) == 2
+
+
+def test_duplicate_unknown_module_returns_404(client):
+    assert client.post("/api/modules/nope/duplicate").status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# refine / insights — LLMError and RefusalError paths not covered elsewhere
+# ---------------------------------------------------------------------------
+
+
+def test_refine_endpoint_surfaces_llm_failure_as_503(client):
+    with patch("src.services.orchestrator.llm.generate", return_value=_gr(VALID_RAW)):
+        created = client.post("/api/modules/generate", json={"prompt": "track my workouts"}).json()
+    module_id = created["module"]["id"]
+    with patch(
+        "src.services.orchestrator.llm.generate",
+        side_effect=LLMError("endpoint unreachable"),
+    ):
+        resp = client.post(f"/api/modules/{module_id}/refine", json={"prompt": "add a field"})
+    assert resp.status_code == 503
+
+
+def test_workspace_insights_surfaces_refusal_as_422(client):
+    with patch("src.services.orchestrator.llm.generate", return_value=_gr(VALID_RAW)):
+        client.post("/api/modules/generate", json={"prompt": "workout"})
+    with patch(
+        "src.services.orchestrator.llm.generate",
+        return_value=_gr(
+            '{"refusal": "Not enough data across modules to synthesize a dashboard."}'
+        ),
+    ):
+        resp = client.post("/api/workspace/insights")
+    assert resp.status_code == 422
+    assert "refusal" in resp.json()["detail"]
+
+
+def test_workspace_insights_surfaces_llm_failure_as_503(client):
+    with patch("src.services.orchestrator.llm.generate", return_value=_gr(VALID_RAW)):
+        client.post("/api/modules/generate", json={"prompt": "workout"})
+    with patch(
+        "src.services.orchestrator.llm.generate",
+        side_effect=LLMError("quota exceeded"),
+    ):
+        resp = client.post("/api/workspace/insights")
+    assert resp.status_code == 503

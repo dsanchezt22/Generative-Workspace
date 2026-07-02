@@ -114,3 +114,360 @@ def test_import_rejects_non_image(client, monkeypatch):
         files={"file": ("notes.txt", b"hello", "text/plain")},
     )
     assert r.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# services/studio.py — the LLM-backed layout mining logic directly (non-stub
+# generation, parsing, and vision-import edge cases not exercised via routes).
+# ---------------------------------------------------------------------------
+
+
+def test_generate_layouts_non_stub_parses_model_output(monkeypatch):
+    import json
+
+    from src import llm
+    from src.services import studio
+
+    monkeypatch.setattr(llm, "is_stub_mode", lambda: False)
+    raw = json.dumps(
+        [
+            {
+                "label": "Nutrient dashboard",
+                "inspired_by": "Cronometer",
+                "config": {
+                    "title": "Nutrition",
+                    "components": [{"id": "cals", "type": "kpi", "label": "Calories"}],
+                },
+            }
+        ]
+    )
+    monkeypatch.setattr(llm, "generate", lambda *a, **k: llm.GenResult(raw, "stub", "stub"))
+    layouts = studio.generate_layouts("calorie", n=2)
+    assert layouts[0]["label"] == "Nutrient dashboard"
+    assert layouts[0]["inspired_by"] == "Cronometer"
+    assert layouts[0]["config"]["title"] == "Nutrition"
+
+
+def test_generate_layouts_unknown_use_case_raises_refusal():
+    from src.schema import RefusalError
+    from src.services import studio
+
+    with pytest.raises(RefusalError):
+        studio.generate_layouts("not-a-real-use-case")
+
+
+def test_generate_layouts_falls_back_to_stub_after_persistent_invalid_output(monkeypatch):
+    from src import llm
+    from src.services import studio
+
+    monkeypatch.setattr(llm, "is_stub_mode", lambda: False)
+    monkeypatch.setattr(llm, "generate", lambda *a, **k: llm.GenResult("not json", "stub", "stub"))
+    layouts = studio.generate_layouts("calorie", n=1)
+    assert layouts  # fell back to _stub_layouts instead of raising
+    assert layouts[0]["config"]["title"]
+
+
+def test_generate_layouts_llm_error_breaks_and_falls_back_to_stub(monkeypatch):
+    from src import llm
+    from src.schema import LLMError
+    from src.services import studio
+
+    def boom(*a, **k):
+        raise LLMError("endpoint down")
+
+    monkeypatch.setattr(llm, "is_stub_mode", lambda: False)
+    monkeypatch.setattr(llm, "generate", boom)
+    layouts = studio.generate_layouts("calorie", n=1)
+    assert layouts
+
+
+def test_parse_layouts_unwraps_layouts_key_and_skips_invalid_items():
+    import json
+
+    from src.services import studio
+
+    raw = json.dumps(
+        {
+            "layouts": [
+                {
+                    "label": "Good",
+                    "config": {
+                        "title": "T",
+                        "components": [{"id": "a", "type": "text_input", "label": "A"}],
+                    },
+                },
+                {"label": "Bad", "config": {"title": "T2"}},  # missing components → invalid
+                "not-a-dict",
+            ]
+        }
+    )
+    out = studio._parse_layouts(raw)
+    assert len(out) == 1
+    assert out[0]["label"] == "Good"
+
+
+def test_parse_layouts_raises_invalid_on_non_json():
+    from src.services import studio
+
+    with pytest.raises(studio._Invalid):
+        studio._parse_layouts("not json at all")
+
+
+def test_parse_layouts_raises_invalid_when_not_a_list():
+    import json
+
+    from src.services import studio
+
+    with pytest.raises(studio._Invalid):
+        studio._parse_layouts(json.dumps({"foo": "bar"}))
+
+
+def test_parse_layouts_raises_invalid_when_no_valid_layouts():
+    import json
+
+    from src.services import studio
+
+    with pytest.raises(studio._Invalid):
+        studio._parse_layouts(json.dumps([{"label": "Bad", "config": {"title": "T"}}]))
+
+
+def test_coerce_drops_invalid_components_but_keeps_valid():
+    from src.services import studio
+
+    data = {
+        "title": "T",
+        "components": [
+            {"id": "a", "type": "text_input", "label": "A"},
+            {"id": "bad", "type": "not_a_real_type", "label": "Bad"},
+        ],
+    }
+    mc = studio._coerce(data)
+    assert [c.id for c in mc.components] == ["a"]
+
+
+def test_parse_one_non_json_raises_invalid():
+    from src.services import studio
+
+    with pytest.raises(studio._Invalid):
+        studio._parse_one("not json")
+
+
+def test_parse_one_accepts_array_and_takes_first_valid():
+    import json
+
+    from src.services import studio
+
+    raw = json.dumps(
+        [
+            {"bad": "shape"},
+            {"title": "T", "components": [{"id": "a", "type": "text_input", "label": "A"}]},
+        ]
+    )
+    mc = studio._parse_one(raw)
+    assert mc.title == "T"
+
+
+def test_parse_one_raises_invalid_when_array_has_no_valid_config():
+    import json
+
+    from src.services import studio
+
+    with pytest.raises(studio._Invalid):
+        studio._parse_one(json.dumps([{"bad": "shape"}]))
+
+
+def test_parse_one_raises_invalid_for_bad_object():
+    import json
+
+    from src.services import studio
+
+    with pytest.raises(studio._Invalid):
+        studio._parse_one(json.dumps({"bad": "shape"}))
+
+
+def test_import_from_image_raises_refusal_after_failed_attempts(monkeypatch):
+    from src import llm
+    from src.schema import RefusalError
+    from src.services import studio
+
+    monkeypatch.setattr(llm, "vision_describe", lambda *a, **k: "not valid json")
+    with pytest.raises(RefusalError):
+        studio.import_from_image("calorie", b"data", "image/png")
+
+
+def test_import_from_image_unknown_use_case_raises_refusal():
+    from src.schema import RefusalError
+    from src.services import studio
+
+    with pytest.raises(RefusalError):
+        studio.import_from_image("nope", b"data", "image/png")
+
+
+def test_capture_layout_unknown_use_case_raises_refusal():
+    from src.schema import RefusalError
+    from src.services import studio
+
+    with pytest.raises(RefusalError):
+        studio.capture_layout("nope", b"data", "image/png")
+
+
+# ---------------------------------------------------------------------------
+# routes/studio.py gaps: unknown use case / refusal / LLM-error / not-found
+# paths not exercised by the happy-path route tests above.
+# ---------------------------------------------------------------------------
+
+
+def test_import_route_unknown_use_case_404(client):
+    r = client.post(
+        "/api/studio/use-cases/not-real/import", files={"file": ("ui.png", _PNG, "image/png")}
+    )
+    assert r.status_code == 404
+
+
+def test_import_route_surfaces_refusal_as_422(client, monkeypatch):
+    from src.services import studio
+
+    monkeypatch.setenv("TRUS_VISION_MODEL", "fake-vlm")
+    monkeypatch.setattr(studio.llm, "vision_describe", lambda *a, **k: "not valid json")
+    r = client.post(
+        "/api/studio/use-cases/calorie/import", files={"file": ("ui.png", _PNG, "image/png")}
+    )
+    assert r.status_code == 422
+    assert "refusal" in r.json()["detail"]
+
+
+def test_capture_route_surfaces_refusal_as_422(client, monkeypatch):
+    from src.schema import RefusalError
+
+    monkeypatch.setattr(
+        "src.services.studio.capture_layout",
+        lambda *a, **k: (_ for _ in ()).throw(RefusalError("couldn't read layout")),
+    )
+    r = client.post(
+        "/api/studio/use-cases/calorie/capture", files={"file": ("ui.png", _PNG, "image/png")}
+    )
+    assert r.status_code == 422
+    assert "refusal" in r.json()["detail"]
+
+
+def test_capture_route_surfaces_llm_error_as_503(client, monkeypatch):
+    from src.schema import LLMError
+
+    monkeypatch.setattr(
+        "src.services.studio.capture_layout",
+        lambda *a, **k: (_ for _ in ()).throw(LLMError("model unavailable")),
+    )
+    r = client.post(
+        "/api/studio/use-cases/calorie/capture", files={"file": ("ui.png", _PNG, "image/png")}
+    )
+    assert r.status_code == 503
+
+
+def test_promote_unknown_layout_404(client):
+    assert client.post("/api/studio/layouts/does-not-exist/promote").status_code == 404
+
+
+def test_import_rejects_oversized_upload(client, monkeypatch):
+    monkeypatch.setenv("TRUS_VISION_MODEL", "fake-vlm")
+    oversized = b"x" * (12 * 1024 * 1024 + 1)
+    r = client.post(
+        "/api/studio/use-cases/calorie/import",
+        files={"file": ("big.png", oversized, "image/png")},
+    )
+    assert r.status_code == 413
+
+
+def test_import_via_image_url_rejects_non_http_scheme(client):
+    r = client.post(
+        "/api/studio/use-cases/calorie/import",
+        data={"image_url": "ftp://example.com/x.png"},
+    )
+    assert r.status_code == 422
+
+
+def test_import_without_file_or_url_returns_422(client):
+    r = client.post("/api/studio/use-cases/calorie/import")
+    assert r.status_code == 422
+
+
+def test_import_via_image_url_fetches_and_stores(client, monkeypatch):
+    import urllib.request
+
+    from src.services import studio
+
+    class _FakeHeaders:
+        def get(self, key, default=None):
+            return "image/png" if key == "Content-Type" else default
+
+    class _FakeUrlResp:
+        headers = _FakeHeaders()
+
+        def read(self, n=-1):
+            return _PNG
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr(urllib.request, "urlopen", lambda req, timeout=None: _FakeUrlResp())
+    monkeypatch.setattr(
+        studio,
+        "import_from_image",
+        lambda key, data, mime: {
+            "label": "From URL",
+            "inspired_by": "reference screenshot",
+            "config": {
+                "title": "T",
+                "components": [{"id": "a", "type": "text_input", "label": "A"}],
+            },
+        },
+    )
+    r = client.post(
+        "/api/studio/use-cases/calorie/import",
+        data={"image_url": "https://example.com/screenshot.png"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["label"] == "From URL"
+
+
+def test_import_via_image_url_non_image_content_type_422(client, monkeypatch):
+    import urllib.request
+
+    class _FakeHeaders:
+        def get(self, key, default=None):
+            return "text/html" if key == "Content-Type" else default
+
+    class _FakeUrlResp:
+        headers = _FakeHeaders()
+
+        def read(self, n=-1):
+            return b"<html></html>"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr(urllib.request, "urlopen", lambda req, timeout=None: _FakeUrlResp())
+    r = client.post(
+        "/api/studio/use-cases/calorie/import",
+        data={"image_url": "https://example.com/page.html"},
+    )
+    assert r.status_code == 422
+
+
+def test_import_via_image_url_network_failure_422(client, monkeypatch):
+    import urllib.request
+
+    def boom(req, timeout=None):
+        raise OSError("refused")
+
+    monkeypatch.setattr(urllib.request, "urlopen", boom)
+    r = client.post(
+        "/api/studio/use-cases/calorie/import",
+        data={"image_url": "https://example.com/x.png"},
+    )
+    assert r.status_code == 422
