@@ -45,7 +45,7 @@ def _log(
 
 
 @router.post("/modules/generate", response_model=GenerateResponse)
-async def generate_module(
+def generate_module(
     body: GenerateRequest,
     request: Request,
     page_id: str | None = Query(default=None),
@@ -74,7 +74,7 @@ async def generate_module(
 
 
 @router.post("/modules/preview", response_model=GenerateResponse)
-async def preview_modules(
+def preview_modules(
     body: GenerateRequest,
     request: Request,
     page_id: str | None = Query(default=None),
@@ -116,14 +116,14 @@ async def insert_modules(
 
 
 @router.post("/modules/generate_from_file", response_model=GenerateResponse)
-async def generate_from_file(
+def generate_from_file(
     request: Request,
     file: UploadFile = File(...),
     prompt: str = Form(""),
     page_id: str | None = Query(default=None),
 ) -> GenerateResponse:
     sid = _session_id(request)
-    data = await file.read()
+    data = file.file.read()
     if not data:
         raise HTTPException(status_code=422, detail="The file is empty.")
     if len(data) > 15 * 1024 * 1024:
@@ -253,7 +253,7 @@ async def duplicate_module(module_id: str, request: Request) -> StoredModule:
 
 
 @router.post("/modules/{module_id}/refine", response_model=StoredModule)
-async def refine_module(module_id: str, body: RefineRequest, request: Request) -> StoredModule:
+def refine_module(module_id: str, body: RefineRequest, request: Request) -> StoredModule:
     prompt = body.prompt.strip()
     if not prompt:
         raise HTTPException(status_code=422, detail="Prompt cannot be empty")
@@ -330,7 +330,7 @@ async def delete_snapshot(snapshot_id: str, request: Request) -> None:
 
 
 @router.post("/workspace/insights", response_model=GenerateResponse)
-async def workspace_insights(
+def workspace_insights(
     request: Request,
     page_id: str | None = Query(default=None),
 ) -> GenerateResponse:

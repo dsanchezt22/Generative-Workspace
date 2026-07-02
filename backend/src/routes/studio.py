@@ -103,10 +103,10 @@ def generate(key: str, n: int = Query(default=4, ge=1, le=8)) -> list[StudioLayo
     return stored
 
 
-async def _load_image(file: UploadFile | None, image_url: str) -> tuple[bytes, str]:
+def _load_image(file: UploadFile | None, image_url: str) -> tuple[bytes, str]:
     """Image bytes + mime from an upload or a single http(s) fetch of a URL."""
     if file is not None:
-        data = await file.read()
+        data = file.file.read()
         mime = file.content_type or "image/png"
         if not mime.startswith("image/"):
             raise HTTPException(status_code=422, detail="That file isn't an image.")
@@ -135,7 +135,7 @@ async def _load_image(file: UploadFile | None, image_url: str) -> tuple[bytes, s
 
 
 @router.post("/use-cases/{key}/import", response_model=StudioLayout)
-async def import_layout(
+def import_layout(
     key: str,
     file: UploadFile | None = File(default=None),
     image_url: str = Form(default=""),
@@ -144,7 +144,7 @@ async def import_layout(
     the DERIVED layout to the library. Only the layout is stored — never the image."""
     if studio.get_use_case(key) is None:
         raise HTTPException(status_code=404, detail=f"Unknown use case: {key}")
-    data, mime = await _load_image(file, image_url)
+    data, mime = _load_image(file, image_url)
     try:
         ly = studio.import_from_image(key, data, mime)
     except RefusalError as e:
@@ -162,7 +162,7 @@ async def import_layout(
 
 
 @router.post("/use-cases/{key}/capture", response_model=StudioLayout)
-async def capture_layout(
+def capture_layout(
     key: str,
     file: UploadFile | None = File(default=None),
     image_url: str = Form(default=""),
@@ -174,7 +174,7 @@ async def capture_layout(
     captures into the generation pool. Only the layout is stored — never the image."""
     if studio.get_use_case(key) is None:
         raise HTTPException(status_code=404, detail=f"Unknown use case: {key}")
-    data, mime = await _load_image(file, image_url)
+    data, mime = _load_image(file, image_url)
     try:
         ly = studio.capture_layout(key, data, mime, match_colors=match_colors)
     except RefusalError as e:
