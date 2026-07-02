@@ -209,3 +209,35 @@ def test_degraded_capture_is_never_auto_seeded(client, monkeypatch):
 
     mode, _ = semantic_cache.lookup("system", "calorie tracker")
     assert mode != "hit"  # degraded output must never enter the seed pool
+
+
+def test_promote_refuses_degraded_capture_with_409(client, monkeypatch):
+    """R-403 on the MANUAL promote path: a layout persisted from a degraded capture
+    carries capture_meta.degraded=True and must be refused (409) by
+    POST /api/studio/layouts/{id}/promote — the user asking doesn't cleanse it."""
+    from src import db, semantic_cache
+
+    monkeypatch.setenv("TRUS_LLM_PROVIDER", "stub")
+    monkeypatch.delenv("TRUS_LLM_BASE_URL", raising=False)
+
+    def degraded_generate(*a, **k):
+        result = llm.GenResult(json.dumps(_CAPTURE_CONFIG), "stub", "stub", degraded=True)
+        llm.last_call.set(result)  # mirrors what the real llm.generate() does
+        return result
+
+    monkeypatch.setattr(llm, "vision_capture", lambda *a, **k: json.dumps(_CAPTURE_IR))
+    monkeypatch.setattr(llm, "generate", degraded_generate)
+
+    ly = client.post(
+        "/api/studio/use-cases/calorie/capture",
+        files={"file": ("ui.png", _CAPTURE_PNG, "image/png")},
+    ).json()
+    assert ly["capture_meta"]["degraded"] is True  # the marker was persisted
+
+    r = client.post(f"/api/studio/layouts/{ly['id']}/promote")
+    assert r.status_code == 409
+    assert "degraded" in r.json()["detail"]
+
+    assert db.cache_stats()["entries"] == 0  # seed pool untouched
+    mode, _ = semantic_cache.lookup("system", "calorie tracker")
+    assert mode != "hit"
