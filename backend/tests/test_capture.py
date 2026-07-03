@@ -14,6 +14,8 @@ from src.main import app
 from src.services.capture.ir import parse_ir
 from src.services.capture.transform import map_ui_type, transform_ir
 
+from tests.conftest import fake_generate
+
 _PNG = b"\x89PNG\r\n\x1a\n"  # bytes are irrelevant — vision is mocked
 
 _IR = {
@@ -92,7 +94,7 @@ def test_map_ui_type():
 
 
 def test_transform_preserves_all_capabilities(monkeypatch):
-    monkeypatch.setattr(llm, "generate", lambda *a, **k: json.dumps(_FULL_CONFIG))
+    monkeypatch.setattr(llm, "generate", fake_generate(json.dumps(_FULL_CONFIG)))
     ir = parse_ir(json.dumps(_IR))
     config, report = transform_ir(ir, match_colors=True)
     assert report["coverage"] == 1.0 and report["uncovered"] == []
@@ -104,7 +106,11 @@ def test_transform_preserves_all_capabilities(monkeypatch):
 
 
 def test_transform_flags_dropped_feature(monkeypatch):
-    monkeypatch.setattr(llm, "generate", lambda *a, **k: json.dumps(_DROPPED_CONFIG))
+    monkeypatch.setattr(
+        llm,
+        "generate",
+        fake_generate(json.dumps(_DROPPED_CONFIG)),
+    )
     ir = parse_ir(json.dumps(_IR))
     _, report = transform_ir(ir, match_colors=False)
     assert report["coverage"] < 1.0
@@ -112,7 +118,7 @@ def test_transform_flags_dropped_feature(monkeypatch):
 
 
 def test_transform_no_match_colors_keeps_brand(monkeypatch):
-    monkeypatch.setattr(llm, "generate", lambda *a, **k: json.dumps(_FULL_CONFIG))
+    monkeypatch.setattr(llm, "generate", fake_generate(json.dumps(_FULL_CONFIG)))
     ir = parse_ir(json.dumps(_IR))
     config, _ = transform_ir(ir, match_colors=False)
     assert config.theme_opt_in is False
@@ -130,10 +136,13 @@ def client(monkeypatch):
 
 
 def test_capture_route_end_to_end_and_autoseed(client, monkeypatch):
-    from src import semantic_cache
+    from src import db, semantic_cache
 
+    # Claim a user so the capture route seeds the pool under a known owner (R-903).
+    user = db.create_user("Capturer")
+    client.post("/api/auth/claim", json={"token": user["invite_token"]})
     monkeypatch.setattr(llm, "vision_capture", lambda *a, **k: json.dumps(_IR))
-    monkeypatch.setattr(llm, "generate", lambda *a, **k: json.dumps(_FULL_CONFIG))
+    monkeypatch.setattr(llm, "generate", fake_generate(json.dumps(_FULL_CONFIG)))
 
     r = client.post(
         "/api/studio/use-cases/calorie/capture",
@@ -152,8 +161,8 @@ def test_capture_route_end_to_end_and_autoseed(client, monkeypatch):
     # it landed in the library …
     listed = client.get("/api/studio/layouts?use_case=calorie").json()
     assert any(x["id"] == ly["id"] for x in listed)
-    # … and a high-confidence capture auto-seeded the generation pool
-    mode, cached = semantic_cache.lookup("system", "calorie tracker")
+    # … and a high-confidence capture auto-seeded the generation pool (for this owner)
+    mode, cached = semantic_cache.lookup("system", "calorie tracker", owner=user["id"])
     assert mode == "hit" and cached and cached[0]["title"]
 
 
@@ -161,7 +170,11 @@ def test_capture_low_confidence_not_seeded(client, monkeypatch):
     from src import semantic_cache
 
     monkeypatch.setattr(llm, "vision_capture", lambda *a, **k: json.dumps(_IR))
-    monkeypatch.setattr(llm, "generate", lambda *a, **k: json.dumps(_DROPPED_CONFIG))
+    monkeypatch.setattr(
+        llm,
+        "generate",
+        fake_generate(json.dumps(_DROPPED_CONFIG)),
+    )
 
     r = client.post(
         "/api/studio/use-cases/calorie/capture", files={"file": ("ui.png", _PNG, "image/png")}

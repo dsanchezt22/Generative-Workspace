@@ -1,6 +1,6 @@
 "use client";
 
-import type { StoredModule } from "@/lib/types";
+import type { CommitModule, StoredModule } from "@/lib/types";
 import { Module } from "./Module";
 import { Icon } from "./Icon";
 import { resolveAccent, resolveIconName } from "@/lib/theme";
@@ -10,15 +10,16 @@ interface Props {
   crossModuleValues: Record<string, number>;
   inspectorOpen: boolean;
   onClose: () => void;
-  onChange: (m: StoredModule) => void;
+  onCommit: CommitModule;
   onUndo: (id: string) => void;
   onRefine: (id: string) => void;
   onSelect: (id: string) => void;
   onEdit: (id: string) => void;
-  onDelete: (id: string) => void;
+  // R-1102: the card's ✕ archives (undoable), not a hard delete.
+  onArchive: (id: string) => void;
 }
 
-export function DetailView({ module, crossModuleValues, inspectorOpen, onClose, onChange, onUndo, onRefine, onSelect, onEdit, onDelete }: Props) {
+export function DetailView({ module, crossModuleValues, inspectorOpen, onClose, onCommit, onUndo, onRefine, onSelect, onEdit, onArchive }: Props) {
   const theme = resolveAccent(module.config.accent, module.config.title);
   const icon = resolveIconName(module.config.icon, module.config.title);
   return (
@@ -41,8 +42,8 @@ export function DetailView({ module, crossModuleValues, inspectorOpen, onClose, 
             variant="detail"
             crossModuleValues={crossModuleValues}
             selected={false}
-            onChange={onChange}
-            onDelete={onDelete}
+            onCommit={onCommit}
+            onArchive={onArchive}
             onUndo={onUndo}
             onSelectForRefine={onRefine}
             onSelect={onSelect}

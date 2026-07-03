@@ -3,7 +3,10 @@
 import json
 import math
 
+from src import llm
 from src import semantic_cache as sc
+
+from tests.conftest import gen_result
 
 _VARS = (
     "TRUS_CACHE",
@@ -72,6 +75,96 @@ def test_kinds_are_isolated(monkeypatch):
     assert mode is None
 
 
+def test_disabled_short_circuits_store_too(monkeypatch):
+    _clear(monkeypatch)
+    monkeypatch.setenv("TRUS_CACHE", "off")
+    from src import db
+
+    sc.store("system", "off cache write", [{"title": "A", "components": []}])
+    assert db.cache_stats()["entries"] == 0  # store() never touched the db
+
+
+def test_hash_embed_empty_text_returns_zero_vector(monkeypatch):
+    _clear(monkeypatch)
+    assert sc._hash_embed("   ") == [0.0] * sc._DIM
+    assert sc._hash_embed("") == [0.0] * sc._DIM
+
+
+def test_cosine_guards_mismatched_or_empty_vectors():
+    assert sc._cosine([], [1.0]) == 0.0
+    assert sc._cosine([1.0], []) == 0.0
+    assert sc._cosine([1.0, 0.0], [1.0]) == 0.0  # length mismatch
+
+
+def test_threshold_env_parsing_falls_back_on_bad_value(monkeypatch):
+    _clear(monkeypatch)
+    monkeypatch.setenv("TRUS_CACHE_THRESHOLD", "not-a-number")
+    assert sc._exact_threshold() == 0.93
+    monkeypatch.setenv("TRUS_CACHE_SEED_THRESHOLD", "not-a-number")
+    assert sc._seed_threshold() == 0.6
+
+
+def test_remote_embed_used_when_configured(monkeypatch):
+    _clear(monkeypatch)
+    monkeypatch.setenv("TRUS_EMBED_BASE_URL", "http://h/v1")
+    monkeypatch.setenv("TRUS_EMBED_MODEL", "nomic-embed-text")
+    monkeypatch.setenv("TRUS_EMBED_API_KEY", "k-embed")
+    captured = {}
+
+    class _FakeResp:
+        def read(self):
+            import json as _json
+
+            return _json.dumps({"data": [{"embedding": [0.1, 0.2, 0.3]}]}).encode("utf-8")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def fake_urlopen(req, timeout=None):
+        captured["url"] = req.full_url
+        captured["auth"] = req.get_header("Authorization")
+        return _FakeResp()
+
+    monkeypatch.setattr(sc.urllib.request, "urlopen", fake_urlopen)
+    vec = sc.embed("a remote-embedded prompt")
+    assert vec == [0.1, 0.2, 0.3]
+    assert captured["url"] == "http://h/v1/embeddings"
+    assert captured["auth"] == "Bearer k-embed"
+
+
+def test_remote_embed_falls_back_to_hash_on_failure(monkeypatch):
+    _clear(monkeypatch)
+    monkeypatch.setenv("TRUS_EMBED_BASE_URL", "http://h/v1")
+    monkeypatch.setenv("TRUS_EMBED_MODEL", "nomic-embed-text")
+
+    def boom(req, timeout=None):
+        raise OSError("refused")
+
+    monkeypatch.setattr(sc.urllib.request, "urlopen", boom)
+    vec = sc.embed("hello world")
+    assert vec == sc._hash_embed("hello world")  # fell back to the local embedding
+
+
+def test_remote_embed_returns_none_when_not_configured(monkeypatch):
+    _clear(monkeypatch)
+    assert sc._remote_embed("anything") is None
+
+
+def test_lookup_embed_based_hit_when_norm_differs_but_vectors_match(monkeypatch):
+    """Two prompts that normalise differently but embed identically still count
+    as a cache hit through the cosine-similarity path (not the exact-norm path)."""
+    _clear(monkeypatch)
+    monkeypatch.setattr(sc, "embed", lambda text: [1.0, 0.0])
+    cfgs = [{"title": "Same Vector", "components": []}]
+    sc.store("system", "alpha prompt", cfgs)
+    mode, got = sc.lookup("system", "totally different wording")
+    assert mode == "hit"
+    assert got == cfgs
+
+
 def test_generate_modules_cache_hit_skips_model(monkeypatch):
     """A repeated prompt is served from cache without calling the model again —
     this is both the cost win and the real-time-template mechanism."""
@@ -88,7 +181,7 @@ def test_generate_modules_cache_hit_skips_model(monkeypatch):
 
     def fake_generate(prompt, system=None, *, schema=None, expect_array=False):
         calls["n"] += 1
-        return json.dumps(
+        text = json.dumps(
             [
                 {
                     "title": "Cached Tool",
@@ -96,6 +189,9 @@ def test_generate_modules_cache_hit_skips_model(monkeypatch):
                 },
             ]
         )
+        result = gen_result(text, provider="openai", model="m")
+        llm.last_call.set(result)  # mirrors what the real llm.generate() does
+        return result
 
     monkeypatch.setattr(orchestrator.llm, "generate", fake_generate)
 
@@ -107,3 +203,149 @@ def test_generate_modules_cache_hit_skips_model(monkeypatch):
     r2 = orchestrator.generate_modules(prompt)  # exact match → from cache
     assert [m.title for m in r2] == ["Cached Tool"]
     assert calls["n"] == 1  # model NOT called again
+
+
+def test_chain_generation_never_seeds_the_prompt_cache(monkeypatch):
+    """FIX (review 2b-3): an interview-specialized (chain-final) generation must
+    NOT be stored under the raw prompt key — the value is shaped by answers the
+    key doesn't carry (key/value intent mismatch), so a later PLAIN generation
+    of the same prompt would cache-HIT the specialized modules. With an
+    exchange_context: nothing is stored; a later plain generation of the same
+    prompt misses, generates fresh, and stores as usual."""
+    from src import db
+    from src.services import orchestrator
+
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.setenv("TRUS_LLM_PROVIDER", "openai")
+    monkeypatch.setenv("TRUS_LLM_BASE_URL", "http://h/v1")
+    monkeypatch.setenv("TRUS_LLM_MODEL", "m")
+    for k in _VARS:
+        monkeypatch.delenv(k, raising=False)
+
+    calls = {"n": 0}
+
+    def fake_generate(prompt, system=None, *, schema=None, expect_array=False):
+        calls["n"] += 1
+        text = json.dumps(
+            [
+                {
+                    "title": "Fresh Tool",
+                    "components": [{"id": "a", "type": "text_input", "label": "A"}],
+                }
+            ]
+        )
+        result = gen_result(text, provider="openai", model="m")
+        llm.last_call.set(result)
+        return result
+
+    monkeypatch.setattr(orchestrator.llm, "generate", fake_generate)
+
+    prompt = "a very specific unique exchange caching prompt"
+    orchestrator.generate_modules(prompt, exchange_context="Q: which city?\nA: Tokyo")
+    assert calls["n"] == 1
+    assert db.cache_stats()["entries"] == 0  # chain result stored NOTHING
+
+    r2 = orchestrator.generate_modules(prompt)  # plain — must miss and generate fresh
+    assert [m.title for m in r2] == ["Fresh Tool"]
+    assert calls["n"] == 2  # not served an interview-specialized result
+    assert db.cache_stats()["entries"] == 1  # the plain result stores as usual
+
+
+def test_cache_hit_ignores_differing_conversation_history(monkeypatch):
+    """R-302: conversation context lives in the seeded system message, never
+    the cache key (`prompt`) — an identical re-prompt still cache-HITs even
+    though the owner's recent conversation has moved on in between."""
+    from src.services import orchestrator
+
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.setenv("TRUS_LLM_PROVIDER", "openai")
+    monkeypatch.setenv("TRUS_LLM_BASE_URL", "http://h/v1")
+    monkeypatch.setenv("TRUS_LLM_MODEL", "m")
+    for k in _VARS:
+        monkeypatch.delenv(k, raising=False)
+
+    calls = {"n": 0}
+
+    def fake_generate(prompt, system=None, *, schema=None, expect_array=False):
+        calls["n"] += 1
+        text = json.dumps(
+            [
+                {
+                    "title": "Cached Tool",
+                    "components": [{"id": "a", "type": "text_input", "label": "A"}],
+                },
+            ]
+        )
+        result = gen_result(text, provider="openai", model="m")
+        llm.last_call.set(result)
+        return result
+
+    monkeypatch.setattr(orchestrator.llm, "generate", fake_generate)
+
+    prompt = "a very specific unique conversation-context caching prompt"
+    r1 = orchestrator.generate_modules(
+        prompt, recent_messages=[{"role": "user", "text": "some earlier chat about ferrets"}]
+    )
+    assert [m.title for m in r1] == ["Cached Tool"]
+    assert calls["n"] == 1
+
+    r2 = orchestrator.generate_modules(
+        prompt, recent_messages=[{"role": "user", "text": "a completely different later chat"}]
+    )
+    assert [m.title for m in r2] == ["Cached Tool"]
+    assert calls["n"] == 1  # model NOT called again — served from cache despite differing history
+
+
+def test_chain_generation_never_served_a_stale_cache_hit(monkeypatch):
+    """FIX (review 2b lookup-side): a same-owner PLAIN cache entry created
+    mid-chain (a parallel tab/device) must NOT short-circuit the chain-final
+    generation — returning the plain cached modules would silently discard the
+    interview answers. When exchange_context is present, a 'hit' is downgraded to
+    a seed: the model STILL runs (honoring the answers), and the cached skeleton
+    only seeds it."""
+    from src.services import orchestrator
+
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.setenv("TRUS_LLM_PROVIDER", "openai")
+    monkeypatch.setenv("TRUS_LLM_BASE_URL", "http://h/v1")
+    monkeypatch.setenv("TRUS_LLM_MODEL", "m")
+    for k in _VARS:
+        monkeypatch.delenv(k, raising=False)
+
+    calls = {"n": 0}
+    captured = {}
+
+    def fake_generate(prompt, system=None, *, schema=None, expect_array=False):
+        calls["n"] += 1
+        captured["prompt"] = prompt
+        text = json.dumps(
+            [
+                {
+                    "title": "Fresh From Model",
+                    "components": [{"id": "a", "type": "text_input", "label": "A"}],
+                }
+            ]
+        )
+        result = gen_result(text, provider="openai", model="m")
+        llm.last_call.set(result)
+        return result
+
+    monkeypatch.setattr(orchestrator.llm, "generate", fake_generate)
+
+    prompt = "a very specific unique chain lookup prompt"
+    # A same-owner PLAIN cache entry already exists (a parallel tab beat us to it).
+    sc.store(
+        "system",
+        prompt,
+        [
+            {
+                "title": "Stale Cached",
+                "components": [{"id": "z", "type": "text_input", "label": "Z"}],
+            }
+        ],
+    )
+    # Chain-final generation WITH interview answers must NOT be served that hit.
+    result = orchestrator.generate_modules(prompt, exchange_context="Q: which city?\nA: Tokyo")
+    assert calls["n"] == 1  # the model WAS called (never short-circuited on the hit)
+    assert [m.title for m in result] == ["Fresh From Model"]  # fresh, not the stale cache
+    assert "Tokyo" in captured["prompt"]  # the exchange answers reached the model

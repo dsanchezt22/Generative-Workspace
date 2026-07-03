@@ -46,6 +46,21 @@ def test_list_modules_scoped_to_session():
     assert db.list_modules(s2) == []
 
 
+def test_list_modules_include_archived_counts_archived(monkeypatch, tmp_path):
+    """FIX 4 (R-1102): the default list excludes archived modules, but
+    include_archived=True surfaces them too — so a page-delete confirm can count
+    the archived rows the FK cascade will also destroy."""
+    monkeypatch.setenv("TRUS_DB_PATH", str(tmp_path / "t.db"))
+    db.init_db()
+    sid = db.ensure_session(None)
+    live = db.insert_module(sid, _sample_config("live"))
+    gone = db.insert_module(sid, _sample_config("archived"))
+    db.set_archived(sid, gone.id, True)
+    assert [m.id for m in db.list_modules(sid)] == [live.id]  # default: unarchived only
+    all_ids = {m.id for m in db.list_modules(sid, include_archived=True)}
+    assert all_ids == {live.id, gone.id}
+
+
 def test_update_module_overwrites_config():
     db.init_db()
     sid = db.ensure_session(None)

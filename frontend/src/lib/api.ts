@@ -41,6 +41,48 @@ export class ApiError extends Error {
     }
     return null;
   }
+  // R-304: a clarifying-question outcome arrives as { question } — surface the
+  // bare text, not the raw JSON object.
+  get question(): string | null {
+    if (
+      this.detail &&
+      typeof this.detail === "object" &&
+      "question" in (this.detail as Record<string, unknown>)
+    ) {
+      return String((this.detail as { question: unknown }).question);
+    }
+    return null;
+  }
+  // R-902: claiming an invite while the session already belongs to a
+  // different, live user arrives as 409 { rebind: "<current user name>" }.
+  get rebind(): string | null {
+    if (
+      this.detail &&
+      typeof this.detail === "object" &&
+      "rebind" in (this.detail as Record<string, unknown>)
+    ) {
+      return String((this.detail as { rebind: unknown }).rebind);
+    }
+    return null;
+  }
+  // R-602: a stale PATCH (rev mismatch) arrives as 409 { conflict: <current
+  // StoredModule> } — the loser reloads visibly instead of clobbering it.
+  get conflict(): StoredModule | null {
+    if (
+      this.detail &&
+      typeof this.detail === "object" &&
+      "conflict" in (this.detail as Record<string, unknown>)
+    ) {
+      return (this.detail as { conflict: StoredModule }).conflict;
+    }
+    return null;
+  }
+}
+
+// R-102: one question/answer pair from a multi-turn clarifying interview.
+export interface ExchangeTurn {
+  question: string;
+  answer: string;
 }
 
 export interface GenerateResponse {
@@ -48,9 +90,25 @@ export interface GenerateResponse {
   modules?: StoredModule[] | null;
   previews?: ModuleConfig[] | null;
   question?: string | null;
+  degraded?: boolean | null;
+  // R-103/R-301: a one-paragraph rationale for the proposal, set only on a
+  // fresh (non-stub, non-cached) model response.
+  plan?: string | null;
 }
 
 export const api = {
+  // Invite claim (R-901-905). GET is a read-only preview (no session write);
+  // POST performs the claim. See `backend/src/routes/auth.py` for the
+  // security rationale (a GET must never mutate who a browser is signed in as).
+  authClaimPreview: (token: string) =>
+    request<{ valid: boolean; name: string }>(`/api/auth/claim?token=${encodeURIComponent(token)}`),
+  authClaim: (token: string, confirm = false) =>
+    request<{ ok: boolean; name: string }>("/api/auth/claim", {
+      method: "POST",
+      body: JSON.stringify({ token, confirm }),
+    }),
+  authMe: () => request<{ claimed: boolean; name: string | null }>("/api/auth/me"),
+
   listPages: () => request<Page[]>("/api/pages"),
   createPage: (name: string, icon?: string, parentId?: string | null) =>
     request<Page>("/api/pages", {
@@ -68,31 +126,45 @@ export const api = {
     }),
   deletePage: (id: string) =>
     request<void>(`/api/pages/${id}`, { method: "DELETE" }),
-  listModules: (pageId?: string) =>
-    request<StoredModule[]>(`/api/modules${pageId ? `?page_id=${pageId}` : ""}`),
+  listModules: (pageId?: string, includeArchived?: boolean) => {
+    const params = new URLSearchParams();
+    if (pageId) params.set("page_id", pageId);
+    if (includeArchived) params.set("include_archived", "1");
+    const qs = params.toString();
+    return request<StoredModule[]>(`/api/modules${qs ? `?${qs}` : ""}`);
+  },
   seedStarter: (pageId?: string) =>
     request<StoredModule[]>(`/api/onboarding/seed${pageId ? `?page_id=${pageId}` : ""}`, {
       method: "POST",
     }),
-  generateModule: (prompt: string, pageId?: string) =>
+  // R-104: per-owner, usage-seeded starter prompts (owner-scoped server-side).
+  // Empty for a brand-new owner — the caller falls back to static chips.
+  suggestions: (limit?: number) =>
+    request<{ prompt: string }[]>(`/api/suggestions${limit ? `?limit=${limit}` : ""}`),
+  // R-102 "Just build it": `buildNow` sends build_now:true so the backend forces
+  // a HARD build (allow_question=False) — the skip is never re-questioned.
+  generateModule: (prompt: string, pageId?: string, exchange?: ExchangeTurn[], buildNow?: boolean) =>
     request<GenerateResponse>(`/api/modules/generate${pageId ? `?page_id=${pageId}` : ""}`, {
       method: "POST",
-      body: JSON.stringify({ prompt }),
+      body: JSON.stringify({ prompt, exchange, build_now: buildNow }),
     }),
-  previewModules: (prompt: string, pageId?: string) =>
+  previewModules: (prompt: string, pageId?: string, exchange?: ExchangeTurn[], buildNow?: boolean) =>
     request<GenerateResponse>(`/api/modules/preview${pageId ? `?page_id=${pageId}` : ""}`, {
       method: "POST",
-      body: JSON.stringify({ prompt }),
+      body: JSON.stringify({ prompt, exchange, build_now: buildNow }),
     }),
   insertModules: (configs: ModuleConfig[], prompt?: string, pageId?: string) =>
     request<StoredModule[]>(`/api/modules${pageId ? `?page_id=${pageId}` : ""}`, {
       method: "POST",
       body: JSON.stringify({ configs, prompt }),
     }),
-  generateModuleFromFile: async (file: File, prompt: string, pageId?: string): Promise<GenerateResponse> => {
+  // R-221: `hint` is the sketch snap's bounded interpretation instruction; the
+  // backend folds it into the model-visible message. Omitted for plain uploads.
+  generateModuleFromFile: async (file: File, prompt: string, pageId?: string, hint?: string): Promise<GenerateResponse> => {
     const fd = new FormData();
     fd.append("file", file);
     fd.append("prompt", prompt);
+    if (hint) fd.append("hint", hint);
     const res = await fetch(`${BASE}/api/modules/generate_from_file${pageId ? `?page_id=${pageId}` : ""}`, {
       method: "POST",
       credentials: "include",
@@ -105,11 +177,53 @@ export const api = {
     }
     return (await res.json()) as GenerateResponse;
   },
-  patchModule: (id: string, config: ModuleConfig) =>
+  // R-201/204: POST the recorded ramble (webm/opus, or the browser's
+  // MediaRecorder default) to the pluggable STT endpoint. Origin-gated, so a
+  // same-origin fetch needs no extra auth beyond the session cookie.
+  transcribe: async (blob: Blob): Promise<{ text: string }> => {
+    const ext = blob.type.includes("webm")
+      ? "webm"
+      : blob.type.includes("ogg")
+        ? "ogg"
+        : blob.type.includes("mp4")
+          ? "mp4"
+          : blob.type.includes("wav")
+            ? "wav"
+            : "webm";
+    const fd = new FormData();
+    fd.append("file", blob, `ramble.${ext}`);
+    const res = await fetch(`${BASE}/api/transcribe`, {
+      method: "POST",
+      credentials: "include",
+      body: fd, // browser sets multipart boundary; do not set Content-Type
+    });
+    if (!res.ok) {
+      let detail: unknown = res.statusText;
+      try { const b = await res.json(); detail = b.detail ?? b; } catch { /* keep */ }
+      throw new ApiError(res.status, detail);
+    }
+    return (await res.json()) as { text: string };
+  },
+  patchModule: (id: string, config: ModuleConfig, rev?: number) =>
     request<StoredModule>(`/api/modules/${id}`, {
       method: "PATCH",
-      body: JSON.stringify({ config }),
+      body: JSON.stringify({ config, rev }),
     }),
+  // R-1101: a fetch clone of patchModule with `keepalive: true`, so an in-flight
+  // save survives the document being torn down (a normal fetch is cancelled on
+  // unload). Fire-and-forget — no response is awaited during beforeunload.
+  patchModuleKeepalive: (id: string, config: ModuleConfig, rev?: number) => {
+    void fetch(`${BASE}/api/modules/${id}`, {
+      method: "PATCH",
+      credentials: "include",
+      keepalive: true,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ config, rev }),
+      // Swallow rejection noise: a cancel-then-stay may double-write, and a stale
+      // rev is handled by the normal saver path (409) — this fire-and-forget copy
+      // has no one awaiting it, so an unhandled rejection is just noise.
+    }).catch(() => {});
+  },
   deleteModule: (id: string) =>
     request<void>(`/api/modules/${id}`, { method: "DELETE" }),
   duplicateModule: (id: string) =>

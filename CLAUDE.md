@@ -30,11 +30,11 @@ frontend/
 cd backend && pip install -r requirements.txt
 cd backend && uvicorn src.main:app --reload   # http://localhost:8000
 
-# Tests (backend)
-cd backend && pytest --cov=src --cov-report=term-missing -q
+# Tests (backend) — run from repo root; coverage gate (80% branch) included
+python -m pytest -q
 
 # Coverage number only (used by AutoResearch Verify)
-cd backend && python -m pytest --cov=src --cov-report=term-missing -q 2>/dev/null | grep TOTAL | awk '{print $4}' | tr -d '%'
+python -m pytest -q 2>/dev/null | grep TOTAL | awk '{print $4}' | tr -d '%'
 
 # Frontend
 cd frontend && npm install && npm run dev     # http://localhost:3000
@@ -48,8 +48,8 @@ Use these primitives when invoking `/autoresearch`:
 Goal:    Improve backend test coverage for src/
 Metric:  % lines covered (higher is better)
 Scope:   backend/src/**/*.py backend/tests/**/*.py
-Verify:  cd backend && python -m pytest --cov=src --cov-report=term-missing -q 2>/dev/null | grep TOTAL | awk '{print $4}' | tr -d '%'
-Guard:   cd backend && python -m pytest -q 2>/dev/null && echo "passed"
+Verify:  python -m pytest -q 2>/dev/null | grep TOTAL | awk '{print $4}' | tr -d '%'
+Guard:   python -m pytest -q 2>/dev/null && echo "passed"
 ```
 
 ## Conventions

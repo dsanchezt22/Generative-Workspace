@@ -25,12 +25,13 @@ def preprocess(data: bytes, mime: str) -> tuple[bytes, str, dict]:
 
         from PIL import Image
 
-        img = Image.open(io.BytesIO(data))
+        img: Image.Image = Image.open(io.BytesIO(data))
         img.load()
         w, h = img.size
         scale = min(1.0, _MAX_SIDE / float(max(w, h))) if max(w, h) else 1.0
         if scale < 1.0:
-            img = img.resize((max(1, int(w * scale)), max(1, int(h * scale))))
+            new_size: tuple[int, int] = (max(1, int(w * scale)), max(1, int(h * scale)))
+            img = img.resize(new_size)
         if img.mode not in ("RGB", "RGBA"):
             img = img.convert("RGB")
         out = io.BytesIO()

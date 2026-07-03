@@ -4,7 +4,10 @@ import pytest
 from fastapi.testclient import TestClient
 from src.main import app
 
+from tests.conftest import gen_result
+
 VALID_RAW = '{"title":"T","components":[{"id":"x","type":"text_input","label":"X"}]}'
+_VALID_RESULT = gen_result(VALID_RAW)
 
 
 @pytest.fixture
@@ -92,6 +95,72 @@ def test_pages_scoped_to_session(client, client2):
     assert len(pages2) == 1
 
 
+def test_update_page_icon_only_leaves_name_untouched(client):
+    _ensure_session(client)
+    page_id = client.get("/api/pages").json()[0]["id"]
+    resp = client.patch(f"/api/pages/{page_id}", json={"icon": "🚀"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["icon"] == "🚀"
+    assert body["name"] == "Main"
+
+
+def test_update_page_no_fields_returns_unchanged(client):
+    """An empty patch body touches no columns — the route falls back to a plain
+    read (db.get_page) instead of running an UPDATE."""
+    _ensure_session(client)
+    page_id = client.get("/api/pages").json()[0]["id"]
+    resp = client.patch(f"/api/pages/{page_id}", json={})
+    assert resp.status_code == 200
+    assert resp.json()["id"] == page_id
+    assert resp.json()["name"] == "Main"
+
+
+def test_update_page_sets_parent(client):
+    _ensure_session(client)
+    parent_id = client.get("/api/pages").json()[0]["id"]
+    child = client.post("/api/pages", json={"name": "Child"}).json()
+    resp = client.patch(f"/api/pages/{child['id']}", json={"parent_id": parent_id})
+    assert resp.status_code == 200
+    assert resp.json()["parent_id"] == parent_id
+
+
+def test_update_page_rejects_self_parenting(client):
+    _ensure_session(client)
+    page_id = client.get("/api/pages").json()[0]["id"]
+    resp = client.patch(f"/api/pages/{page_id}", json={"parent_id": page_id})
+    assert resp.status_code == 409
+
+
+def test_update_page_rejects_cycle(client):
+    _ensure_session(client)
+    root = client.get("/api/pages").json()[0]["id"]
+    child = client.post("/api/pages", json={"name": "Child", "parent_id": root}).json()
+    grandchild = client.post(
+        "/api/pages", json={"name": "Grandchild", "parent_id": child["id"]}
+    ).json()
+    # Making root a child of its own grandchild would create a cycle.
+    resp = client.patch(f"/api/pages/{root}", json={"parent_id": grandchild["id"]})
+    assert resp.status_code == 409
+
+
+def test_update_page_rejects_blank_name(client):
+    _ensure_session(client)
+    page_id = client.get("/api/pages").json()[0]["id"]
+    resp = client.patch(f"/api/pages/{page_id}", json={"name": "   "})
+    assert resp.status_code == 422
+
+
+def test_reorder_pages_updates_position(client):
+    _ensure_session(client)
+    first = client.get("/api/pages").json()[0]
+    second = client.post("/api/pages", json={"name": "Second"}).json()
+    reordered = client.post(
+        "/api/pages/reorder", json={"ordered_ids": [second["id"], first["id"]]}
+    ).json()
+    assert [p["id"] for p in reordered] == [second["id"], first["id"]]
+
+
 # ---------------------------------------------------------------------------
 # Module-page scoping
 # ---------------------------------------------------------------------------
@@ -102,7 +171,7 @@ def test_modules_belong_to_active_page(client):
     page1_id = client.get("/api/pages").json()[0]["id"]
     page2 = client.post("/api/pages", json={"name": "Work"}).json()
 
-    with patch("src.services.orchestrator.llm.generate", return_value=VALID_RAW):
+    with patch("src.services.orchestrator.llm.generate", return_value=_VALID_RESULT):
         m1 = client.post(f"/api/modules/generate?page_id={page1_id}", json={"prompt": "p1"}).json()
         m2 = client.post(
             f"/api/modules/generate?page_id={page2['id']}", json={"prompt": "p2"}
@@ -122,7 +191,7 @@ def test_list_modules_without_page_returns_all(client):
     page1_id = client.get("/api/pages").json()[0]["id"]
     page2 = client.post("/api/pages", json={"name": "Work"}).json()
 
-    with patch("src.services.orchestrator.llm.generate", return_value=VALID_RAW):
+    with patch("src.services.orchestrator.llm.generate", return_value=_VALID_RESULT):
         client.post(f"/api/modules/generate?page_id={page1_id}", json={"prompt": "p1"})
         client.post(f"/api/modules/generate?page_id={page2['id']}", json={"prompt": "p2"})
 

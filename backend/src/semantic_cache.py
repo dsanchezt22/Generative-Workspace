@@ -113,14 +113,14 @@ def _cosine(a: list[float], b: list[float]) -> float:
     return dot / (na * nb) if na and nb else 0.0
 
 
-def lookup(kind: str, prompt: str) -> tuple[str | None, list | None]:
-    """Return (mode, configs):
+def lookup(kind: str, prompt: str, owner: str = "local") -> tuple[str | None, list | None]:
+    """Return (mode, configs) for a single owner (R-903 — never served across owners):
     "hit"  → reuse this result directly (zero model cost),
     "seed" → use it as the generation seed (still generate),
     None   → nothing close enough."""
     if not enabled():
         return (None, None)
-    rows = db.cache_rows(kind)
+    rows = db.cache_rows(kind, owner)
     if not rows:
         return (None, None)
     norm = normalize(prompt)
@@ -147,18 +147,20 @@ def lookup(kind: str, prompt: str) -> tuple[str | None, list | None]:
     return (None, None)
 
 
-def store(kind: str, prompt: str, configs: list) -> None:
-    """Remember a successful generation. Never let a cache write break a request."""
+def store(kind: str, prompt: str, configs: list, owner: str = "local") -> None:
+    """Remember a successful generation for one owner. Never let a cache write break a request."""
     if not enabled():
         return
     try:
         emb = embed(prompt)
-        db.cache_add(kind, prompt, normalize(prompt), json.dumps(emb), json.dumps(configs))
+        db.cache_add(kind, prompt, normalize(prompt), json.dumps(emb), json.dumps(configs), owner)
     except Exception:  # pragma: no cover - cache is best-effort
         pass
 
 
-def store_structured(kind: str, structured_text: str, prompt: str, configs: list) -> None:
+def store_structured(
+    kind: str, structured_text: str, prompt: str, configs: list, owner: str = "local"
+) -> None:
     """Like store(), but embed a richer structured document (e.g. a screenshot
     capture's component inventory) while keeping `prompt` as the human-readable seed
     key. Gives nearest-neighbour seeding more discriminative signal than the bare
@@ -167,6 +169,6 @@ def store_structured(kind: str, structured_text: str, prompt: str, configs: list
         return
     try:
         emb = embed(structured_text or prompt)
-        db.cache_add(kind, prompt, normalize(prompt), json.dumps(emb), json.dumps(configs))
+        db.cache_add(kind, prompt, normalize(prompt), json.dumps(emb), json.dumps(configs), owner)
     except Exception:  # pragma: no cover - cache is best-effort
         pass

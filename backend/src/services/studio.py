@@ -229,15 +229,29 @@ def _stub_layouts(uc: dict, n: int) -> list[dict]:
     return out
 
 
+def _mark(layouts: list[dict], *, degraded: bool, source: str | None) -> list[dict]:
+    """Stamp explicit per-layout provenance so the promote gate (routes/studio.py)
+    can refuse degraded/stub layouts and the UI can label them (R-403/R-211)."""
+    for ly in layouts:
+        ly["degraded"] = degraded
+        ly["source"] = source
+    return layouts
+
+
 def generate_layouts(use_case_key: str, n: int = 4) -> list[dict]:
     """Produce N distinct candidate layouts for a use case. Uses the configured
-    model; falls back to keyword templates offline or on repeated model failure."""
+    model; falls back to keyword templates offline or on repeated model failure.
+
+    Each returned layout carries `degraded`/`source` provenance: stub-mode and
+    fallback templates are generic (degraded=True, "stub_fallback"); a real generate
+    that cascade-degraded is also flagged (degraded=True, "cascade")."""
     uc = _BY_KEY.get(use_case_key)
     if uc is None:
         raise RefusalError(f"Unknown use case: {use_case_key}")
     n = max(1, min(n, 8))
     if llm.is_stub_mode():
-        return _stub_layouts(uc, n)
+        # Stub templates are not a real generation — never promotable to the pool.
+        return _mark(_stub_layouts(uc, n), degraded=True, source="stub_fallback")
     user = (
         f"USE CASE: {uc['title']}.\n"
         f"Leading apps to model (use DIFFERENT ones across the layouts): {', '.join(uc['apps'])}.\n"
@@ -250,14 +264,20 @@ def generate_layouts(use_case_key: str, n: int = 4) -> list[dict]:
                 user if attempt == 0 else user + _RETRY_NOTE,
                 system=STUDIO_SYSTEM,
                 expect_array=True,
-            )
-            return _parse_layouts(raw)[:n]
+            ).text
+            layouts = _parse_layouts(raw)[:n]
+            # A cascade-degraded generate must not seed the pool either.
+            last = llm.last_call.get()
+            degraded = bool(last is not None and last.degraded)
+            return _mark(layouts, degraded=degraded, source="cascade" if degraded else None)
         except _Invalid:
             continue
         except LLMError:
             break  # endpoint unavailable — stop retrying, fall back
-    # The model couldn't produce valid layouts — still give the user something.
-    return _stub_layouts(uc, n)
+    # The model couldn't produce valid layouts — still give the user something, but
+    # marked as a degraded fallback. Do NOT consult last_call here: on the LLMError
+    # path it may be unset/stale (F6 resets it to None on the raising branch).
+    return _mark(_stub_layouts(uc, n), degraded=True, source="stub_fallback")
 
 
 # ── Vision import: a reference screenshot → a Trus layout ─────────────────────

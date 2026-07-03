@@ -4,7 +4,9 @@ from unittest.mock import patch
 import pytest
 from fastapi.testclient import TestClient
 from src.main import app
-from src.schema import ModuleConfig, TextInput
+from src.schema import LLMError, ModuleConfig, TextInput
+
+from tests.conftest import gen_result as _gr
 
 VALID_RAW = json.dumps(
     {
@@ -42,7 +44,7 @@ def test_health(client):
 
 
 def test_generate_returns_module_and_sets_session(client):
-    with patch("src.services.orchestrator.llm.generate", return_value=VALID_RAW):
+    with patch("src.services.orchestrator.llm.generate", return_value=_gr(VALID_RAW)):
         resp = client.post("/api/modules/generate", json={"prompt": "track my workouts"})
     assert resp.status_code == 200, resp.text
     body = resp.json()
@@ -58,7 +60,7 @@ def test_generate_rejects_empty_prompt(client):
 def test_generate_surfaces_refusal_as_422(client):
     with patch(
         "src.services.orchestrator.llm.generate",
-        return_value='{"refusal": "Out of scope."}',
+        return_value=_gr('{"refusal": "Out of scope."}'),
     ):
         resp = client.post("/api/modules/generate", json={"prompt": "build a 3D movie"})
     assert resp.status_code == 422
@@ -66,14 +68,14 @@ def test_generate_surfaces_refusal_as_422(client):
 
 
 def test_list_modules_is_scoped_to_session(client, second_client):
-    with patch("src.services.orchestrator.llm.generate", return_value=VALID_RAW):
+    with patch("src.services.orchestrator.llm.generate", return_value=_gr(VALID_RAW)):
         client.post("/api/modules/generate", json={"prompt": "track my workouts"})
     assert client.get("/api/modules").json()
     assert second_client.get("/api/modules").json() == []
 
 
 def test_patch_module_updates_config(client):
-    with patch("src.services.orchestrator.llm.generate", return_value=VALID_RAW):
+    with patch("src.services.orchestrator.llm.generate", return_value=_gr(VALID_RAW)):
         created = client.post("/api/modules/generate", json={"prompt": "track my workouts"}).json()
     module_id = created["module"]["id"]
 
@@ -96,7 +98,7 @@ def test_patch_unknown_module_returns_404(client):
 
 
 def test_delete_module_removes_it(client):
-    with patch("src.services.orchestrator.llm.generate", return_value=VALID_RAW):
+    with patch("src.services.orchestrator.llm.generate", return_value=_gr(VALID_RAW)):
         created = client.post("/api/modules/generate", json={"prompt": "track my workouts"}).json()
     module_id = created["module"]["id"]
     resp = client.delete(f"/api/modules/{module_id}")
@@ -110,8 +112,6 @@ def test_delete_unknown_module_returns_404(client):
 
 
 def test_generate_surfaces_llm_failure_as_503(client):
-    from src.schema import LLMError
-
     with patch(
         "src.services.orchestrator.llm.generate",
         side_effect=LLMError("429 prepayment credits depleted"),
@@ -122,7 +122,7 @@ def test_generate_surfaces_llm_failure_as_503(client):
 
 
 def test_delete_is_scoped_to_session(client, second_client):
-    with patch("src.services.orchestrator.llm.generate", return_value=VALID_RAW):
+    with patch("src.services.orchestrator.llm.generate", return_value=_gr(VALID_RAW)):
         created = client.post("/api/modules/generate", json={"prompt": "track my workouts"}).json()
     module_id = created["module"]["id"]
     # A different session must not be able to delete it.
@@ -131,7 +131,7 @@ def test_delete_is_scoped_to_session(client, second_client):
 
 
 def test_undo_endpoint_reverts_module(client):
-    with patch("src.services.orchestrator.llm.generate", return_value=VALID_RAW):
+    with patch("src.services.orchestrator.llm.generate", return_value=_gr(VALID_RAW)):
         created = client.post("/api/modules/generate", json={"prompt": "track my workouts"}).json()
     module_id = created["module"]["id"]
     renamed = ModuleConfig(title="Renamed", components=[TextInput(id="exercise", label="Exercise")])
@@ -143,7 +143,7 @@ def test_undo_endpoint_reverts_module(client):
 
 
 def test_undo_with_nothing_to_undo_returns_409(client):
-    with patch("src.services.orchestrator.llm.generate", return_value=VALID_RAW):
+    with patch("src.services.orchestrator.llm.generate", return_value=_gr(VALID_RAW)):
         created = client.post("/api/modules/generate", json={"prompt": "track my workouts"}).json()
     module_id = created["module"]["id"]
     resp = client.post(f"/api/modules/{module_id}/undo")
@@ -151,7 +151,7 @@ def test_undo_with_nothing_to_undo_returns_409(client):
 
 
 def test_history_endpoint_lists_versions(client):
-    with patch("src.services.orchestrator.llm.generate", return_value=VALID_RAW):
+    with patch("src.services.orchestrator.llm.generate", return_value=_gr(VALID_RAW)):
         created = client.post("/api/modules/generate", json={"prompt": "track my workouts"}).json()
     module_id = created["module"]["id"]
     renamed = ModuleConfig(title="Renamed", components=[TextInput(id="exercise", label="Exercise")])
@@ -173,11 +173,11 @@ REFINED_RAW = json.dumps(
 
 
 def test_refine_endpoint_updates_module(client):
-    with patch("src.services.orchestrator.llm.generate", return_value=VALID_RAW):
+    with patch("src.services.orchestrator.llm.generate", return_value=_gr(VALID_RAW)):
         created = client.post("/api/modules/generate", json={"prompt": "track my workouts"}).json()
     module_id = created["module"]["id"]
 
-    with patch("src.services.orchestrator.llm.generate", return_value=REFINED_RAW):
+    with patch("src.services.orchestrator.llm.generate", return_value=_gr(REFINED_RAW)):
         resp = client.post(
             f"/api/modules/{module_id}/refine", json={"prompt": "add a rest day checkbox"}
         )
@@ -187,7 +187,7 @@ def test_refine_endpoint_updates_module(client):
 
 
 def test_refine_endpoint_rejects_empty_prompt(client):
-    with patch("src.services.orchestrator.llm.generate", return_value=VALID_RAW):
+    with patch("src.services.orchestrator.llm.generate", return_value=_gr(VALID_RAW)):
         created = client.post("/api/modules/generate", json={"prompt": "track my workouts"}).json()
     module_id = created["module"]["id"]
     resp = client.post(f"/api/modules/{module_id}/refine", json={"prompt": "  "})
@@ -200,12 +200,12 @@ def test_refine_endpoint_returns_404_for_unknown_module(client):
 
 
 def test_refine_endpoint_surfaces_refusal_as_422(client):
-    with patch("src.services.orchestrator.llm.generate", return_value=VALID_RAW):
+    with patch("src.services.orchestrator.llm.generate", return_value=_gr(VALID_RAW)):
         created = client.post("/api/modules/generate", json={"prompt": "track my workouts"}).json()
     module_id = created["module"]["id"]
     with patch(
         "src.services.orchestrator.llm.generate",
-        return_value='{"refusal": "Cannot embed video."}',
+        return_value=_gr('{"refusal": "Cannot embed video."}'),
     ):
         resp = client.post(f"/api/modules/{module_id}/refine", json={"prompt": "embed a video"})
     assert resp.status_code == 422
@@ -213,11 +213,11 @@ def test_refine_endpoint_surfaces_refusal_as_422(client):
 
 
 def test_refine_creates_history_entry(client):
-    with patch("src.services.orchestrator.llm.generate", return_value=VALID_RAW):
+    with patch("src.services.orchestrator.llm.generate", return_value=_gr(VALID_RAW)):
         created = client.post("/api/modules/generate", json={"prompt": "track my workouts"}).json()
     module_id = created["module"]["id"]
 
-    with patch("src.services.orchestrator.llm.generate", return_value=REFINED_RAW):
+    with patch("src.services.orchestrator.llm.generate", return_value=_gr(REFINED_RAW)):
         client.post(f"/api/modules/{module_id}/refine", json={"prompt": "add a rest day checkbox"})
 
     history = client.get(f"/api/modules/{module_id}/history").json()
@@ -225,7 +225,7 @@ def test_refine_creates_history_entry(client):
 
 
 def test_refine_scoped_to_session(client, second_client):
-    with patch("src.services.orchestrator.llm.generate", return_value=VALID_RAW):
+    with patch("src.services.orchestrator.llm.generate", return_value=_gr(VALID_RAW)):
         created = client.post("/api/modules/generate", json={"prompt": "track my workouts"}).json()
     module_id = created["module"]["id"]
     resp = second_client.post(f"/api/modules/{module_id}/refine", json={"prompt": "add a checkbox"})
@@ -249,7 +249,7 @@ METRIC_RAW = json.dumps(
 
 
 def test_generate_module_with_metric_component(client):
-    with patch("src.services.orchestrator.llm.generate", return_value=METRIC_RAW):
+    with patch("src.services.orchestrator.llm.generate", return_value=_gr(METRIC_RAW)):
         resp = client.post("/api/modules/generate", json={"prompt": "dashboard"})
     assert resp.status_code == 200, resp.text
     comp = resp.json()["module"]["config"]["components"][0]
@@ -259,11 +259,11 @@ def test_generate_module_with_metric_component(client):
 
 
 def test_workspace_insights_returns_module(client):
-    with patch("src.services.orchestrator.llm.generate", return_value=VALID_RAW):
+    with patch("src.services.orchestrator.llm.generate", return_value=_gr(VALID_RAW)):
         client.post("/api/modules/generate", json={"prompt": "workout"})
         client.post("/api/modules/generate", json={"prompt": "meals"})
 
-    with patch("src.services.orchestrator.llm.generate", return_value=METRIC_RAW):
+    with patch("src.services.orchestrator.llm.generate", return_value=_gr(METRIC_RAW)):
         resp = client.post("/api/workspace/insights")
     assert resp.status_code == 200, resp.text
     assert resp.json()["module"]["config"]["title"] == "Dashboard"
@@ -275,7 +275,7 @@ def test_workspace_insights_requires_modules(client):
 
 
 def test_workspace_insights_scoped_to_session(client, second_client):
-    with patch("src.services.orchestrator.llm.generate", return_value=VALID_RAW):
+    with patch("src.services.orchestrator.llm.generate", return_value=_gr(VALID_RAW)):
         client.post("/api/modules/generate", json={"prompt": "workout"})
         client.post("/api/modules/generate", json={"prompt": "meals"})
     # second_client has no modules — should get 422
@@ -284,7 +284,7 @@ def test_workspace_insights_scoped_to_session(client, second_client):
 
 
 def test_generate_passes_existing_modules_context(client):
-    with patch("src.services.orchestrator.llm.generate", return_value=VALID_RAW) as mock_gen:
+    with patch("src.services.orchestrator.llm.generate", return_value=_gr(VALID_RAW)) as mock_gen:
         client.post("/api/modules/generate", json={"prompt": "workout"})
         client.post("/api/modules/generate", json={"prompt": "another module"})
     # Second call should have received context with existing modules
@@ -295,7 +295,7 @@ def test_generate_passes_existing_modules_context(client):
 def test_generate_returns_question_when_clarification_needed(client):
     with patch(
         "src.services.orchestrator.llm.generate",
-        return_value='{"question": "How many meals per day?"}',
+        return_value=_gr('{"question": "How many meals per day?"}'),
     ):
         resp = client.post("/api/modules/generate", json={"prompt": "track food"})
     assert resp.status_code == 200
@@ -305,10 +305,578 @@ def test_generate_returns_question_when_clarification_needed(client):
 
 
 def test_generate_with_combined_prompt_produces_module(client):
-    with patch("src.services.orchestrator.llm.generate", return_value=VALID_RAW):
+    with patch("src.services.orchestrator.llm.generate", return_value=_gr(VALID_RAW)):
         resp = client.post(
             "/api/modules/generate",
             json={"prompt": "track food — 3 meals per day"},
         )
     assert resp.status_code == 200
     assert resp.json()["module"] is not None
+
+
+# ---------------------------------------------------------------------------
+# R-102/R-103/R-301: multi-turn interview chain + proposal plan.
+# ---------------------------------------------------------------------------
+
+
+def test_preview_two_question_chain_carries_both_answers(client):
+    """R-102 answer-drop fix: a second question in the same chain must not lose
+    the first answer — the route folds the FULL exchange into what the model sees."""
+    with patch("src.services.orchestrator.llm.generate", return_value=_gr(VALID_RAW)) as mock_gen:
+        resp = client.post(
+            "/api/modules/preview",
+            json={
+                "prompt": "plan my trip",
+                "exchange": [
+                    {"question": "Which city?", "answer": "Tokyo"},
+                    {"question": "How many days?", "answer": "5"},
+                ],
+            },
+        )
+    assert resp.status_code == 200, resp.text
+    received_prompt = mock_gen.call_args[0][0]
+    assert "Tokyo" in received_prompt
+    assert "5" in received_prompt
+
+
+def test_generate_two_question_chain_carries_both_answers(client):
+    """Same fix, exercised through /modules/generate (not just /preview)."""
+    with patch("src.services.orchestrator.llm.generate", return_value=_gr(VALID_RAW)) as mock_gen:
+        resp = client.post(
+            "/api/modules/generate",
+            json={
+                "prompt": "plan my trip",
+                "exchange": [
+                    {"question": "Which city?", "answer": "Tokyo"},
+                    {"question": "How many days?", "answer": "5"},
+                ],
+            },
+        )
+    assert resp.status_code == 200, resp.text
+    received_prompt = mock_gen.call_args[0][0]
+    assert "Tokyo" in received_prompt
+    assert "5" in received_prompt
+
+
+def test_preview_four_answered_exchange_triggers_build_now_note(client):
+    """R-102 cap: once 4 questions have been answered, the ROUTE (not just the
+    system prompt) instructs the model to stop asking and build."""
+    exchange = [{"question": f"Q{i}?", "answer": f"A{i}"} for i in range(1, 5)]
+    with patch("src.services.orchestrator.llm.generate", return_value=_gr(VALID_RAW)) as mock_gen:
+        resp = client.post(
+            "/api/modules/preview",
+            json={"prompt": "plan my trip", "exchange": exchange},
+        )
+    assert resp.status_code == 200, resp.text
+    received_prompt = mock_gen.call_args[0][0]
+    assert "do NOT ask another" in received_prompt
+
+
+def test_preview_three_answered_exchange_does_not_trigger_build_now_note(client):
+    """Negative control: the cap note only appears once 4 questions are answered."""
+    exchange = [{"question": f"Q{i}?", "answer": f"A{i}"} for i in range(1, 4)]
+    with patch("src.services.orchestrator.llm.generate", return_value=_gr(VALID_RAW)) as mock_gen:
+        resp = client.post(
+            "/api/modules/preview",
+            json={"prompt": "plan my trip", "exchange": exchange},
+        )
+    assert resp.status_code == 200, resp.text
+    received_prompt = mock_gen.call_args[0][0]
+    assert "do NOT ask another" not in received_prompt
+
+
+def test_preview_never_relays_a_fifth_question_hard_cap(client):
+    """FIX (review 2b-3, R-102 AC "never a fifth question"): with 4 answered
+    turns, a model that STILL insists on questioning is retried once with a
+    strengthened build-now note; if it still questions, the route returns an
+    honest 422 refusal — question #5 is never relayed to the user."""
+    exchange = [{"question": f"Q{i}?", "answer": f"A{i}"} for i in range(1, 5)]
+    with patch(
+        "src.services.orchestrator.llm.generate",
+        return_value=_gr('{"question": "And a fifth thing?"}'),
+    ) as mock_gen:
+        resp = client.post(
+            "/api/modules/preview",
+            json={"prompt": "plan my trip", "exchange": exchange},
+        )
+    assert resp.status_code == 422, resp.text
+    assert "refusal" in resp.json()["detail"]
+    assert mock_gen.call_count == 2  # first attempt + one strengthened retry
+
+
+def test_generate_never_relays_a_fifth_question_hard_cap(client):
+    """Same hard cap through /modules/generate."""
+    exchange = [{"question": f"Q{i}?", "answer": f"A{i}"} for i in range(1, 5)]
+    with patch(
+        "src.services.orchestrator.llm.generate",
+        return_value=_gr('{"question": "And a fifth thing?"}'),
+    ):
+        resp = client.post(
+            "/api/modules/generate",
+            json={"prompt": "plan my trip", "exchange": exchange},
+        )
+    assert resp.status_code == 422, resp.text
+    assert "refusal" in resp.json()["detail"]
+
+
+def test_preview_capped_chain_builds_on_strengthened_retry(client):
+    """Positive control for the hard cap: the model questions once past the cap,
+    then complies on the strengthened retry — the route returns previews (never
+    a fifth question), and the retry message carried the build-now directive."""
+    exchange = [{"question": f"Q{i}?", "answer": f"A{i}"} for i in range(1, 5)]
+    with patch(
+        "src.services.orchestrator.llm.generate",
+        side_effect=[_gr('{"question": "One more?"}'), _gr(VALID_RAW)],
+    ) as mock_gen:
+        resp = client.post(
+            "/api/modules/preview",
+            json={"prompt": "plan my trip", "exchange": exchange},
+        )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["previews"]
+    assert resp.json()["question"] is None
+    retry_prompt = mock_gen.call_args_list[1][0][0]
+    assert "Return the modules object NOW" in retry_prompt
+
+
+def test_preview_under_cap_still_relays_a_question(client):
+    """Negative control: below 4 answered turns the question channel is untouched."""
+    exchange = [{"question": "Q1?", "answer": "A1"}]
+    with patch(
+        "src.services.orchestrator.llm.generate",
+        return_value=_gr('{"question": "A second thing?"}'),
+    ):
+        resp = client.post(
+            "/api/modules/preview",
+            json={"prompt": "plan my trip", "exchange": exchange},
+        )
+    assert resp.status_code == 200
+    assert resp.json()["question"] == "A second thing?"
+
+
+_PLAN_RAW = json.dumps(
+    {
+        "plan": "A focused workout tracker with reps and exercise name.",
+        "modules": [json.loads(VALID_RAW)],
+    }
+)
+
+
+def test_preview_response_includes_plan(client):
+    with patch("src.services.orchestrator.llm.generate", return_value=_gr(_PLAN_RAW)):
+        resp = client.post("/api/modules/preview", json={"prompt": "track my workouts"})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["plan"] == "A focused workout tracker with reps and exercise name."
+
+
+def test_generate_response_includes_plan(client):
+    with patch("src.services.orchestrator.llm.generate", return_value=_gr(_PLAN_RAW)):
+        resp = client.post("/api/modules/generate", json={"prompt": "track my workouts"})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["plan"] == "A focused workout tracker with reps and exercise name."
+
+
+def test_preview_response_plan_absent_when_model_omits_it(client):
+    """Old bare-array/object shapes (no "plan" key) leave plan None — no fabricated
+    rationale."""
+    with patch("src.services.orchestrator.llm.generate", return_value=_gr(VALID_RAW)):
+        resp = client.post("/api/modules/preview", json={"prompt": "track my workouts"})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["plan"] is None
+
+
+def test_preview_rejects_exchange_over_six_turns(client):
+    exchange = [{"question": f"Q{i}", "answer": f"A{i}"} for i in range(7)]
+    resp = client.post(
+        "/api/modules/preview", json={"prompt": "plan my trip", "exchange": exchange}
+    )
+    assert resp.status_code == 422
+
+
+def test_preview_rejects_overlong_exchange_field(client):
+    exchange = [{"question": "Q" * 501, "answer": "short"}]
+    resp = client.post(
+        "/api/modules/preview", json={"prompt": "plan my trip", "exchange": exchange}
+    )
+    assert resp.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# R-302: recent conversation feeds generation context (generate/preview only).
+# ---------------------------------------------------------------------------
+
+
+def _default_page_id(client) -> str:
+    """The session's default page id — where messages from a page_id-less
+    generate land (insert_module resolves None to the default page)."""
+    return client.get("/api/pages").json()[0]["id"]
+
+
+def test_generate_recent_conversation_reaches_the_model(client):
+    """A distinctive prior turn on this page must appear in the next call's
+    model-visible prompt as bounded 'Recent conversation:' context."""
+    with patch("src.services.orchestrator.llm.generate", return_value=_gr(VALID_RAW)):
+        client.post(
+            "/api/modules/generate",
+            json={"prompt": "a wildly distinctive prior prompt about narwhals"},
+        )
+    pid = _default_page_id(client)
+    with patch("src.services.orchestrator.llm.generate", return_value=_gr(VALID_RAW)) as mock_gen:
+        client.post(
+            f"/api/modules/generate?page_id={pid}", json={"prompt": "a new unrelated prompt"}
+        )
+    second_prompt = mock_gen.call_args[0][0]
+    assert "narwhals" in second_prompt
+    assert "Recent conversation:" in second_prompt
+
+
+def test_preview_recent_conversation_reaches_the_model(client):
+    """Same wiring on the preview (propose-without-persist) path."""
+    with patch("src.services.orchestrator.llm.generate", return_value=_gr(VALID_RAW)):
+        client.post(
+            "/api/modules/generate",
+            json={"prompt": "a wildly distinctive prior prompt about walruses"},
+        )
+    pid = _default_page_id(client)
+    with patch("src.services.orchestrator.llm.generate", return_value=_gr(VALID_RAW)) as mock_gen:
+        client.post(
+            f"/api/modules/preview?page_id={pid}", json={"prompt": "a new unrelated prompt"}
+        )
+    second_prompt = mock_gen.call_args[0][0]
+    assert "walruses" in second_prompt
+
+
+def test_generate_without_page_id_gets_no_conversation_context(client):
+    """Review fix (2b-4): page_id=None is a real initial-load race window (the
+    frontend can fire before activePageId resolves) — the safe default is NO
+    conversation context, never a whole-session fallback that would leak
+    cross-page history into the generation."""
+    with patch("src.services.orchestrator.llm.generate", return_value=_gr(VALID_RAW)):
+        client.post(
+            "/api/modules/generate",
+            json={"prompt": "a wildly distinctive prior prompt about capybaras"},
+        )
+    with patch("src.services.orchestrator.llm.generate", return_value=_gr(VALID_RAW)) as mock_gen:
+        client.post("/api/modules/generate", json={"prompt": "a new unrelated prompt"})
+    second_prompt = mock_gen.call_args[0][0]
+    assert "Recent conversation:" not in second_prompt
+    assert "capybaras" not in second_prompt
+
+
+def test_recent_conversation_is_cross_owner_isolated(client, second_client):
+    """R-903: another owner's conversation must never leak into this owner's
+    generation context."""
+    with patch("src.services.orchestrator.llm.generate", return_value=_gr(VALID_RAW)):
+        second_client.post(
+            "/api/modules/generate",
+            json={"prompt": "owner B's distinctive secret prompt about pangolins"},
+        )
+        client.post("/api/modules/generate", json={"prompt": "owner A's earlier prompt"})
+    pid = _default_page_id(client)
+    with patch("src.services.orchestrator.llm.generate", return_value=_gr(VALID_RAW)) as mock_gen:
+        client.post(f"/api/modules/generate?page_id={pid}", json={"prompt": "owner A's prompt"})
+    prompt_used = mock_gen.call_args[0][0]
+    # Owner A's own history is present (the context path is exercised) …
+    assert "owner A's earlier prompt" in prompt_used
+    # … but owner B's never is.
+    assert "pangolins" not in prompt_used
+
+
+# ---------------------------------------------------------------------------
+# Preview-then-accept: POST /modules/preview proposes without persisting;
+# POST /modules persists what the caller accepts.
+# ---------------------------------------------------------------------------
+
+
+def test_preview_does_not_persist_modules(client):
+    with patch("src.services.orchestrator.llm.generate", return_value=_gr(VALID_RAW)):
+        resp = client.post("/api/modules/preview", json={"prompt": "track my workouts"})
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["module"] is None  # preview never returns a stored module
+    assert body["previews"][0]["title"] == "Workout Log"
+    # Nothing was written to the canvas.
+    assert client.get("/api/modules").json() == []
+
+
+def test_accept_preview_persists_modules(client):
+    with patch("src.services.orchestrator.llm.generate", return_value=_gr(VALID_RAW)):
+        previewed = client.post("/api/modules/preview", json={"prompt": "track my workouts"}).json()
+    assert client.get("/api/modules").json() == []  # still nothing persisted
+
+    accepted = client.post(
+        "/api/modules",
+        json={"configs": previewed["previews"], "prompt": "track my workouts"},
+    )
+    assert accepted.status_code == 201
+    stored = accepted.json()
+    assert stored[0]["config"]["title"] == "Workout Log"
+    assert len(client.get("/api/modules").json()) == 1
+
+    # The accepted prompt is logged as a conversation turn.
+    convo = client.get("/api/conversations").json()
+    assert any(m["text"] == "track my workouts" for m in convo)
+
+
+def test_preview_rejects_empty_prompt(client):
+    resp = client.post("/api/modules/preview", json={"prompt": "   "})
+    assert resp.status_code == 422
+
+
+def test_preview_returns_question_when_clarification_needed(client):
+    with patch(
+        "src.services.orchestrator.llm.generate",
+        return_value=_gr('{"question": "How many meals per day?"}'),
+    ):
+        resp = client.post("/api/modules/preview", json={"prompt": "track food"})
+    assert resp.status_code == 200
+    assert resp.json()["previews"] is None
+    assert "meals" in resp.json()["question"].lower()
+
+
+def test_preview_surfaces_refusal_as_422(client):
+    with patch(
+        "src.services.orchestrator.llm.generate",
+        return_value=_gr('{"refusal": "Out of scope."}'),
+    ):
+        resp = client.post("/api/modules/preview", json={"prompt": "build a 3D movie"})
+    assert resp.status_code == 422
+    assert resp.json()["detail"]["refusal"] == "Out of scope."
+
+
+def test_preview_surfaces_llm_failure_as_503(client):
+    with patch(
+        "src.services.orchestrator.llm.generate",
+        side_effect=LLMError("429 prepayment credits depleted"),
+    ):
+        resp = client.post("/api/modules/preview", json={"prompt": "track my workouts"})
+    assert resp.status_code == 503
+
+
+def test_insert_modules_without_prompt_does_not_log(client):
+    """No `prompt` on the accept payload → no conversation turn logged."""
+    resp = client.post(
+        "/api/modules",
+        json={
+            "configs": [
+                {"title": "T", "components": [{"id": "a", "type": "text_input", "label": "A"}]}
+            ]
+        },
+    )
+    assert resp.status_code == 201
+    convo = client.get("/api/conversations").json()
+    assert not any(m["role"] == "user" for m in convo)
+
+
+# ---------------------------------------------------------------------------
+# Onboarding seed — no LLM cost, never reseeds an existing workspace.
+# ---------------------------------------------------------------------------
+
+
+def test_seed_onboarding_creates_starter_modules(client):
+    resp = client.post("/api/onboarding/seed")
+    assert resp.status_code == 200, resp.text
+    seeded = resp.json()
+    assert len(seeded) == 3
+    titles = {m["config"]["title"] for m in seeded}
+    assert "Today" in titles
+    assert client.get("/api/modules").json()  # persisted
+
+
+def test_seed_onboarding_does_not_reseed_existing_workspace(client):
+    with patch("src.services.orchestrator.llm.generate", return_value=_gr(VALID_RAW)):
+        client.post("/api/modules/generate", json={"prompt": "track my workouts"})
+    assert len(client.get("/api/modules").json()) == 1
+
+    seeded_again = client.post("/api/onboarding/seed").json()
+    assert len(seeded_again) == 1  # unchanged, not reseeded
+    assert len(client.get("/api/modules").json()) == 1
+
+
+# ---------------------------------------------------------------------------
+# Archive / restore / duplicate
+# ---------------------------------------------------------------------------
+
+
+def _insert_direct(client, title="Original") -> dict:
+    resp = client.post(
+        "/api/modules",
+        json={
+            "configs": [
+                {"title": title, "components": [{"id": "a", "type": "text_input", "label": "A"}]}
+            ]
+        },
+    )
+    return resp.json()[0]
+
+
+def test_archive_then_restore_module_via_routes(client):
+    m = _insert_direct(client)
+    archived = client.post(f"/api/modules/{m['id']}/archive")
+    assert archived.status_code == 200
+    assert archived.json()["archived"] is True
+    assert client.get("/api/modules").json() == []
+    assert [a["id"] for a in client.get("/api/modules/archived").json()] == [m["id"]]
+
+    restored = client.post(f"/api/modules/{m['id']}/restore")
+    assert restored.status_code == 200
+    assert restored.json()["archived"] is False
+    assert len(client.get("/api/modules").json()) == 1
+    assert client.get("/api/modules/archived").json() == []
+
+
+def test_archive_unknown_module_returns_404(client):
+    assert client.post("/api/modules/nope/archive").status_code == 404
+
+
+def test_restore_unknown_module_returns_404(client):
+    assert client.post("/api/modules/nope/restore").status_code == 404
+
+
+def test_duplicate_module_via_route(client):
+    m = _insert_direct(client, "Original")
+    dup = client.post(f"/api/modules/{m['id']}/duplicate")
+    assert dup.status_code == 200
+    assert dup.json()["config"]["title"] == "Original copy"
+    assert dup.json()["id"] != m["id"]
+    assert len(client.get("/api/modules").json()) == 2
+
+
+def test_duplicate_unknown_module_returns_404(client):
+    assert client.post("/api/modules/nope/duplicate").status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# refine / insights — LLMError and RefusalError paths not covered elsewhere
+# ---------------------------------------------------------------------------
+
+
+def test_refine_endpoint_surfaces_llm_failure_as_503(client):
+    with patch("src.services.orchestrator.llm.generate", return_value=_gr(VALID_RAW)):
+        created = client.post("/api/modules/generate", json={"prompt": "track my workouts"}).json()
+    module_id = created["module"]["id"]
+    with patch(
+        "src.services.orchestrator.llm.generate",
+        side_effect=LLMError("endpoint unreachable"),
+    ):
+        resp = client.post(f"/api/modules/{module_id}/refine", json={"prompt": "add a field"})
+    assert resp.status_code == 503
+
+
+def test_workspace_insights_surfaces_refusal_as_422(client):
+    with patch("src.services.orchestrator.llm.generate", return_value=_gr(VALID_RAW)):
+        client.post("/api/modules/generate", json={"prompt": "workout"})
+    with patch(
+        "src.services.orchestrator.llm.generate",
+        return_value=_gr(
+            '{"refusal": "Not enough data across modules to synthesize a dashboard."}'
+        ),
+    ):
+        resp = client.post("/api/workspace/insights")
+    assert resp.status_code == 422
+    assert "refusal" in resp.json()["detail"]
+
+
+def test_workspace_insights_surfaces_llm_failure_as_503(client):
+    with patch("src.services.orchestrator.llm.generate", return_value=_gr(VALID_RAW)):
+        client.post("/api/modules/generate", json={"prompt": "workout"})
+    with patch(
+        "src.services.orchestrator.llm.generate",
+        side_effect=LLMError("quota exceeded"),
+    ):
+        resp = client.post("/api/workspace/insights")
+    assert resp.status_code == 503
+
+
+# ---------------------------------------------------------------------------
+# F5 — LLMError detail is sanitized: internal endpoint URLs and upstream response
+# bodies embedded in the error must never reach the client (refine/insights used
+# to pass str(e) straight through).
+# ---------------------------------------------------------------------------
+
+
+def test_refine_llm_error_detail_is_sanitized(client):
+    with patch("src.services.orchestrator.llm.generate", return_value=_gr(VALID_RAW)):
+        created = client.post("/api/modules/generate", json={"prompt": "track my workouts"}).json()
+    module_id = created["module"]["id"]
+    leak = "Could not reach the LLM endpoint at http://10.1.2.3:11434/v1: refused"
+    with patch("src.services.orchestrator.llm.generate", side_effect=LLMError(leak)):
+        resp = client.post(f"/api/modules/{module_id}/refine", json={"prompt": "add a field"})
+    assert resp.status_code == 503
+    detail = resp.json()["detail"]
+    assert "10.1.2.3" not in detail
+    assert "unreachable" in detail.lower()
+
+
+def test_insights_llm_error_detail_is_sanitized(client):
+    with patch("src.services.orchestrator.llm.generate", return_value=_gr(VALID_RAW)):
+        client.post("/api/modules/generate", json={"prompt": "workout"})
+    leak = "LLM endpoint returned HTTP 500: <html>trace 192.168.9.9 stack</html>"
+    with patch("src.services.orchestrator.llm.generate", side_effect=LLMError(leak)):
+        resp = client.post("/api/workspace/insights")
+    assert resp.status_code == 503
+    assert "192.168.9.9" not in resp.json()["detail"]
+
+
+def test_generate_llm_error_detail_is_sanitized(client):
+    leak = "Could not reach the LLM endpoint at http://192.0.2.7:8000/v1: refused"
+    with patch("src.services.orchestrator.llm.generate", side_effect=LLMError(leak)):
+        resp = client.post("/api/modules/generate", json={"prompt": "track my workouts"})
+    assert resp.status_code == 503
+    assert "192.0.2.7" not in resp.json()["detail"]
+
+
+# --- FIX 3 (R-102 "Just build it" hard skip): build_now forces allow_question=False ---
+
+
+def test_preview_build_now_forces_a_hard_build_no_question(client):
+    """FIX 3: build_now=True on a model that WOULD ask a question must never
+    relay the question — the route drops allow_question, the orchestrator retries
+    once with the strengthened build-now note, and (when that yields modules) the
+    hard build succeeds. No exchange is needed to force the skip."""
+    with patch(
+        "src.services.orchestrator.llm.generate",
+        side_effect=[_gr('{"question": "Which city?"}'), _gr(VALID_RAW)],
+    ) as mock_gen:
+        resp = client.post(
+            "/api/modules/preview",
+            json={"prompt": "plan my trip", "build_now": True},
+        )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body.get("question") is None  # never relayed
+    assert body["previews"], body
+    assert mock_gen.call_count == 2  # first (questioned) + strengthened build-now retry
+
+
+def test_generate_build_now_refuses_honestly_never_a_question(client):
+    """FIX 3: build_now=True + a model that STILL insists on questioning → the
+    route returns an honest 422 refusal, never a question. Proven through
+    /modules/generate with NO exchange (build_now alone hard-caps)."""
+    with patch(
+        "src.services.orchestrator.llm.generate",
+        return_value=_gr('{"question": "Really, which city?"}'),
+    ) as mock_gen:
+        resp = client.post(
+            "/api/modules/generate",
+            json={"prompt": "plan my trip", "build_now": True},
+        )
+    assert resp.status_code == 422, resp.text
+    assert "refusal" in resp.json()["detail"]
+    assert "question" not in resp.json()["detail"]
+    assert mock_gen.call_count == 2  # first attempt + one strengthened retry
+
+
+def test_preview_without_build_now_still_relays_a_question(client):
+    """Negative control: without build_now (and no exchange), a first question is
+    relayed normally — build_now is the ONLY thing forcing the hard skip here."""
+    with patch(
+        "src.services.orchestrator.llm.generate",
+        return_value=_gr('{"question": "Which city?"}'),
+    ):
+        resp = client.post(
+            "/api/modules/preview",
+            json={"prompt": "plan my trip"},
+        )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["question"] == "Which city?"

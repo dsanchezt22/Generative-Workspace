@@ -26,10 +26,13 @@ Env for the openai provider:
 """
 
 import base64
+import contextvars
 import json
 import os
 import urllib.error
 import urllib.request
+import uuid
+from dataclasses import dataclass
 
 from dotenv import load_dotenv
 
@@ -41,6 +44,28 @@ _client = None
 
 DEFAULT_MODEL = "gemini-flash-latest"
 DEFAULT_TEMPERATURE = 0.4
+
+
+@dataclass
+class GenResult:
+    text: str
+    provider: str
+    model: str
+    degraded: bool = False
+    tokens_in: int | None = None
+    tokens_out: int | None = None
+
+
+last_call: contextvars.ContextVar[GenResult | None] = contextvars.ContextVar(
+    "llm_last_call", default=None
+)
+
+
+def _gemini_model() -> str:
+    """The configured Gemini model, read fresh per call (single source — was
+    duplicated as `os.environ.get("GEMINI_MODEL", DEFAULT_MODEL)` at every
+    gemini call site)."""
+    return os.environ.get("GEMINI_MODEL", DEFAULT_MODEL)
 
 
 def _timeout() -> float:
@@ -97,7 +122,7 @@ def provider_info() -> dict:
     p = _resolve_provider()
     info: dict[str, str] = {"provider": p}
     if p == "gemini":
-        info["model"] = os.environ.get("GEMINI_MODEL", DEFAULT_MODEL)
+        info["model"] = _gemini_model()
     elif p == "openai":
         info["model"] = os.environ.get("TRUS_LLM_MODEL", "")
         info["base_url"] = os.environ.get("TRUS_LLM_BASE_URL", "")
@@ -143,7 +168,7 @@ def _gemini_config(system: str | None):
 
 
 def _gemini_generate(prompt: str, system: str | None) -> str:
-    model = os.environ.get("GEMINI_MODEL", DEFAULT_MODEL)
+    model = _gemini_model()
     try:
         response = _get_client().models.generate_content(
             model=model,
@@ -158,10 +183,15 @@ def _gemini_generate(prompt: str, system: str | None) -> str:
     return text
 
 
-def _gemini_generate_file(user_message: str, system: str | None, data: bytes, mime: str) -> str:
+def _gemini_generate_file_raw(
+    user_message: str, system: str | None, data: bytes, mime: str
+) -> tuple[str, object]:
+    """Same call as `_gemini_generate_file`, but also returns the raw SDK
+    response object so `generate_from_file` can read `usage_metadata` for
+    telemetry (R-1201/R-1202) without re-issuing the request."""
     from google.genai import types
 
-    model = os.environ.get("GEMINI_MODEL", DEFAULT_MODEL)
+    model = _gemini_model()
     try:
         response = _get_client().models.generate_content(
             model=model,
@@ -173,7 +203,26 @@ def _gemini_generate_file(user_message: str, system: str | None, data: bytes, mi
     text: str | None = response.text
     if not text:
         raise LLMError("The model returned an empty response.")
+    return text, response
+
+
+def _gemini_generate_file(user_message: str, system: str | None, data: bytes, mime: str) -> str:
+    text, _response = _gemini_generate_file_raw(user_message, system, data, mime)
     return text
+
+
+def _gemini_usage(response: object) -> tuple[int | None, int | None]:
+    """Best-effort (tokens_in, tokens_out) from a Gemini response's
+    `usage_metadata`. The google-genai SDK's response shape isn't guaranteed
+    across versions (and test doubles may omit it entirely), so every
+    attribute access here is optional rather than assumed."""
+    meta = getattr(response, "usage_metadata", None)
+    if meta is None:
+        return None, None
+    return (
+        getattr(meta, "prompt_token_count", None),
+        getattr(meta, "candidates_token_count", None),
+    )
 
 
 # ----------------------------------------------- openai-compatible -----------
@@ -181,7 +230,7 @@ def _gemini_generate_file(user_message: str, system: str | None, data: bytes, mi
 
 def _openai_chat(
     messages: list[dict], schema: dict | None = None, expect_array: bool = False
-) -> str:
+) -> tuple[str, dict]:
     base = os.environ.get("TRUS_LLM_BASE_URL", "").strip().rstrip("/")
     model = os.environ.get("TRUS_LLM_MODEL", "").strip()
     if not base or not model:
@@ -214,6 +263,8 @@ def _openai_chat(
         req.add_header("Authorization", f"Bearer {api_key}")
 
     try:
+        # base is operator-configured (TRUS_LLM_BASE_URL), never end-user input.
+        # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected
         with urllib.request.urlopen(req, timeout=_timeout()) as resp:
             payload = json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
@@ -230,7 +281,7 @@ def _openai_chat(
         raise LLMError(f"Unexpected LLM response shape: {str(payload)[:300]}") from e
     if not text or not text.strip():
         raise LLMError("The model returned an empty response.")
-    return text
+    return text, payload.get("usage", {})
 
 
 # ------------------------------------------------------------- public --------
@@ -242,30 +293,69 @@ def generate(
     *,
     schema: dict | None = None,
     expect_array: bool = False,
-) -> str:
+) -> GenResult:
+    # Reset provenance up front so an exception path leaves last_call = None
+    # (unknown provenance), never a stale previous-call value (R-403).
+    last_call.set(None)
     provider = _resolve_provider()
-    if provider == "stub":
+
+    def _done(r: GenResult) -> GenResult:
+        last_call.set(r)
+        return r
+
+    def _stub_text() -> str:
+        if expect_array:
+            from src.stub_templates import pick_system
+
+            return json.dumps(pick_system(prompt))
         return _stub_module_for(prompt)
+
+    if provider == "stub":
+        return _done(GenResult(_stub_text(), "stub", "stub"))
     if provider == "openai":
         messages: list[dict] = []
         if system:
             messages.append({"role": "system", "content": system})
         messages.append({"role": "user", "content": prompt})
         try:
-            return _openai_chat(messages, schema=schema, expect_array=expect_array)
+            text, usage = _openai_chat(messages, schema=schema, expect_array=expect_array)
+            return _done(
+                GenResult(
+                    text,
+                    "openai",
+                    os.environ.get("TRUS_LLM_MODEL", ""),
+                    tokens_in=usage.get("prompt_tokens"),
+                    tokens_out=usage.get("completion_tokens"),
+                )
+            )
         except LLMError:
-            # Local/hosted endpoint unreachable → degrade gracefully.
+            # Local/hosted endpoint unreachable → degrade gracefully. The fallback
+            # result must carry the model that actually answered, not the failed one.
             if not _cascade_enabled():
                 raise
             if not _is_stub_key(os.environ.get("GEMINI_API_KEY")):
-                return _gemini_generate(prompt, system)
-            return _stub_module_for(prompt)
-    return _gemini_generate(prompt, system)
+                return _done(
+                    GenResult(
+                        _gemini_generate(prompt, system), "gemini", _gemini_model(), degraded=True
+                    )
+                )
+            return _done(GenResult(_stub_text(), "stub", "stub", degraded=True))
+    return _done(GenResult(_gemini_generate(prompt, system), "gemini", _gemini_model()))
 
 
 def generate_from_file(user_message: str, system: str | None, data: bytes, mime: str) -> str:
     """Multimodal generation. Gemini handles any file; the openai provider handles
-    images (data URL); unsupported inputs return "{}" so callers fall back to templates."""
+    images (data URL); unsupported inputs return "{}" so callers can refuse honestly
+    instead of silently degrading to a template.
+
+    On success, sets `last_call` to a real GenResult (provider/model per the same
+    per-branch resolution `generate()` uses, tokens where the payload offers them)
+    so file-path generations carry provenance too (R-1201/R-1202). This path never
+    cascades, so degraded is always False. The "{}" sentinel returns are refusals,
+    not successes — they leave last_call at None."""
+    # Clear stale provenance: a raising path (and the "{}" sentinel paths below)
+    # must not leave a prior call's result live.
+    last_call.set(None)
     provider = _resolve_provider()
     if provider == "stub":
         return "{}"
@@ -284,9 +374,30 @@ def generate_from_file(user_message: str, system: str | None, data: bytes, mime:
                     ],
                 }
             )
-            return _openai_chat(messages, expect_array=True)
+            text, usage = _openai_chat(messages, expect_array=True)
+            last_call.set(
+                GenResult(
+                    text,
+                    "openai",
+                    os.environ.get("TRUS_LLM_MODEL", ""),
+                    tokens_in=usage.get("prompt_tokens"),
+                    tokens_out=usage.get("completion_tokens"),
+                )
+            )
+            return text
         return "{}"  # non-image documents aren't portable across openai-compat servers
-    return _gemini_generate_file(user_message, system, data, mime)
+    text, response = _gemini_generate_file_raw(user_message, system, data, mime)
+    tokens_in, tokens_out = _gemini_usage(response)
+    last_call.set(
+        GenResult(
+            text,
+            "gemini",
+            _gemini_model(),
+            tokens_in=tokens_in,
+            tokens_out=tokens_out,
+        )
+    )
+    return text
 
 
 # ------------------------------------------------- vision (image → text) -----
@@ -354,6 +465,8 @@ def vision_describe(system: str | None, user_text: str, data: bytes, mime: str) 
     if api_key:
         req.add_header("Authorization", f"Bearer {api_key}")
     try:
+        # base is operator-configured (TRUS_VISION_BASE_URL/TRUS_LLM_BASE_URL), never end-user input.
+        # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             payload = json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
@@ -387,3 +500,99 @@ def vision_capture(system: str | None, user_text: str, data: bytes, mime: str) -
         "No vision backend available. Set TRUS_VISION_MODEL (local vision endpoint) "
         "or GEMINI_API_KEY (cloud) to capture screenshots."
     )
+
+
+# ------------------------------------------------ speech-to-text (voice → text) -----
+# Voice rambling → text (R-201/R-204 half). A SEPARATE pluggable endpoint — most
+# local/hosted LLM servers don't also serve speech-to-text, so this mirrors the
+# vision section above rather than reusing TRUS_LLM_*. Config:
+#   TRUS_STT_BASE_URL  e.g. http://localhost:8000/v1  (any OpenAI-compatible
+#                      /audio/transcriptions server — whisper.cpp server,
+#                      faster-whisper server, or a hosted Whisper-compatible endpoint)
+#   TRUS_STT_MODEL     e.g. whisper-1                  (required to enable)
+#   TRUS_STT_API_KEY   optional; local servers ignore it
+#   TRUS_STT_TIMEOUT   seconds (default 120 — audio can run long)
+# BOTH TRUS_STT_BASE_URL and TRUS_STT_MODEL must be set — unlike vision, there's
+# no plausible "the text-model server also happens to serve STT" default, so no
+# fallback to TRUS_LLM_BASE_URL. Unset → the route refuses honestly (422).
+
+
+def _stt_timeout() -> float:
+    try:
+        return float(os.environ.get("TRUS_STT_TIMEOUT", "120"))
+    except ValueError:
+        return 120.0
+
+
+def _sanitize_header_value(v: str) -> str:
+    """Strip CR/LF (and quotes) from a value before it's spliced into a manually
+    built multipart header line. python-multipart passes a client's raw filename
+    and content_type through unmodified — a bare `\\n` in either would smuggle a
+    fully-formed extra form field into the body we POST to the operator's STT
+    server (header injection). No legitimate filename or MIME type contains these,
+    so removing them is loss-free."""
+    return v.replace("\r", "").replace("\n", "").replace('"', "")
+
+
+def stt_available() -> bool:
+    return bool(os.environ.get("TRUS_STT_BASE_URL", "").strip()) and bool(
+        os.environ.get("TRUS_STT_MODEL", "").strip()
+    )
+
+
+def transcribe(data: bytes, mime: str, filename: str | None) -> str:
+    """Voice → text via an OpenAI-compatible POST {base}/audio/transcriptions.
+    The only MULTIPART (not JSON) call in this module — the body is built by
+    hand with urllib, mirroring `_openai_chat`'s zero-dep ethos (no `requests`).
+
+    Transcription is NOT a "generation" (no ModuleConfig, no semantic cache, no
+    cascade) — this never touches `last_call`; the route records its own
+    telemetry instead of the shared `_track` contextmanager in routes/modules.py,
+    which reads `last_call` for provider/model/tokens that don't apply here."""
+    base = os.environ.get("TRUS_STT_BASE_URL", "").strip().rstrip("/")
+    model = os.environ.get("TRUS_STT_MODEL", "").strip()
+    if not base or not model:
+        raise LLMError("Set TRUS_STT_BASE_URL and TRUS_STT_MODEL to use voice transcription.")
+    api_key = os.environ.get("TRUS_STT_API_KEY", "").strip()
+
+    boundary = uuid.uuid4().hex
+    # Both filename and mime are client-supplied and spliced raw into header lines
+    # below — sanitize CR/LF/quotes out of each to close multipart header injection.
+    name = _sanitize_header_value(filename or "audio") or "audio"
+    safe_mime = _sanitize_header_value(mime)
+    body = b"".join(
+        [
+            f"--{boundary}\r\n".encode(),
+            b'Content-Disposition: form-data; name="model"\r\n\r\n',
+            model.encode("utf-8"),
+            b"\r\n",
+            f"--{boundary}\r\n".encode(),
+            f'Content-Disposition: form-data; name="file"; filename="{name}"\r\n'.encode(),
+            f"Content-Type: {safe_mime}\r\n\r\n".encode(),
+            data,
+            b"\r\n",
+            f"--{boundary}--\r\n".encode(),
+        ]
+    )
+    req = urllib.request.Request(base + "/audio/transcriptions", data=body, method="POST")
+    req.add_header("Content-Type", f"multipart/form-data; boundary={boundary}")
+    if api_key:
+        req.add_header("Authorization", f"Bearer {api_key}")
+
+    try:
+        # base is operator-configured (TRUS_STT_BASE_URL), never end-user input.
+        # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected
+        with urllib.request.urlopen(req, timeout=_stt_timeout()) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode("utf-8", "ignore")[:400] if hasattr(e, "read") else ""
+        raise LLMError(f"STT endpoint returned HTTP {e.code}: {detail}") from e
+    except (urllib.error.URLError, OSError) as e:
+        raise LLMError(f"Could not reach the STT endpoint at {base}: {e}") from e
+    except json.JSONDecodeError as e:
+        raise LLMError(f"STT endpoint returned non-JSON: {e}") from e
+
+    text = payload.get("text")
+    if text is None:
+        raise LLMError(f"Unexpected STT response shape: {str(payload)[:300]}")
+    return str(text)

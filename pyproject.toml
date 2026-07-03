@@ -13,7 +13,8 @@ select = ["E", "W", "F", "I", "B", "S", "C4", "UP", "SIM", "RUF"]
 ignore = [
     "E501",  # long lines are mostly SQL/URL/prompt string literals ruff-format can't break
     "S608",  # SQL composed from trusted module-level column constants; values are parameterized
-    "S310",  # urllib called with configured (not user-controlled) endpoint URLs
+    "S310",  # urllib endpoints are either configured, or (studio image_url) guarded by
+             # _check_url_allowed's SSRF host checks before every urlopen call
     "S110",  # try/except/pass — intentional best-effort paths (e.g. logging must not fail a request)
     "S112",  # try/except/continue — same intent
     "B008",  # FastAPI Depends()/File()/Query() in argument defaults is the documented pattern

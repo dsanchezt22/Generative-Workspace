@@ -6,17 +6,30 @@ that the frontend renders with its trusted component library.
 
 from __future__ import annotations
 
+import contextvars
 import json
 import os
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import TypeVar
 
 from pydantic import ValidationError
 
 from src import llm
-from src.schema import ClarifyingQuestion, ModuleConfig, RefusalError
+from src.schema import ClarifyingQuestion, LLMError, ModuleConfig, RefusalError
+from src.services import extract
 
 _T = TypeVar("_T")
+
+# R-103/R-301: the plan paragraph parsed alongside the last generate_modules()
+# decomposition. A side channel (mirrors llm.last_call) so generate_modules()
+# keeps returning list[ModuleConfig] — every existing call site is untouched —
+# while the route can still surface the plan on GenerateResponse. Only
+# generate_modules() (the generate/preview entry point) sets this; the file
+# upload path does not read it.
+last_plan: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "orchestrator_last_plan", default=None
+)
 
 
 class _InvalidOutput(Exception):
@@ -30,6 +43,11 @@ _RETRY_NOTE = (
 )
 
 _MODULE_SCHEMA = ModuleConfig.model_json_schema()
+
+_UNREADABLE_FILE_REFUSAL = (
+    "This file can't be read with the current model configuration — "
+    "configure a live model, or paste the document's text into the prompt."
+)
 
 
 def _retry_count() -> int:
@@ -198,6 +216,30 @@ def _module_context(modules: list[ModuleConfig]) -> str:
     )
 
 
+# R-302: cap on the rendered "Recent conversation:" block (bounded overall
+# length, not per-message) so a long history never dominates the prompt.
+_CONVERSATION_CONTEXT_BUDGET = 1200
+
+
+def _conversation_block(messages: list[dict] | None) -> str:
+    """Render the owner's recent persisted conversation (db.recent_messages,
+    oldest-first) as a bounded context block, so e.g. "make it like the one I
+    made yesterday" has something to bind to (R-302). Bounded to ~1200 chars
+    total; when it doesn't fit, OLDER turns are dropped first (messages are
+    already oldest-first, so this pops from the front)."""
+    if not messages:
+        return ""
+    lines = [f"{m['role']}: {m['text']}" for m in messages]
+    while lines and sum(len(x) for x in lines) + len(lines) - 1 > _CONVERSATION_CONTEXT_BUDGET:
+        lines.pop(0)
+    if not lines:
+        # Even the single most recent turn alone exceeds the budget — keep its
+        # tail (the most recent characters) rather than drop it entirely.
+        tail = f"{messages[-1]['role']}: {messages[-1]['text']}"
+        lines = [tail[-_CONVERSATION_CONTEXT_BUDGET:]]
+    return "\n\nRecent conversation:\n" + "\n".join(lines)
+
+
 def _seeded_prompt(prompt: str, existing_modules: list[ModuleConfig] | None = None) -> str:
     """Ground generation with the nearest preloaded skeleton, which the model is
     told to adapt to the request. This is "preloaded templates that adjust to the
@@ -244,7 +286,7 @@ def _generate_validated(
     last: Exception | None = None
     for attempt in range(1 + _retry_count()):
         msg = user if attempt == 0 else user + _RETRY_NOTE
-        raw = llm.generate(msg, system=system, schema=schema, expect_array=expect_array)
+        raw = llm.generate(msg, system=system, schema=schema, expect_array=expect_array).text
         try:
             return parse(raw)
         except _InvalidOutput as e:
@@ -270,12 +312,17 @@ a single card. You never write UI code; you return ModuleConfig JSON.
 
 {_COMPONENT_DOCS}
 
-Output JSON ONLY: an ARRAY of 1-6 ModuleConfig objects. Each object has this shape:
+Output JSON ONLY: an OBJECT with this shape:
 {{
-  "title": "...", "components": [ {{ "id","type","label",... }} ], "state": {{ }},
-  "layout": {{ "x":0,"y":0,"width":360,"height":320 }},
-  "icon": "<one icon name: activity|leaf|dollar|check|book|repeat|smile|calendar|plane|music|cap|briefcase|droplet|moon|film|cart|star|target|list|grid|chart|camera|heart|home|folder|bell|paw|sparkles>", "accent": "<amber|emerald|sky|rose|violet|coral|teal|gold>",
-  "columns": 1, "summary_component_id": "<id?>"
+  "plan": "<one short paragraph: what you will build and why it fits the request>",
+  "modules": [ <1-6 ModuleConfig objects>, each shaped:
+    {{
+      "title": "...", "components": [ {{ "id","type","label",... }} ], "state": {{ }},
+      "layout": {{ "x":0,"y":0,"width":360,"height":320 }},
+      "icon": "<one icon name: activity|leaf|dollar|check|book|repeat|smile|calendar|plane|music|cap|briefcase|droplet|moon|film|cart|star|target|list|grid|chart|camera|heart|home|folder|bell|paw|sparkles>", "accent": "<amber|emerald|sky|rose|violet|coral|teal|gold>",
+      "columns": 1, "summary_component_id": "<id?>"
+    }}
+  ]
 }}
 
 HOW MANY TOOLS:
@@ -292,10 +339,12 @@ Rules:
 3. snake_case unique ids within each module. Prefill "state" with any concrete values mentioned.
 4. ADAPT to the specifics of the request — never return generic rebranded clones.
 5. If existing modules are listed, you may add cross-module metric/progress_bar bindings.
-6. If the request is too vague AND one short question would unlock it, output exactly:
-   {{ "question": "<one short question>" }}
+6. Ask AT MOST ONE clarifying question, and ONLY when the request is genuinely ambiguous —
+   you cannot pick sensible fields, units, or ranges without the answer, and no reasonable
+   default exists. When you do, output exactly (nothing else — no "plan", no "modules"):
+   {{ "question": "<one short, specific question>" }}
 7. If illicit or impossible, output exactly: {{ "refusal": "<one-sentence reason>" }}
-8. Output ONLY the JSON array (or the single refusal/question object). No prose.
+8. Do not narrate. Output ONLY the JSON object above (or the single refusal/question object).
 """
 
 
@@ -303,6 +352,8 @@ def _seeded_system(
     prompt: str,
     existing_modules: list[ModuleConfig] | None = None,
     seed_override: list | None = None,
+    exchange_context: str | None = None,
+    recent_messages: list[dict] | None = None,
 ) -> str:
     from src.stub_templates import pick_system
 
@@ -311,28 +362,63 @@ def _seeded_system(
     # cache has nothing close.
     seed = json.dumps(seed_override if seed_override is not None else pick_system(prompt))
     context = _module_context(existing_modules or [])
+    # R-302: the owner's recent persisted conversation (db.recent_messages, via
+    # the generate/preview routes only — never the grounded-file path, where
+    # document content already dominates). Bounded, never the cache key.
+    convo_block = _conversation_block(recent_messages)
+    # R-102: the folded interview Q/A (built by the route from GenerateRequest.exchange)
+    # reaches the model here so a multi-turn clarifying chain sees ALL prior answers —
+    # never the semantic-cache key (see generate_modules — that stays the raw `prompt`).
+    # A just-asked question may already be reflected in `convo_block` too (the persisted
+    # history and the exchange fold overlap when a chain's earlier turns were logged) —
+    # accepted rather than filtered; there's no reliable timestamp to correlate an
+    # exchange turn against a messages row.
+    exchange_block = (
+        f"\n\nConversation so far (answers already given — do not ask about these again):\n"
+        f"{exchange_context}"
+        if exchange_context
+        else ""
+    )
     return (
         f"User request: {prompt}\n\n"
         f"Example starting system (adapt freely — change the number of tools, fields, components, "
         f"labels, icons, accents, and prefill state to match the request; do not return it as-is):\n{seed}"
-        f"{context}\n\n"
+        f"{context}"
+        f"{convo_block}"
+        f"{exchange_block}\n\n"
         f"Return the adapted ModuleConfig JSON array."
     )
 
 
-def _parse_modules(raw: str) -> list[ModuleConfig]:
+@dataclass
+class _Decomposition:
+    """Parsed result of a DECOMPOSE_SYSTEM_PROMPT response: the modules to build
+    plus the optional plan paragraph the model gave for them (R-103/R-301)."""
+
+    plan: str | None
+    modules: list[ModuleConfig]
+
+
+def _parse_modules(raw: str) -> _Decomposition:
     cleaned = _strip_codefence(raw)
     try:
         data = json.loads(cleaned)
     except json.JSONDecodeError as e:
         raise _InvalidOutput(f"non-JSON output: {e.msg}") from e
+    plan: str | None = None
     if isinstance(data, dict):
         if "refusal" in data:
             raise RefusalError(str(data["refusal"]))
         if "question" in data and len(data) == 1:
             raise ClarifyingQuestion(str(data["question"]))
-        # tolerate {"modules": [...]}; otherwise treat a lone object as a one-item list
-        data = data["modules"] if isinstance(data.get("modules"), list) else [data]
+        if isinstance(data.get("modules"), list):
+            # {"plan": str, "modules": [...]} (new) or {"modules": [...]} (already tolerated)
+            plan_val = data.get("plan")
+            if isinstance(plan_val, str) and plan_val.strip():
+                plan = plan_val.strip()
+            data = data["modules"]
+        else:
+            data = [data]  # a lone module object (back-compat)
     if not isinstance(data, list):
         raise _InvalidOutput("did not return a list of modules.")
     out: list[ModuleConfig] = []
@@ -345,14 +431,47 @@ def _parse_modules(raw: str) -> list[ModuleConfig]:
             continue
     if not out:
         raise _InvalidOutput("produced no valid modules.")
-    return out
+    return _Decomposition(plan=plan, modules=out)
+
+
+# R-102 hard cap ("never a fifth question"): appended to the user message when the
+# model questions past an exhausted budget — one last chance to comply before refusal.
+_BUILD_NOW_NOTE = (
+    "\n\nDo NOT ask another question. Return the modules object NOW — "
+    "build your best interpretation of everything above."
+)
+
+_QUESTION_CAP_REFUSAL = (
+    "Four answers in, the model still couldn't settle on a build — "
+    "try rephrasing the request with more detail."
+)
 
 
 def generate_modules(
     prompt: str,
     existing_modules: list[ModuleConfig] | None = None,
+    owner: str = "local",
+    exchange_context: str | None = None,
+    allow_question: bool = True,
+    recent_messages: list[dict] | None = None,
 ) -> list[ModuleConfig]:
-    """Decompose a request into the set of tools it needs (1-6 modules)."""
+    """Decompose a request into the set of tools it needs (1-6 modules).
+
+    The cache is scoped to `owner` (R-903): a prompt is never reused across owners.
+    `exchange_context` (R-102's folded interview Q/A, built by the route) reaches
+    the MODEL via `_seeded_system` but never the semantic-cache key below — the
+    key is always the raw `prompt`. Interview-specialized results are also never
+    STORED under that key (see the store guard below). When `allow_question` is
+    False (the route's 4-answered cap is exhausted), a ClarifyingQuestion from
+    the model is not relayed: retry once with a strengthened build-now note, and
+    refuse honestly if it still questions — the user never sees a fifth question.
+    The parsed plan (R-103/R-301) is surfaced via `last_plan`, not the return
+    value, so every existing caller of this function is unaffected.
+    `recent_messages` (R-302: the owner's last ~10 persisted `messages` rows for
+    the current page, oldest-first — see db.recent_messages) also reaches the
+    model via `_seeded_system` only, never the cache key: an identical re-prompt
+    still cache-HITs regardless of how the conversation has moved on since."""
+    last_plan.set(None)
     if llm.is_stub_mode():
         from src.stub_templates import pick_system
 
@@ -361,20 +480,109 @@ def generate_modules(
 
     # Cache: an (almost) identical past prompt is reused for free; a near match
     # becomes the generation seed (so the library grows with real usage).
-    mode, cached = semantic_cache.lookup("system", prompt)
+    mode, cached = semantic_cache.lookup("system", prompt, owner=owner)
+    # R-102 (lookup-side chain fix): when there ARE interview answers, never
+    # short-circuit on a plain cache hit. A same-owner entry created mid-chain
+    # (a parallel tab/device) keys on the raw `prompt`, which does NOT carry the
+    # answers — returning it would silently discard the interview. Downgrade the
+    # hit to a seed: keep the skeleton benefit, but the model MUST run so the
+    # answers are honored.
+    if mode == "hit" and exchange_context is not None:
+        mode = "seed"
     if mode == "hit" and cached:
         try:
             return [ModuleConfig.model_validate(c) for c in cached]
         except ValidationError:
             pass  # stale/incompatible cache entry → fall through and regenerate
-    result = _generate_validated(
-        _seeded_system(prompt, existing_modules, seed_override=cached if mode == "seed" else None),
-        DECOMPOSE_SYSTEM_PROMPT,
-        _parse_modules,
-        expect_array=True,
+    user_message = _seeded_system(
+        prompt,
+        existing_modules,
+        seed_override=cached if mode == "seed" else None,
+        exchange_context=exchange_context,
+        recent_messages=recent_messages,
     )
-    semantic_cache.store("system", prompt, [m.model_dump(mode="json") for m in result])
+    try:
+        parsed = _generate_validated(
+            user_message, DECOMPOSE_SYSTEM_PROMPT, _parse_modules, expect_array=True
+        )
+    except ClarifyingQuestion:
+        if allow_question:
+            raise
+        # R-102 hard cap: the question budget is spent — never relay another.
+        try:
+            parsed = _generate_validated(
+                user_message + _BUILD_NOW_NOTE,
+                DECOMPOSE_SYSTEM_PROMPT,
+                _parse_modules,
+                expect_array=True,
+            )
+        except ClarifyingQuestion as e:
+            raise RefusalError(_QUESTION_CAP_REFUSAL) from e
+    last_plan.set(parsed.plan)
+    result = parsed.modules
+    last = llm.last_call.get()
+    # R-403: only a definitely-non-degraded call may seed the cache — an unknown
+    # provenance (last is None) is not safe to treat as "not degraded".
+    # R-102 (review fix): interview-specialized results must not seed the shared
+    # prompt→template library — the key would be the raw prompt but the value is
+    # shaped by answers the key doesn't carry (key/value intent mismatch), so a
+    # later plain generation of the same prompt would be served the wrong tools.
+    if last is not None and not last.degraded and exchange_context is None:
+        semantic_cache.store(
+            "system", prompt, [m.model_dump(mode="json") for m in result], owner=owner
+        )
     return result
+
+
+def _needs_text_extraction(mime: str) -> bool:
+    """Mirrors llm.generate_from_file's provider-x-mime sentinel logic (see its
+    docstring) so we can decide, BEFORE the multimodal call, whether this
+    provider can read `mime` natively or would just bounce with the "{}"
+    sentinel: stub never reads a file natively (every mime needs extraction);
+    the openai-compat provider only takes image/* natively (everything else
+    needs extraction); gemini reads any mime natively (never needs it)."""
+    provider = llm.provider_info()["provider"]
+    if provider == "gemini":
+        return False
+    if provider == "openai":
+        return not mime.startswith("image/")
+    return True  # stub
+
+
+def _generate_modules_grounded(
+    prompt: str,
+    extracted_text: str,
+    filename: str | None,
+    existing_modules: list[ModuleConfig] | None,
+) -> list[ModuleConfig]:
+    """R-211 text-extraction grounding path: route the extracted document text
+    through the normal TEXT generation call so a provider with no (or limited)
+    multimodal input still grounds proposals in the file's actual content.
+
+    Deliberately calls _generate_validated directly instead of generate_modules()
+    — generate_modules() looks up/stores the semantic cache (gen_cache), which is
+    a shared seed pool that future unrelated prompts draw on (R-403's "seeds the
+    library" mechanism). Document content is per-upload and often sensitive
+    (R-903 owner-scoping, R-1004 no cross-user leakage) — it must never be
+    written into that shared pool, so this path skips cache lookup/store
+    entirely and always calls the model.
+    """
+    label = filename or "the uploaded file"
+    user_message = (
+        _seeded_system(prompt, existing_modules)
+        + f"\n\nDOCUMENT CONTENT (extracted from {label}):\n{extracted_text}"
+    )
+    parsed = _generate_validated(
+        user_message, DECOMPOSE_SYSTEM_PROMPT, _parse_modules, expect_array=True
+    )
+    # R-211 honesty: _generate_validated ran the TEXT model, but in stub mode (or a
+    # cascade that fell all the way to stub) that returns generic keyword templates
+    # with no knowledge of the document. Surfacing them as success would claim we
+    # read a file we never actually read — refuse honestly instead.
+    last = llm.last_call.get()
+    if last is None or last.provider == "stub":
+        raise RefusalError(_UNREADABLE_FILE_REFUSAL)
+    return parsed.modules
 
 
 def generate_modules_from_file(
@@ -382,12 +590,32 @@ def generate_modules_from_file(
     data: bytes,
     mime: str,
     existing_modules: list[ModuleConfig] | None = None,
+    filename: str | None = None,
+    hint: str | None = None,
 ) -> list[ModuleConfig]:
-    """Build tools shaped around an uploaded document/image (Gemini multimodal)."""
-    if llm.is_stub_mode():
-        from src.stub_templates import pick_system
+    """Build tools shaped around an uploaded document/image.
 
-        return [ModuleConfig.model_validate(c) for c in pick_system(prompt)]
+    R-211: documents must ground on EVERY provider, not just Gemini's native
+    multimodal path. Before the multimodal call, if this provider can't read
+    `mime` natively (see _needs_text_extraction), try server-side text
+    extraction (src.services.extract) and — on success — ground generation via
+    the normal text path (_generate_modules_grounded). Extraction
+    failure/unsupported mime falls through to the native multimodal call below,
+    which refuses honestly (via the "{}" sentinel) if that can't read it either
+    — we never fabricate a generic keyword template from a file we never
+    actually read.
+
+    R-221: `hint` (the sketch snap's interpretation instruction, bounded by the
+    route) is folded into the user request the model sees, so the sketch-specific
+    guidance reaches BOTH the grounded and native multimodal paths below. Default
+    None → every other caller (plain file upload) is unaffected."""
+    if hint:
+        prompt = f"{prompt}\n\n{hint}"
+    if _needs_text_extraction(mime):
+        extracted = extract.text_from_file(data, mime, filename=filename)
+        if extracted is not None:
+            return _generate_modules_grounded(prompt, extracted, filename, existing_modules)
+
     user_message = (
         _seeded_system(prompt, existing_modules)
         + "\n\nA file is attached above. Read it and build tools shaped around its ACTUAL content — "
@@ -397,13 +625,10 @@ def generate_modules_from_file(
     for attempt in range(1 + _retry_count()):
         msg = user_message if attempt == 0 else user_message + _RETRY_NOTE
         raw = llm.generate_from_file(msg, DECOMPOSE_SYSTEM_PROMPT, data, mime)
-        # A provider that can't read this file type returns "{}" — fall back to templates.
         if not raw or raw.strip() in ("{}", ""):
-            from src.stub_templates import pick_system
-
-            return [ModuleConfig.model_validate(c) for c in pick_system(prompt)]
+            raise RefusalError(_UNREADABLE_FILE_REFUSAL)
         try:
-            return _parse_modules(raw)
+            return _parse_modules(raw).modules
         except _InvalidOutput as e:
             last = e
     raise RefusalError(f"The model could not produce a valid result ({last}).")
@@ -414,9 +639,8 @@ def refine_module(
     prompt: str,
     existing_modules: list[ModuleConfig] | None = None,
 ) -> ModuleConfig:
-    # Stub mode: Gemini isn't available, so return the config unchanged.
     if llm.is_stub_mode():
-        return config
+        raise LLMError("Refine needs a live model; the app is in offline template mode.")
     context = _module_context(existing_modules or [])
     user_message = (
         f"Current ModuleConfig:\n{config.model_dump_json()}\n\n"

@@ -1,20 +1,15 @@
 from fastapi import APIRouter, HTTPException, Request
 
 from src import db
+from src.routes.deps import _owner_id
 from src.schema import CreatePageRequest, Page, RenamePageRequest, ReorderPagesRequest
 
 router = APIRouter()
 
 
-def _session_id(request: Request) -> str:
-    from src.routes.modules import _session_id as _sid
-
-    return _sid(request)
-
-
 @router.get("/pages", response_model=list[Page])
 async def list_pages(request: Request) -> list[Page]:
-    sid = _session_id(request)
+    sid = _owner_id(request)
     pages = db.list_pages(sid)
     if not pages:
         return [db.ensure_default_page(sid)]
@@ -26,7 +21,7 @@ async def create_page(body: CreatePageRequest, request: Request) -> Page:
     name = body.name.strip()
     if not name:
         raise HTTPException(status_code=422, detail="Page name cannot be empty")
-    sid = _session_id(request)
+    sid = _owner_id(request)
     return db.create_page(sid, name, icon=body.icon, parent_id=body.parent_id)
 
 
@@ -49,7 +44,7 @@ def _would_loop(sid: str, page_id: str, parent_id: str | None) -> bool:
 
 @router.patch("/pages/{page_id}", response_model=Page)
 async def update_page(page_id: str, body: RenamePageRequest, request: Request) -> Page:
-    sid = _session_id(request)
+    sid = _owner_id(request)
     fields = body.model_fields_set
     kwargs: dict[str, str | None] = {}
     if "name" in fields:
@@ -71,13 +66,13 @@ async def update_page(page_id: str, body: RenamePageRequest, request: Request) -
 
 @router.post("/pages/reorder", response_model=list[Page])
 async def reorder_pages(body: ReorderPagesRequest, request: Request) -> list[Page]:
-    sid = _session_id(request)
+    sid = _owner_id(request)
     return db.reorder_pages(sid, body.ordered_ids)
 
 
 @router.delete("/pages/{page_id}", status_code=204)
 async def delete_page(page_id: str, request: Request) -> None:
-    sid = _session_id(request)
+    sid = _owner_id(request)
     ok = db.delete_page(sid, page_id)
     if not ok:
         raise HTTPException(

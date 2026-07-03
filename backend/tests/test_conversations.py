@@ -6,6 +6,8 @@ from fastapi.testclient import TestClient
 from src import db
 from src.main import app
 
+from tests.conftest import gen_result
+
 VALID_RAW = json.dumps(
     {
         "title": "Workout Log",
@@ -14,6 +16,7 @@ VALID_RAW = json.dumps(
         "components": [{"id": "exercise", "type": "text_input", "label": "Exercise"}],
     }
 )
+_VALID_RESULT = gen_result(VALID_RAW)
 
 
 @pytest.fixture
@@ -56,11 +59,62 @@ def test_clear_messages_for_page_only():
     assert len(db.list_messages(sid, page_id="p2")) == 1
 
 
+# --- db.recent_messages (R-302) ---
+
+
+def test_recent_messages_oldest_first_and_bounded_by_limit():
+    db.init_db()
+    sid = db.ensure_session(None)
+    for i in range(15):
+        db.add_message(sid, "user", f"message {i}", page_id="p1")
+    recent = db.recent_messages(sid, "p1", limit=10)
+    assert len(recent) == 10
+    assert recent[0] == {"role": "user", "text": "message 5"}  # oldest of the kept 10
+    assert recent[-1] == {"role": "user", "text": "message 14"}  # most recent last
+
+
+def test_recent_messages_scoped_by_page():
+    db.init_db()
+    sid = db.ensure_session(None)
+    db.add_message(sid, "user", "on page 1", page_id="p1")
+    db.add_message(sid, "user", "on page 2", page_id="p2")
+    recent = db.recent_messages(sid, "p1", limit=10)
+    assert [m["text"] for m in recent] == ["on page 1"]
+
+
+def test_recent_messages_no_page_id_returns_empty():
+    """Review fix (2b-4): no page context = no conversation context. page_id
+    None (the frontend's initial-load race window) must never fall back to
+    whole-session history — cross-page turns would leak into the generation."""
+    db.init_db()
+    sid = db.ensure_session(None)
+    db.add_message(sid, "user", "on page 1", page_id="p1")
+    db.add_message(sid, "user", "on page 2", page_id="p2")
+    assert db.recent_messages(sid, None, limit=10) == []
+
+
+def test_recent_messages_cross_owner_isolation():
+    """R-903: another owner's messages must never appear in this owner's context."""
+    db.init_db()
+    owner_a = db.ensure_session(None)
+    owner_b = db.ensure_session(None)
+    db.add_message(owner_a, "user", "Alice's distinctive plan", page_id="p1")
+    db.add_message(owner_b, "user", "Bob's distinctive plan", page_id="p1")
+    recent_a = db.recent_messages(owner_a, "p1", limit=10)
+    assert [m["text"] for m in recent_a] == ["Alice's distinctive plan"]
+
+
+def test_recent_messages_empty_for_new_owner():
+    db.init_db()
+    sid = db.ensure_session(None)
+    assert db.recent_messages(sid, "p1", limit=10) == []
+
+
 # --- route-level ---
 
 
 def test_generate_logs_a_conversation_turn(client):
-    with patch("src.services.orchestrator.llm.generate", return_value=VALID_RAW):
+    with patch("src.services.orchestrator.llm.generate", return_value=_VALID_RESULT):
         client.post("/api/modules/generate", json={"prompt": "track my workouts"})
     convo = client.get("/api/conversations").json()
     roles = [m["role"] for m in convo]
@@ -69,7 +123,7 @@ def test_generate_logs_a_conversation_turn(client):
 
 
 def test_clear_conversation_endpoint(client):
-    with patch("src.services.orchestrator.llm.generate", return_value=VALID_RAW):
+    with patch("src.services.orchestrator.llm.generate", return_value=_VALID_RESULT):
         client.post("/api/modules/generate", json={"prompt": "track my workouts"})
     assert client.get("/api/conversations").json()  # non-empty
     resp = client.delete("/api/conversations")
@@ -78,7 +132,7 @@ def test_clear_conversation_endpoint(client):
 
 
 def test_conversation_is_scoped_to_session(client):
-    with patch("src.services.orchestrator.llm.generate", return_value=VALID_RAW):
+    with patch("src.services.orchestrator.llm.generate", return_value=_VALID_RESULT):
         client.post("/api/modules/generate", json={"prompt": "track my workouts"})
     with TestClient(app) as other:
         assert other.get("/api/conversations").json() == []

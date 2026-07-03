@@ -194,7 +194,10 @@ make frontend        Run the Next.js frontend
 
 ## Testing
 
+Test dependencies live in `backend/requirements-dev.txt` (which pulls in the runtime `requirements.txt` too):
+
 ```bash
+cd backend && pip install -r requirements-dev.txt   # once — runtime + test deps
 cd backend && pytest -q              # backend test suite
 cd frontend && npx tsc --noEmit      # frontend type-check
 ```

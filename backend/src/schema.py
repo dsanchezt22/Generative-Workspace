@@ -319,6 +319,7 @@ class StoredModule(BaseModel):
     updated_at: str
     page_id: str | None = None
     archived: bool = False
+    rev: int = 0
 
 
 class Page(BaseModel):
@@ -377,8 +378,24 @@ class CreateSnapshotRequest(BaseModel):
     label: str | None = None
 
 
+class ExchangeTurn(BaseModel):
+    """One question/answer pair from a multi-turn clarifying interview (R-102).
+    The route folds the accumulated exchange into the text the MODEL sees, so a
+    second (or third, or fourth) question never loses earlier answers."""
+
+    question: str = Field(max_length=500)
+    answer: str = Field(max_length=500)
+
+
 class GenerateRequest(BaseModel):
     prompt: str
+    # R-102: prior Q/A pairs in this clarifying interview, oldest first. Capped
+    # at 6 turns (the route enforces the actual build-now cap at 4 answered).
+    exchange: list[ExchangeTurn] | None = Field(default=None, max_length=6)
+    # R-102 "Just build it": a HARD skip. When true the route forces
+    # allow_question=False so the model never re-questions — it builds its best
+    # interpretation now (or refuses honestly), never relaying another question.
+    build_now: bool = False
 
 
 class RefineRequest(BaseModel):
@@ -390,6 +407,11 @@ class GenerateResponse(BaseModel):
     modules: list[StoredModule] | None = None  # full system when decomposed
     previews: list[ModuleConfig] | None = None  # proposed (not yet persisted) tools
     question: str | None = None  # set when the orchestrator needs clarification
+    degraded: bool = False  # true when the result came from a cascade fallback
+    # R-103/R-301: a one-paragraph rationale for what was built and why — set
+    # only on a fresh (non-stub, non-cached) model response; None otherwise so
+    # the app never fabricates a rationale it didn't actually generate.
+    plan: str | None = None
 
 
 class InsertModulesRequest(BaseModel):
@@ -399,6 +421,7 @@ class InsertModulesRequest(BaseModel):
 
 class PatchRequest(BaseModel):
     config: ModuleConfig
+    rev: int | None = None
 
 
 class RefusalError(Exception):

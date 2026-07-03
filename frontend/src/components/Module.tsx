@@ -1,9 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import type { Component, ModuleConfig, StoredModule } from "@/lib/types";
+import type { CommitModule, Component, ModuleConfig, StoredModule } from "@/lib/types";
 import { runAssembly } from "@/lib/assembly";
-import { api } from "@/lib/api";
 import { deriveSummary } from "@/lib/summary";
 import { resolveAccent, resolveIconName } from "@/lib/theme";
 import { Icon } from "./Icon";
@@ -49,8 +48,12 @@ interface Props {
   module: StoredModule;
   crossModuleValues: Record<string, number>;
   selected: boolean;
-  onChange: (updated: StoredModule) => void;
-  onDelete: (id: string) => void;
+  // Preview variant bubbles edits in-memory to its host; canvas/detail persist
+  // through the single saver via onCommit.
+  onChange?: (updated: StoredModule) => void;
+  onCommit?: CommitModule;
+  // R-1102: the card's ✕ is undoable (archive), not a hard delete.
+  onArchive: (id: string) => void;
   onUndo: (id: string) => void;
   onSelectForRefine: (id: string) => void;
   onSelect: (id: string) => void;
@@ -65,19 +68,17 @@ interface Props {
 
 export function Module({
   module, crossModuleValues, selected,
-  onChange, onDelete, onUndo, onSelectForRefine, onSelect, onEdit, onDragStart, onResizeStart,
+  onChange, onCommit, onArchive, onUndo, onSelectForRefine, onSelect, onEdit, onDragStart, onResizeStart,
   onExpand, variant = "canvas", index = 0, onMeasure,
 }: Props) {
   const isCanvas = variant === "canvas";
   const preview = variant === "preview";
-  const [state, setState] = useState<Record<string, unknown>>(module.config.state ?? {});
+  // Single source of truth: render straight from module.config.state. The parent
+  // updates it optimistically on every commit (R-601), so there is no local
+  // mirror to fall out of sync and revert keystrokes (R-602).
+  const state = module.config.state ?? {};
   const [collapsed, setCollapsed] = useState(false);
-  const persistTimer = useRef<number | null>(null);
   const rootRef = useRef<HTMLDivElement | null>(null);
-
-  useEffect(() => {
-    setState(module.config.state ?? {});
-  }, [module.id, module.config.state]);
 
   // Report the real rendered height up to the canvas so fit/minimap can frame
   // content-sized cards correctly (their layout.height is 0).
@@ -105,46 +106,30 @@ export function Module({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const persistConfig = useCallback(
-    async (config: ModuleConfig) => {
-      // Previews aren't persisted — just bubble the edited config to the parent.
-      if (preview) {
-        onChange({ ...module, config });
-        return;
-      }
-      try {
-        const saved = await api.patchModule(module.id, config);
-        onChange(saved);
-      } catch (err) {
-        console.error("Failed to persist module config", err);
-      }
-    },
-    [module.id, module, onChange, preview],
-  );
-
-  const schedulePersist = useCallback(
-    (config: ModuleConfig, delay = 400) => {
-      if (persistTimer.current) window.clearTimeout(persistTimer.current);
-      persistTimer.current = window.setTimeout(() => void persistConfig(config), delay);
-    },
-    [persistConfig],
-  );
-
   const setField = useCallback(
     (id: string, value: unknown) => {
-      setState((prev) => {
-        let next: Record<string, unknown> = { ...prev, [id]: value };
-        // Automations: "when this field … then increment another" (visible + undoable).
-        for (const r of module.config.automations ?? []) {
+      // Apply the field write (+ any "increment" automation it fires) to a
+      // config. Canvas/detail pass this as an UPDATER so the merge runs against
+      // the freshest config inside the parent's state update — two same-tick
+      // writes then chain instead of both reading one stale props snapshot,
+      // which is the latent stale-closure class flagged in the Stage-1 review (R-602).
+      const apply = (cfg: ModuleConfig): ModuleConfig => {
+        const base = cfg.state ?? {};
+        let next: Record<string, unknown> = { ...base, [id]: value };
+        for (const r of cfg.automations ?? []) {
           if (r.when_id !== id || r.then !== "increment" || !r.then_id) continue;
           const fired = (r.when === "checked" && value === true) || r.when === "changes";
           if (fired) next = { ...next, [r.then_id]: (Number(next[r.then_id]) || 0) + (r.then_value ?? 1) };
         }
-        schedulePersist({ ...module.config, state: next });
-        return next;
-      });
+        return { ...cfg, state: next };
+      };
+      // Previews aren't persisted — bubble the edited config to the host in memory.
+      // Canvas/detail commit through the single saver (optimistic parent update
+      // now, PATCH debounced after).
+      if (preview) onChange?.({ ...module, config: apply(module.config) });
+      else onCommit?.(module.id, apply);
     },
-    [module.config, schedulePersist],
+    [module, preview, onChange, onCommit],
   );
 
   const renderComponent = (c: Component) => {
@@ -374,8 +359,8 @@ export function Module({
             )}
             <button type="button" onClick={() => (onEdit ?? onSelect)(module.id)} className={iconBtn}
               aria-label="Edit module" title="Edit in inspector"><Icon name="pen" size={14} /></button>
-            <button type="button" onClick={() => onDelete(module.id)} className={`${iconBtn} hover:text-[var(--danger)]`}
-              aria-label="Delete module"><Icon name="x" size={14} /></button>
+            <button type="button" onClick={() => onArchive(module.id)} className={iconBtn}
+              aria-label="Archive" title="Archive (restore from Archived)"><Icon name="archive" size={14} /></button>
           </>
         )}
       </div>

@@ -3,11 +3,14 @@
 import { useEffect, useRef, useState } from "react";
 import { ApiError, api } from "@/lib/api";
 import type { ModuleConfig, StoredModule } from "@/lib/types";
+import { appendTranscript, formatElapsed } from "@/lib/voiceRamble";
+import { useVoiceRamble } from "@/lib/useVoiceRamble";
 import { Icon } from "./Icon";
 import { Module } from "./Module";
 
 const NOW = new Date().toISOString();
 const noop = () => {};
+const DEGRADED_NOTICE = "Offline fallback: built from a local template, not the AI model.";
 
 interface Props {
   onModule: (m: StoredModule) => void;
@@ -18,52 +21,65 @@ interface Props {
   seed?: string | null;
   onSeedConsumed?: () => void;
   focusSignal?: number;
+  // R-101: a prompt handed over from the entry-screen front door — filled in
+  // and auto-submitted once (produces a preview exactly like a typed prompt),
+  // then cleared via onAutoPromptConsumed.
+  autoPrompt?: string | null;
+  onAutoPromptConsumed?: () => void;
 }
 
-export function PromptBar({ onModule, activePageId, refineTarget, onRefineModule, onClearRefine, seed, onSeedConsumed, focusSignal }: Props) {
+interface ExchangeTurnState {
+  question: string;
+  answer: string;
+}
+
+// R-102: a multi-turn clarifying interview — the original prompt plus every
+// question/answer pair so far (oldest first). The LAST turn's answer is ""
+// until the user responds to it. Replaces the old originalPromptRef
+// string-concat, which dropped every answer but the most recent.
+interface Exchange {
+  original: string;
+  turns: ExchangeTurnState[];
+}
+
+const SKIP_ANSWER = "just build it — use your best judgment";
+
+export function PromptBar({ onModule, activePageId, refineTarget, onRefineModule, onClearRefine, seed, onSeedConsumed, focusSignal, autoPrompt, onAutoPromptConsumed }: Props) {
   const [prompt, setPrompt] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // Clarifying question state: when the AI needs one more answer before generating.
-  const [pendingQuestion, setPendingQuestion] = useState<string | null>(null);
-  const originalPromptRef = useRef<string>("");
+  // Clarifying-interview state: when the AI needs one more answer before generating.
+  const [exchange, setExchange] = useState<Exchange | null>(null);
+  const pendingQuestion = exchange ? exchange.turns[exchange.turns.length - 1].question : null;
+  // Clamped to 4: the backend hard-caps the chain (never a fifth question), so
+  // the hint can never display a number beyond the "of 4" promise.
+  const questionNumber = exchange ? Math.min(exchange.turns.length, 4) : 0;
   const inputRef = useRef<HTMLInputElement | null>(null);
 
   const isRefining = Boolean(refineTarget);
-  const [recording, setRecording] = useState(false);
   const [file, setFile] = useState<File | null>(null);
   const [previews, setPreviews] = useState<ModuleConfig[]>([]);
+  // R-103/R-301: the model's one-paragraph rationale for the current preview stack.
+  const [plan, setPlan] = useState<string | null>(null);
   const lastPromptRef = useRef<string>("");
   const fileRef = useRef<HTMLInputElement | null>(null);
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const recRef = useRef<any>(null);
 
-  const toggleMic = () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    if (!SR) { setError("Voice input isn't supported in this browser."); return; }
-    if (recording) { recRef.current?.stop(); return; }
-    const rec = new SR();
-    rec.lang = "en-US";
-    rec.interimResults = true;
-    rec.continuous = false;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    rec.onresult = (e: any) => {
-      let t = "";
-      for (let i = 0; i < e.results.length; i++) t += e.results[i][0].transcript;
-      setPrompt(t);
-    };
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    rec.onerror = (e: any) => {
-      setError(e.error === "not-allowed" ? "Microphone blocked — allow access to use voice." : "Didn't catch that — try again.");
-      setRecording(false);
-    };
-    rec.onend = () => setRecording(false);
-    recRef.current = rec;
-    rec.start();
-    setRecording(true);
-    setError(null);
-  };
+  // R-201-204: the shared ramble recorder. The hook owns all the browser
+  // plumbing; PromptBar only decides what happens to a finished transcript —
+  // append it (never overwrite, R-201) and auto-submit through the normal
+  // submit() flow when the input was empty at record-start (R-202). Reusing
+  // submit() means an in-progress interview/refine/preview is resolved
+  // correctly instead of being clobbered by a bare preview call.
+  const { voiceMode, recording, transcribing, elapsedSec, liveInterim, toggleMic } = useVoiceRamble({
+    getInput: () => inputRef.current?.value ?? prompt,
+    onError: setError,
+    onTranscript: (text, wasEmptyAtStart) => {
+      const combined = appendTranscript(inputRef.current?.value ?? prompt, text);
+      setPrompt(combined);
+      if (wasEmptyAtStart) void submit(undefined, combined);
+      else setTimeout(() => inputRef.current?.focus(), 0);
+    },
+  });
 
   // Refill the input when a past prompt is reused from the history panel.
   useEffect(() => {
@@ -80,24 +96,95 @@ export function PromptBar({ onModule, activePageId, refineTarget, onRefineModule
   }, [focusSignal]);
 
   const clearClarification = () => {
-    setPendingQuestion(null);
-    originalPromptRef.current = "";
+    setExchange(null);
     setPrompt("");
   };
 
-  const submit = async (e?: React.FormEvent) => {
+  // Send the exchange so far, with `answerText` filling in the LAST (pending)
+  // turn — every earlier answer is preserved (the R-102 answer-drop fix).
+  // `exchange` must be non-null when this is called. `buildNow` (the "Just build
+  // it" skip) sends build_now:true so the backend hard-caps and never returns
+  // another question — the skip is a HARD build by construction.
+  const resolveExchange = async (answerText: string, buildNow = false) => {
+    const { original, turns } = exchange as Exchange;
+    const turnsToSend = [
+      ...turns.slice(0, -1),
+      { ...turns[turns.length - 1], answer: answerText },
+    ];
+    const result = await api.previewModules(original, activePageId, turnsToSend, buildNow);
+    if (result.question) {
+      // Another question — push a new turn (route caps this at 4 answered).
+      setExchange({ original, turns: [...turnsToSend, { question: result.question, answer: "" }] });
+      setPrompt("");
+      setTimeout(() => inputRef.current?.focus(), 0);
+    } else if (result.previews?.length) {
+      setPreviews(result.previews);
+      setPlan(result.plan ?? null);
+      lastPromptRef.current = original;
+      setPrompt("");
+      setExchange(null);
+    }
+    if (result.degraded) setError(DEGRADED_NOTICE);
+  };
+
+  // The default "fresh proposal" path: previewModules with no interfering
+  // state. Extracted so a typed Enter (the default submit branch) and the R-105
+  // entry handoff (submit(..., fresh=true)) open a brand-new proposal identically.
+  const runFreshPreview = async (v: string) => {
+    const result = await api.previewModules(v, activePageId);
+    if (result.question) {
+      // AI needs clarification — enter follow-up mode.
+      setExchange({ original: v, turns: [{ question: result.question, answer: "" }] });
+      setPrompt("");
+      setTimeout(() => inputRef.current?.focus(), 0);
+    } else if (result.previews?.length) {
+      // Show a preview stack to accept before anything lands on the canvas.
+      lastPromptRef.current = v;
+      setPreviews(result.previews);
+      setPlan(result.plan ?? null);
+      setPrompt("");
+    }
+    if (result.degraded) setError(DEGRADED_NOTICE);
+  };
+
+  // `overrideText` lets a voice auto-submit (R-202) drive this with the
+  // just-appended transcript without waiting a render for `prompt` state to
+  // catch up — every non-fresh branch still reads current component state
+  // (isRefining/file/exchange/previews), so the auto-submit takes whichever
+  // path a typed Enter would take right now (default preview, refine-the-
+  // preview, or resolving a pending interview question). `fresh=true` (the R-105
+  // entry handoff) bypasses all of that and forces a brand-new proposal.
+  const submit = async (e?: React.FormEvent, overrideText?: string, fresh = false) => {
     e?.preventDefault();
-    const v = prompt.trim();
+    const v = (overrideText ?? prompt).trim();
     if ((!v && !file) || loading) return;
     setLoading(true);
     setError(null);
     try {
-      if (previews.length > 0 && !isRefining && !file) {
+      if (fresh) {
+        // R-105: the entry-screen handoff must ALWAYS open a brand-new proposal,
+        // even over a dirty PromptBar (preview stack / pending question / attached
+        // file / refine target) — otherwise the fresh prompt gets folded into a
+        // refine-join or sent as the answer to a stale question. Clear the
+        // interfering state first, then run the default preview path.
+        setPreviews([]);
+        setPlan(null);
+        setExchange(null);
+        setFile(null);
+        onClearRefine?.();
+        await runFreshPreview(v);
+      } else if (previews.length > 0 && !isRefining && !file) {
         // Talk to the preview: refine the proposed tools before adding them.
         const combined = `${lastPromptRef.current} — ${v}`;
         const result = await api.previewModules(combined, activePageId);
-        if (result.question) setPendingQuestion(result.question);
-        else if (result.previews?.length) { setPreviews(result.previews); lastPromptRef.current = combined; }
+        if (result.question) {
+          setExchange({ original: combined, turns: [{ question: result.question, answer: "" }] });
+        } else if (result.previews?.length) {
+          setPreviews(result.previews);
+          setPlan(result.plan ?? null);
+          lastPromptRef.current = combined;
+        }
+        if (result.degraded) setError(DEGRADED_NOTICE);
         setPrompt("");
       } else if (isRefining && refineTarget && onRefineModule) {
         const updated = await api.refineModule(refineTarget.id, v);
@@ -107,33 +194,24 @@ export function PromptBar({ onModule, activePageId, refineTarget, onRefineModule
         const result = await api.generateModuleFromFile(file, v, activePageId);
         if (result.modules?.length) result.modules.forEach((m) => onModule(m));
         else if (result.module) onModule(result.module);
+        if (result.degraded) setError(DEGRADED_NOTICE);
         setPrompt("");
         setFile(null);
         clearClarification();
+      } else if (exchange) {
+        // Answering a pending question in an ongoing interview.
+        await resolveExchange(v);
       } else {
-        // If we're answering a clarifying question, combine original + answer.
-        const fullPrompt = pendingQuestion
-          ? `${originalPromptRef.current} — ${v}`
-          : v;
-        const result = await api.previewModules(fullPrompt, activePageId);
-        if (result.question) {
-          // AI needs clarification — enter follow-up mode.
-          if (!pendingQuestion) originalPromptRef.current = v;
-          setPendingQuestion(result.question);
-          setPrompt("");
-          setTimeout(() => inputRef.current?.focus(), 0);
-        } else if (result.previews?.length) {
-          // Show a preview stack to accept before anything lands on the canvas.
-          lastPromptRef.current = fullPrompt;
-          setPreviews(result.previews);
-          setPrompt("");
-          setPendingQuestion(null);
-          originalPromptRef.current = "";
-        }
+        await runFreshPreview(v);
       }
     } catch (err) {
+      // Deliberate: a failed request mid-interview RETAINS the exchange state so
+      // the user can retry their answer without losing the whole Q/A chain.
       if (err instanceof ApiError && err.refusal) {
         setError(err.refusal);
+      } else if (err instanceof ApiError && err.question) {
+        // R-304: refine asked a clarifying question — show its text, not raw JSON.
+        setError(err.question);
       } else if (err instanceof Error) {
         setError(err.message);
       } else {
@@ -144,6 +222,39 @@ export function PromptBar({ onModule, activePageId, refineTarget, onRefineModule
     }
   };
 
+  // R-102 skip: answer the pending question with a canned "use your best
+  // judgment" so the interview ends immediately, at any step.
+  const skipToBuild = async () => {
+    if (!exchange || loading) return;
+    setLoading(true);
+    setError(null);
+    try {
+      await resolveExchange(SKIP_ANSWER, true); // build_now → a HARD build, never re-questioned
+    } catch (err) {
+      if (err instanceof ApiError && err.refusal) setError(err.refusal);
+      else if (err instanceof ApiError && err.question) setError(err.question);
+      else if (err instanceof Error) setError(err.message);
+      else setError("Something went wrong.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // R-101/R-105: a prompt handed over from the entry-screen front door. Fill it
+  // in and auto-submit ONCE with fresh=true, which clears any in-flight preview/
+  // interview/refine/file state first so re-entry over a dirty PromptBar still
+  // produces a brand-new proposal (not a refine-join or a stale-question answer).
+  // Cleared immediately via onAutoPromptConsumed so it can never re-fire.
+  useEffect(() => {
+    const v = autoPrompt?.trim();
+    if (!v) return;
+    setPrompt(autoPrompt as string);
+    void submit(undefined, v, true);
+    onAutoPromptConsumed?.();
+  // submit closes over current state; we intentionally run only on autoPrompt change.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoPrompt]);
+
   const addConfigs = async (configs: ModuleConfig[]) => {
     try {
       const stored = await api.insertModules(configs, lastPromptRef.current, activePageId);
@@ -152,10 +263,10 @@ export function PromptBar({ onModule, activePageId, refineTarget, onRefineModule
       setError(err instanceof Error ? err.message : "Couldn't add to canvas.");
     }
   };
-  const addAll = async () => { await addConfigs(previews); setPreviews([]); };
+  const addAll = async () => { await addConfigs(previews); setPreviews([]); setPlan(null); };
   const addOne = async (i: number) => { await addConfigs([previews[i]]); setPreviews((p) => p.filter((_, idx) => idx !== i)); };
   const dismissOne = (i: number) => setPreviews((p) => p.filter((_, idx) => idx !== i));
-  const dismissAll = () => setPreviews([]);
+  const dismissAll = () => { setPreviews([]); setPlan(null); };
   // Inline edits to a preview (typing into its fields) flow back into the config.
   const updatePreview = (i: number, m: StoredModule) => setPreviews((p) => p.map((c, idx) => (idx === i ? m.config : c)));
 
@@ -196,6 +307,11 @@ export function PromptBar({ onModule, activePageId, refineTarget, onRefineModule
 
         {previews.length > 0 && (
           <div className="flex flex-col gap-3 px-3 pt-3 pb-1 max-h-[60vh] overflow-y-auto">
+            {/* R-103/R-301: the plan is a muted single paragraph — no new visual
+                language, same treatment as the other secondary/hint text below. */}
+            {plan && (
+              <p className="px-1 text-xs text-[var(--muted)] leading-relaxed">{plan}</p>
+            )}
             <div className="flex items-center gap-2 px-1">
               <span className="text-[10px] uppercase tracking-wide text-[var(--muted)] font-mono">
                 {previews.length} tool{previews.length === 1 ? "" : "s"} proposed — preview &amp; edit
@@ -211,11 +327,11 @@ export function PromptBar({ onModule, activePageId, refineTarget, onRefineModule
               <div key={i} className="animate-pop">
                 <Module
                   variant="preview"
-                  module={{ id: `preview-${i}`, config: cfg, created_at: NOW, updated_at: NOW }}
+                  module={{ id: `preview-${i}`, config: cfg, created_at: NOW, updated_at: NOW, archived: false, rev: 0 }}
                   crossModuleValues={{}}
                   selected={false}
                   onChange={(m) => updatePreview(i, m)}
-                  onDelete={noop} onUndo={noop} onSelectForRefine={noop} onSelect={noop}
+                  onArchive={noop} onUndo={noop} onSelectForRefine={noop} onSelect={noop}
                   onDragStart={noop} onResizeStart={noop}
                 />
                 <div className="flex items-center gap-2 mt-1 px-1">
@@ -250,11 +366,19 @@ export function PromptBar({ onModule, activePageId, refineTarget, onRefineModule
         {pendingQuestion && !isRefining && (
           <div className="flex items-start gap-2 px-4 pt-2.5 pb-0">
             <span className="text-[10px] uppercase tracking-wide text-[var(--muted)] font-mono shrink-0 mt-0.5">
-              One question
+              Question {questionNumber} of 4
             </span>
             <span className="text-xs text-[var(--foreground)] flex-1">
               {pendingQuestion}
             </span>
+            <button
+              type="button"
+              onClick={skipToBuild}
+              disabled={loading}
+              className="text-[var(--accent)] hover:brightness-110 transition text-xs shrink-0 disabled:opacity-40"
+            >
+              Just build it
+            </button>
             <button
               type="button"
               onClick={clearClarification}
@@ -274,18 +398,38 @@ export function PromptBar({ onModule, activePageId, refineTarget, onRefineModule
           </div>
         )}
 
+        {(recording || transcribing) && (
+          <div className="flex items-center gap-2 px-4 pt-2.5 pb-0">
+            <span
+              className={`text-[10px] uppercase tracking-wide font-mono shrink-0 animate-pulse ${
+                recording ? "text-[var(--danger)]" : "text-[var(--accent)]"
+              }`}
+            >
+              {recording ? `Recording ${formatElapsed(elapsedSec)}` : "Transcribing…"}
+            </span>
+            {recording && liveInterim && (
+              <span className="text-xs text-[var(--muted)] italic opacity-70 truncate flex-1" aria-hidden>
+                {liveInterim}
+              </span>
+            )}
+          </div>
+        )}
+
         <div className="flex items-center gap-2 px-4 py-3">
-          <button
-            type="button"
-            onClick={toggleMic}
-            className={`shrink-0 w-8 h-8 grid place-items-center rounded-full transition ${
-              recording ? "bg-[var(--danger)] text-white animate-pulse" : "text-[var(--muted)] hover:text-[var(--foreground)] hover:bg-[var(--surface-elevated)]"
-            }`}
-            title={recording ? "Stop recording" : "Speak"}
-            aria-label={recording ? "Stop recording" : "Voice input"}
-          >
-            <Icon name="mic" size={16} />
-          </button>
+          {voiceMode !== "none" && (
+            <button
+              type="button"
+              onClick={toggleMic}
+              disabled={transcribing}
+              className={`shrink-0 w-8 h-8 grid place-items-center rounded-full transition disabled:opacity-40 ${
+                recording ? "bg-[var(--danger)] text-white animate-pulse" : "text-[var(--muted)] hover:text-[var(--foreground)] hover:bg-[var(--surface-elevated)]"
+              }`}
+              title={recording ? "Stop recording" : transcribing ? "Transcribing…" : "Speak"}
+              aria-label={recording ? "Stop recording" : transcribing ? "Transcribing" : "Voice input"}
+            >
+              <Icon name="mic" size={16} />
+            </button>
+          )}
           <button
             type="button"
             onClick={() => fileRef.current?.click()}
@@ -323,7 +467,18 @@ export function PromptBar({ onModule, activePageId, refineTarget, onRefineModule
 
         {error && (
           <div className="px-4 pb-3 -mt-1">
-            <div className="text-xs text-[var(--danger)]">{error}</div>
+            {/* R-1305: the degraded/offline-fallback notice is informational, not
+                a failure — it carries the save-pill's neutral "warning" treatment
+                (muted text, a small static marker), never the terracotta --danger
+                error channel that real refusals/errors use. */}
+            {error === DEGRADED_NOTICE ? (
+              <div className="flex items-center gap-1.5 text-xs text-[var(--muted)]">
+                <span aria-hidden className="w-1.5 h-1.5 rounded-full bg-[var(--muted)]" />
+                <span>{error}</span>
+              </div>
+            ) : (
+              <div className="text-xs text-[var(--danger)]">{error}</div>
+            )}
           </div>
         )}
       </div>

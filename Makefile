@@ -30,7 +30,7 @@ frontend: ## Run the Next.js frontend (separate terminal)
 install: ## Set up .venv + install dev & backend deps + pre-commit hooks
 	@test -d .venv || python3 -m venv .venv
 	@.venv/bin/pip install --upgrade pip
-	@.venv/bin/pip install -r requirements-dev.txt -r backend/requirements.txt
+	@.venv/bin/pip install -r requirements-dev.txt -r backend/requirements-dev.txt
 	@.venv/bin/pre-commit install
 
 check: ## Run the full Python quality gate (ruff, format, mypy, pytest, pip-audit)

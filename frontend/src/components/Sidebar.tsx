@@ -14,7 +14,8 @@ interface Props {
   onCreate: (parentId?: string | null) => void;
   onRename: (id: string, name: string) => void;
   onSetIcon: (id: string, icon: string) => void;
-  onDelete: (id: string) => void;
+  // R-1102: request delete — the caller (page.tsx) confirms before deleting.
+  onDelete: (page: Page) => void;
   onReorder: (orderedIds: string[]) => void;
   onOpenArchived: () => void;
   onOpenSnapshots: () => void;
@@ -117,7 +118,7 @@ export function Sidebar({
             {pages.length > 1 && (
               <button
                 type="button"
-                onClick={(e) => { e.stopPropagation(); onDelete(page.id); }}
+                onClick={(e) => { e.stopPropagation(); onDelete(page); }}
                 className="w-5 h-5 grid place-items-center text-[var(--muted)] hover:text-[var(--danger)] rounded"
                 aria-label={`Delete ${page.name}`}
                 title="Delete page"
