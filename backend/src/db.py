@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sqlite3
 import threading
@@ -14,6 +15,8 @@ from pathlib import Path
 from typing import Literal, cast
 
 from src.schema import Message, ModuleConfig, ModuleVersion, Page, Snapshot, StoredModule
+
+_log = logging.getLogger(__name__)
 
 DEFAULT_DB_PATH = Path(__file__).resolve().parent.parent / "trus.db"
 
@@ -390,15 +393,21 @@ def insert_module(
     )
 
 
-def _stored_from_row(r) -> StoredModule:
-    return StoredModule(
-        id=r["id"],
-        config=ModuleConfig.model_validate_json(r["config_json"]),
-        created_at=r["created_at"],
-        updated_at=r["updated_at"],
-        page_id=r["page_id"],
-        archived=bool(r["archived"]),
-    )
+def _stored_from_row(r) -> StoredModule | None:
+    """Parse a modules row, or quarantine it (R-1105): an unreadable row must
+    degrade only itself, never the caller's whole list/get."""
+    try:
+        return StoredModule(
+            id=r["id"],
+            config=ModuleConfig.model_validate_json(r["config_json"]),
+            created_at=r["created_at"],
+            updated_at=r["updated_at"],
+            page_id=r["page_id"],
+            archived=bool(r["archived"]),
+        )
+    except Exception:
+        _log.warning("Quarantined unreadable module row %s (R-1105)", r["id"])
+        return None
 
 
 _MOD_COLS = "id, page_id, config_json, created_at, updated_at, archived"
@@ -425,7 +434,7 @@ def list_modules(session_id: str, page_id: str | None = None) -> list[StoredModu
                 f"SELECT {_MOD_COLS} FROM modules WHERE session_id = ? AND archived = 0 ORDER BY created_at",
                 (session_id,),
             ).fetchall()
-    return [_stored_from_row(r) for r in rows]
+    return [m for m in (_stored_from_row(r) for r in rows) if m is not None]
 
 
 def list_archived(session_id: str) -> list[StoredModule]:
@@ -434,7 +443,7 @@ def list_archived(session_id: str) -> list[StoredModule]:
             f"SELECT {_MOD_COLS} FROM modules WHERE session_id = ? AND archived = 1 ORDER BY updated_at DESC",
             (session_id,),
         ).fetchall()
-    return [_stored_from_row(r) for r in rows]
+    return [m for m in (_stored_from_row(r) for r in rows) if m is not None]
 
 
 def set_archived(session_id: str, module_id: str, archived: bool) -> StoredModule | None:
@@ -497,18 +506,25 @@ def delete_module(session_id: str, module_id: str) -> bool:
 
 
 def list_versions(session_id: str, module_id: str) -> list[ModuleVersion]:
+    """History for a module. A row with unreadable config_json is quarantined
+    (skipped, logged) rather than failing the whole history load (R-1105)."""
     with _conn() as c:
         rows = c.execute(
-            "SELECT config_json, created_at FROM module_versions WHERE module_id = ? AND session_id = ? ORDER BY seq",
+            "SELECT seq, config_json, created_at FROM module_versions WHERE module_id = ? AND session_id = ? ORDER BY seq",
             (module_id, session_id),
         ).fetchall()
-    return [
-        ModuleVersion(
-            config=ModuleConfig.model_validate_json(r["config_json"]),
-            created_at=r["created_at"],
-        )
-        for r in rows
-    ]
+    out = []
+    for r in rows:
+        try:
+            out.append(
+                ModuleVersion(
+                    config=ModuleConfig.model_validate_json(r["config_json"]),
+                    created_at=r["created_at"],
+                )
+            )
+        except Exception:
+            _log.warning("Quarantined unreadable module_versions row seq=%s (R-1105)", r["seq"])
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -622,15 +638,20 @@ def restore_snapshot(session_id: str, snapshot_id: str) -> bool:
     if row is None:
         return False
     page_id = row["page_id"]
+    # Parse AND validate every module config up front — before touching any live
+    # data. A snapshot with an unreadable row aborts cleanly (R-1105): no partial
+    # restore, no modules deleted.
     try:
-        configs = json.loads(row["data_json"])
+        raw_configs = json.loads(row["data_json"])
+        configs = [ModuleConfig.model_validate(cfg) for cfg in raw_configs]
     except Exception:
+        _log.warning("Quarantined unreadable snapshot %s (R-1105); restore aborted", snapshot_id)
         return False
     # Replace the page's live modules with the snapshot's.
     for m in list_modules(session_id, page_id):
         delete_module(session_id, m.id)
     for cfg in configs:
-        insert_module(session_id, ModuleConfig.model_validate(cfg), page_id=page_id)
+        insert_module(session_id, cfg, page_id=page_id)
     return True
 
 
@@ -656,16 +677,33 @@ def clear_messages(session_id: str, page_id: str | None = None) -> int:
 
 def undo_module(session_id: str, module_id: str) -> StoredModule | None:
     """Revert a module to its previous version. Returns None when there is
-    nothing to undo (unknown module, wrong session, or only one version)."""
+    nothing to undo (unknown module, wrong session, or no older readable
+    version). A corrupt version row is quarantined (logged, skipped) and undo
+    falls through to the next older version (R-1105)."""
     now = _now()
     with _conn() as c:
         rows = c.execute(
-            "SELECT seq, config_json FROM module_versions WHERE module_id = ? AND session_id = ? ORDER BY seq DESC LIMIT 2",
+            "SELECT seq, config_json FROM module_versions WHERE module_id = ? AND session_id = ? ORDER BY seq DESC",
             (module_id, session_id),
         ).fetchall()
         if len(rows) < 2:
             return None
-        current, previous = rows[0], rows[1]
+        current = rows[0]
+        previous = None
+        previous_config: ModuleConfig | None = None
+        for candidate in rows[1:]:
+            try:
+                previous_config = ModuleConfig.model_validate_json(candidate["config_json"])
+            except Exception:
+                _log.warning(
+                    "Quarantined unreadable module_versions row seq=%s (R-1105)",
+                    candidate["seq"],
+                )
+                continue
+            previous = candidate
+            break
+        if previous is None or previous_config is None:
+            return None
         c.execute("DELETE FROM module_versions WHERE seq = ?", (current["seq"],))
         c.execute(
             "UPDATE modules SET config_json = ?, updated_at = ? WHERE id = ? AND session_id = ?",
@@ -676,7 +714,7 @@ def undo_module(session_id: str, module_id: str) -> StoredModule | None:
         ).fetchone()
     return StoredModule(
         id=module_id,
-        config=ModuleConfig.model_validate_json(previous["config_json"]),
+        config=previous_config,
         created_at=row["created_at"],
         updated_at=now,
         page_id=row["page_id"],
