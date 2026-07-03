@@ -13,7 +13,10 @@ def test_health_responds_while_generation_in_flight(monkeypatch, tmp_path):
 
     from src.services import orchestrator
 
+    entered_handler = threading.Event()
+
     def slow_generate(prompt, existing_modules=None, owner="local"):
+        entered_handler.set()  # signal before the sleep, not a fixed head-start guess
         time.sleep(1.5)
         from src.schema import ModuleConfig
         from src.stub_templates import pick_system
@@ -32,7 +35,7 @@ def test_health_responds_while_generation_in_flight(monkeypatch, tmp_path):
         t = threading.Thread(target=fire_generation)
         t.start()
         started.wait()
-        time.sleep(0.2)  # let the generation enter the handler
+        entered_handler.wait()  # rendezvous: generation is inside the handler, mid-sleep
         t0 = time.monotonic()
         r = client.get("/api/health")
         elapsed = time.monotonic() - t0

@@ -61,15 +61,21 @@ class PromoteResponse(BaseModel):
     library: dict
 
 
-def _row_to_layout(r) -> StudioLayout:
-    return StudioLayout(
-        id=r["id"],
-        use_case=r["use_case"],
-        label=r["label"],
-        inspired_by=r["inspired_by"],
-        config=ModuleConfig.model_validate_json(r["config_json"]),
-        created_at=r["created_at"],
-    )
+def _row_to_layout(r) -> StudioLayout | None:
+    """Parse a layout_library row, or quarantine it (R-1105 parity): an
+    unreadable row must degrade only itself, never the caller's whole list."""
+    try:
+        return StudioLayout(
+            id=r["id"],
+            use_case=r["use_case"],
+            label=r["label"],
+            inspired_by=r["inspired_by"],
+            config=ModuleConfig.model_validate_json(r["config_json"]),
+            created_at=r["created_at"],
+        )
+    except Exception:
+        _logger.warning("Quarantined unreadable layout row %s (R-1105)", r["id"])
+        return None
 
 
 @router.get("/use-cases", response_model=list[StudioUseCase])
@@ -306,7 +312,8 @@ def capture_layout(
 def list_layouts(
     request: Request, use_case: str | None = Query(default=None)
 ) -> list[StudioLayout]:
-    return [_row_to_layout(r) for r in db.layout_list(use_case, owner=_owner_id(request))]
+    rows = db.layout_list(use_case, owner=_owner_id(request))
+    return [ly for ly in (_row_to_layout(r) for r in rows) if ly is not None]
 
 
 @router.delete("/layouts/{layout_id}", status_code=204)

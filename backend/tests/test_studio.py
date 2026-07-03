@@ -43,6 +43,41 @@ def test_generate_list_count_delete(client):
     assert len(client.get("/api/studio/layouts?use_case=calorie").json()) == len(layouts) - 1
 
 
+def test_list_layouts_quarantines_corrupt_row(client):
+    """R-1105 parity: an unparseable config_json row must not 500 the whole
+    GET /api/studio/layouts list — it's dropped, other rows still load."""
+    import os
+    import sqlite3
+
+    from src import db
+
+    # Claim a real user so the owner id is known upfront (mirrors
+    # test_promote_seeds_the_generation_pool) instead of scraping the anon
+    # session cookie.
+    user = db.create_user("Quarantine tester")
+    client.post("/api/auth/claim", json={"token": user["invite_token"]})
+
+    client.post("/api/studio/use-cases/calorie/generate?n=1")
+    good = client.get("/api/studio/layouts?use_case=calorie").json()
+    assert len(good) == 1
+
+    conn = sqlite3.connect(os.environ["TRUS_DB_PATH"])
+    conn.execute(
+        "INSERT INTO layout_library "
+        "(id, use_case, label, inspired_by, config_json, created_at, owner) "
+        "VALUES ('bad-layout', 'calorie', 'Bad', NULL, 'not json', '2026-01-01', ?)",
+        (user["id"],),
+    )
+    conn.commit()
+    conn.close()
+
+    r = client.get("/api/studio/layouts?use_case=calorie")
+    assert r.status_code == 200
+    ids = [ly["id"] for ly in r.json()]
+    assert good[0]["id"] in ids
+    assert "bad-layout" not in ids  # quarantined, not raised
+
+
 def test_generate_unknown_use_case_404(client):
     assert client.post("/api/studio/use-cases/not-real/generate").status_code == 404
 
