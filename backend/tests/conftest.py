@@ -78,6 +78,12 @@ def _isolate_llm_env(monkeypatch):
         # Identity gate — default (unset → "1", dev/anon) so the existing suite
         # keeps its anonymous flows; identity tests opt into "0" explicitly.
         "TRUS_ALLOW_ANON",
+        # Prod-config flags (R-901/R-906) — a developer's local .env (e.g. a
+        # prod-like TRUS_ENV, a custom CORS list, or secure-cookie mode) must
+        # not leak into the suite; test_prod_config.py opts into these explicitly.
+        "TRUS_ENV",
+        "TRUS_COOKIE_SECURE",
+        "TRUS_CORS_ORIGINS",
     ):
         monkeypatch.delenv(k, raising=False)
 

@@ -1,0 +1,39 @@
+# Reference deploy config (spec Appendix A — builder may pick Railway/Render
+# instead; the requirements are env-shape, not platform). Copy to fly.toml at
+# the repo root (or wherever `fly deploy` runs from) and adjust `app`/region.
+app = "trus-backend"
+primary_region = "sjc"
+
+[build]
+  dockerfile = "../backend/Dockerfile"
+
+[env]
+  TRUS_ENV = "prod"
+  TRUS_ALLOW_ANON = "0"
+  TRUS_COOKIE_SECURE = "1"
+  TRUS_DB_PATH = "/data/trus.db"
+  # TRUS_CORS_ORIGINS: the Vercel frontend's origin(s), comma-separated.
+  # TRUS_PUBLIC_URL: same frontend origin — used to build invite claim links.
+  # TRUS_CORS_ORIGINS = "https://trus.example.com"
+  # TRUS_PUBLIC_URL = "https://trus.example.com"
+  #
+  # Set via `fly secrets set NAME=value` (never in this file, never committed):
+  #   SESSION_SECRET   — long random string; boot refuses the public default in prod (R-901)
+  #   TRUS_OPS_TOKEN    — gates GET /api/ops/summary
+  #   GEMINI_API_KEY    — LLM provider key
+
+[mounts]
+  source = "trus_data"
+  destination = "/data"
+
+[[services]]
+  internal_port = 8080
+  protocol = "tcp"
+
+  [[services.ports]]
+    handlers = ["http"]
+    port = 80
+
+  [[services.ports]]
+    handlers = ["tls", "http"]
+    port = 443

@@ -1,6 +1,7 @@
 import logging
 import os
 from contextlib import asynccontextmanager, suppress
+from typing import Literal
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -23,18 +24,49 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Trus API", lifespan=lifespan)
 
+DEFAULT_SESSION_SECRET = "dev-insecure-key-change-me"  # noqa: S105 — known-public dev placeholder, not a real secret
+
+
+def _require_prod_secret(trus_env: str, secret: str) -> None:
+    """R-901: prod must not boot with the public default secret — anyone can
+    read it from source, so it makes every session forgeable."""
+    if trus_env == "prod" and secret == DEFAULT_SESSION_SECRET:
+        raise RuntimeError(
+            "SESSION_SECRET must be set to a strong value in prod (R-901): "
+            "the default key is public and makes every session forgeable."
+        )
+
+
+def _parse_cors_origins(raw: str) -> list[str]:
+    """Comma-separated origin list, tolerant of whitespace/trailing commas/blanks."""
+    return [o.strip() for o in raw.split(",") if o.strip()]
+
+
+def _cookie_settings(cookie_secure: bool) -> tuple[Literal["lax", "none"], bool]:
+    """TRUS_COOKIE_SECURE flips same_site and https_only together — a
+    cross-origin hosted split (Vercel frontend + Fly/Railway backend) needs
+    same_site=none + secure, or the browser drops the cookie entirely (R-906)."""
+    return ("none", True) if cookie_secure else ("lax", False)
+
+
+_TRUS_ENV = os.environ.get("TRUS_ENV", "dev")
+_SECRET = os.environ.get("SESSION_SECRET", DEFAULT_SESSION_SECRET)
+_require_prod_secret(_TRUS_ENV, _SECRET)
+
+_SAME_SITE, _HTTPS_ONLY = _cookie_settings(os.environ.get("TRUS_COOKIE_SECURE", "0") == "1")
+
 app.add_middleware(
     SessionMiddleware,
-    secret_key=os.environ.get("SESSION_SECRET", "dev-insecure-key-change-me"),
+    secret_key=_SECRET,
     session_cookie="trus_sid",
-    same_site="lax",
-    https_only=False,
+    same_site=_SAME_SITE,
+    https_only=_HTTPS_ONLY,
     max_age=60 * 60 * 24 * 365,
 )
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=_parse_cors_origins(os.environ.get("TRUS_CORS_ORIGINS", "http://localhost:3000")),
     allow_methods=["*"],
     allow_headers=["*"],
     allow_credentials=True,
