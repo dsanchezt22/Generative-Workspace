@@ -138,6 +138,9 @@ export function PromptBar({ onModule, activePageId, refineTarget, onRefineModule
     } catch (err) {
       if (err instanceof ApiError && err.refusal) {
         setError(err.refusal);
+      } else if (err instanceof ApiError && err.question) {
+        // R-304: refine asked a clarifying question — show its text, not raw JSON.
+        setError(err.question);
       } else if (err instanceof Error) {
         setError(err.message);
       } else {

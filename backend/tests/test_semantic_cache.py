@@ -6,6 +6,8 @@ import math
 from src import llm
 from src import semantic_cache as sc
 
+from tests.conftest import gen_result
+
 _VARS = (
     "TRUS_CACHE",
     "TRUS_CACHE_THRESHOLD",
@@ -187,7 +189,7 @@ def test_generate_modules_cache_hit_skips_model(monkeypatch):
                 },
             ]
         )
-        result = llm.GenResult(text=text, provider="openai", model="m")
+        result = gen_result(text, provider="openai", model="m")
         llm.last_call.set(result)  # mirrors what the real llm.generate() does
         return result
 

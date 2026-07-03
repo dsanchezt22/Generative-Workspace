@@ -41,6 +41,18 @@ export class ApiError extends Error {
     }
     return null;
   }
+  // R-304: a clarifying-question outcome arrives as { question } — surface the
+  // bare text, not the raw JSON object.
+  get question(): string | null {
+    if (
+      this.detail &&
+      typeof this.detail === "object" &&
+      "question" in (this.detail as Record<string, unknown>)
+    ) {
+      return String((this.detail as { question: unknown }).question);
+    }
+    return null;
+  }
 }
 
 export interface GenerateResponse {

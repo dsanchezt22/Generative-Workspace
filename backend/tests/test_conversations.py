@@ -3,8 +3,10 @@ from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
-from src import db, llm
+from src import db
 from src.main import app
+
+from tests.conftest import gen_result
 
 VALID_RAW = json.dumps(
     {
@@ -14,7 +16,7 @@ VALID_RAW = json.dumps(
         "components": [{"id": "exercise", "type": "text_input", "label": "Exercise"}],
     }
 )
-_VALID_RESULT = llm.GenResult(text=VALID_RAW, provider="test", model="test")
+_VALID_RESULT = gen_result(VALID_RAW)
 
 
 @pytest.fixture

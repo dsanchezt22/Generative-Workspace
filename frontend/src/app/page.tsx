@@ -41,9 +41,11 @@ function HeaderInsights({
       const msg =
         err instanceof ApiError && err.refusal
           ? err.refusal
-          : err instanceof Error
-            ? err.message
-            : "Could not generate insights.";
+          : err instanceof ApiError && err.question
+            ? err.question // R-304: surface the clarifying question, not raw JSON
+            : err instanceof Error
+              ? err.message
+              : "Could not generate insights.";
       setError(msg);
       setTimeout(() => setError(null), 4000);
     } finally {

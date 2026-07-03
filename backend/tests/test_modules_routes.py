@@ -3,9 +3,10 @@ from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
-from src import llm
 from src.main import app
 from src.schema import LLMError, ModuleConfig, TextInput
+
+from tests.conftest import gen_result as _gr
 
 VALID_RAW = json.dumps(
     {
@@ -13,10 +14,6 @@ VALID_RAW = json.dumps(
         "components": [{"id": "exercise", "type": "text_input", "label": "Exercise"}],
     }
 )
-
-
-def _gr(text: str) -> llm.GenResult:
-    return llm.GenResult(text=text, provider="stub", model="stub")
 
 
 @pytest.fixture(autouse=True)

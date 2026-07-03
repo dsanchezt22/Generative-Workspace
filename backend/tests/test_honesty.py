@@ -8,6 +8,8 @@ from src import llm
 from src.main import app
 from src.schema import LLMError
 
+from tests.conftest import fake_generate
+
 
 @pytest.fixture
 def client():
@@ -46,14 +48,7 @@ def test_degraded_results_never_enter_the_cache(monkeypatch, tmp_path):
     from src import db
     from src.services import orchestrator
 
-    def degraded_generate(*a, **k):
-        result = llm.GenResult(
-            text=_VALID_MODULES_RAW, provider="stub", model="stub", degraded=True
-        )
-        llm.last_call.set(result)  # mirrors what the real llm.generate() does
-        return result
-
-    monkeypatch.setattr(llm, "generate", degraded_generate)
+    monkeypatch.setattr(llm, "generate", fake_generate(_VALID_MODULES_RAW, degraded=True))
     monkeypatch.setattr(llm, "is_stub_mode", lambda: False)
     mods = orchestrator.generate_modules("plan my degraded week")  # succeeds — parses fine
     assert mods[0].title == "Itinerary"
@@ -67,14 +62,7 @@ def test_non_degraded_results_do_enter_the_cache(monkeypatch, tmp_path):
     from src import db
     from src.services import orchestrator
 
-    def clean_generate(*a, **k):
-        result = llm.GenResult(
-            text=_VALID_MODULES_RAW, provider="stub", model="stub", degraded=False
-        )
-        llm.last_call.set(result)
-        return result
-
-    monkeypatch.setattr(llm, "generate", clean_generate)
+    monkeypatch.setattr(llm, "generate", fake_generate(_VALID_MODULES_RAW))
     monkeypatch.setattr(llm, "is_stub_mode", lambda: False)
     mods = orchestrator.generate_modules("plan my clean week")
     assert mods[0].title == "Itinerary"
@@ -190,13 +178,8 @@ def test_degraded_capture_is_never_auto_seeded(client, monkeypatch):
     monkeypatch.setenv("TRUS_LLM_PROVIDER", "stub")
     monkeypatch.delenv("TRUS_LLM_BASE_URL", raising=False)
 
-    def degraded_generate(*a, **k):
-        result = llm.GenResult(json.dumps(_CAPTURE_CONFIG), "stub", "stub", degraded=True)
-        llm.last_call.set(result)  # mirrors what the real llm.generate() does
-        return result
-
     monkeypatch.setattr(llm, "vision_capture", lambda *a, **k: json.dumps(_CAPTURE_IR))
-    monkeypatch.setattr(llm, "generate", degraded_generate)
+    monkeypatch.setattr(llm, "generate", fake_generate(json.dumps(_CAPTURE_CONFIG), degraded=True))
 
     r = client.post(
         "/api/studio/use-cases/calorie/capture",
@@ -220,13 +203,8 @@ def test_promote_refuses_degraded_capture_with_409(client, monkeypatch):
     monkeypatch.setenv("TRUS_LLM_PROVIDER", "stub")
     monkeypatch.delenv("TRUS_LLM_BASE_URL", raising=False)
 
-    def degraded_generate(*a, **k):
-        result = llm.GenResult(json.dumps(_CAPTURE_CONFIG), "stub", "stub", degraded=True)
-        llm.last_call.set(result)  # mirrors what the real llm.generate() does
-        return result
-
     monkeypatch.setattr(llm, "vision_capture", lambda *a, **k: json.dumps(_CAPTURE_IR))
-    monkeypatch.setattr(llm, "generate", degraded_generate)
+    monkeypatch.setattr(llm, "generate", fake_generate(json.dumps(_CAPTURE_CONFIG), degraded=True))
 
     ly = client.post(
         "/api/studio/use-cases/calorie/capture",

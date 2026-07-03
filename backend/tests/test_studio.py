@@ -4,14 +4,14 @@ import pytest
 from fastapi.testclient import TestClient
 from src.main import app
 
+from tests.conftest import fake_generate
+
 
 @pytest.fixture
 def client(monkeypatch):
     # Force offline stub mode so generation is deterministic and hits no network.
+    # (TRUS_CACHE* and TRUS_LLM_BASE_URL are already cleared by conftest.)
     monkeypatch.setenv("TRUS_LLM_PROVIDER", "stub")
-    monkeypatch.delenv("TRUS_LLM_BASE_URL", raising=False)
-    for k in ("TRUS_CACHE", "TRUS_CACHE_THRESHOLD"):
-        monkeypatch.delenv(k, raising=False)
     with TestClient(app) as c:
         yield c
 
@@ -74,13 +74,7 @@ def test_promote_seeds_the_generation_pool(client, monkeypatch):
     from src import llm, semantic_cache
 
     monkeypatch.setattr(llm, "is_stub_mode", lambda: False)
-
-    def clean_generate(*a, **k):
-        result = llm.GenResult(_clean_layouts_raw(), "openai", "m", degraded=False)
-        llm.last_call.set(result)
-        return result
-
-    monkeypatch.setattr(llm, "generate", clean_generate)
+    monkeypatch.setattr(llm, "generate", fake_generate(_clean_layouts_raw()))
 
     client.post("/api/studio/use-cases/calorie/generate?n=1")
     lid = client.get("/api/studio/layouts?use_case=calorie").json()[0]["id"]
@@ -203,7 +197,7 @@ def test_generate_layouts_non_stub_parses_model_output(monkeypatch):
             }
         ]
     )
-    monkeypatch.setattr(llm, "generate", lambda *a, **k: llm.GenResult(raw, "stub", "stub"))
+    monkeypatch.setattr(llm, "generate", fake_generate(raw))
     layouts = studio.generate_layouts("calorie", n=2)
     assert layouts[0]["label"] == "Nutrient dashboard"
     assert layouts[0]["inspired_by"] == "Cronometer"
@@ -226,7 +220,7 @@ def test_generate_layouts_falls_back_to_stub_after_persistent_invalid_output(mon
     from src.services import studio
 
     monkeypatch.setattr(llm, "is_stub_mode", lambda: False)
-    monkeypatch.setattr(llm, "generate", lambda *a, **k: llm.GenResult("not json", "stub", "stub"))
+    monkeypatch.setattr(llm, "generate", fake_generate("not json"))
     layouts = studio.generate_layouts("calorie", n=1)
     assert layouts  # fell back to _stub_layouts instead of raising
     assert layouts[0]["config"]["title"]

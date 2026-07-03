@@ -33,11 +33,15 @@ def test_create_snapshot_captures_current_modules():
     assert snap.page_id == page.id
 
 
-def test_create_snapshot_default_label_when_blank():
+def test_create_snapshot_stores_label_verbatim():
     db.init_db()
     sid = db.ensure_session(None)
     page = db.ensure_default_page(sid)
+    # The db layer stores the label as given — the "Snapshot" default for a blank
+    # label is a ROUTE concern (see test_create_snapshot_defaults_label_when_blank),
+    # not a db one. A blank label stays blank here.
     snap = db.create_snapshot(sid, page.id, "")
+    assert snap.label == ""
     assert snap.module_count == 0
 
 
