@@ -64,6 +64,9 @@ export function useVoiceRamble(options: UseVoiceRambleOptions): VoiceRamble {
   const chunksRef = useRef<Blob[]>([]);
   // Was the input empty when THIS recording started — decides auto-submit (R-202).
   const wasEmptyAtStartRef = useRef(false);
+  // Set on unmount so a recording torn down mid-flight (skip / re-entry while the
+  // mic is hot) skips the now-pointless transcribe network call.
+  const unmountedRef = useRef(false);
   const elapsedTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   // Accumulated Web Speech FINAL transcript during a "full" recording — used
   // only as a fallback if the server transcript comes back 422 (STT unconfigured).
@@ -81,9 +84,10 @@ export function useVoiceRamble(options: UseVoiceRambleOptions): VoiceRamble {
   // throws InvalidStateError on an "inactive" recorder, so it MUST be guarded.
   useEffect(() => {
     return () => {
+      unmountedRef.current = true;
       if (elapsedTimerRef.current) clearInterval(elapsedTimerRef.current);
       const mr = mediaRecorderRef.current;
-      if (mr && mr.state !== "inactive") mr.stop();
+      if (mr && mr.state !== "inactive") mr.stop(); // → onstop → finishFullRecording (guarded below)
       streamRef.current?.getTracks().forEach((t) => t.stop());
       recRef.current?.stop();
     };
@@ -186,8 +190,12 @@ export function useVoiceRamble(options: UseVoiceRambleOptions): VoiceRamble {
     recRef.current?.stop();
     recRef.current = null;
     setLiveInterim("");
-    const blob = new Blob(chunksRef.current, { type: mimeType });
+    const chunks = chunksRef.current;
     chunksRef.current = [];
+    // Torn down mid-recording — the mic is released above; nobody is listening,
+    // so skip the wasted transcribe entirely.
+    if (unmountedRef.current) { setTranscribing(false); return; }
+    const blob = new Blob(chunks, { type: mimeType });
     if (blob.size === 0) { setTranscribing(false); return; }
     try {
       const { text } = await api.transcribe(blob);

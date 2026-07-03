@@ -55,12 +55,18 @@ export function EntryScreen({ onSubmit, onSkip }: Props) {
     return () => window.clearTimeout(t);
   }, []);
 
-  // Dissolve, then run the handoff/dismiss. Reduced-motion crushes the duration
-  // to ~instant (global rule), so this stays correct without motion.
+  // Dissolve, then run the handoff/dismiss. Under reduced motion the CSS crushes
+  // the opacity transition to ~0, so the wait must match — dismiss instantly
+  // rather than sitting on a blank screen for 260ms (same signal the app uses:
+  // the data-motion override, then the OS setting).
   const leave = (action: () => void) => {
     if (leaving) return;
     setLeaving(true);
-    window.setTimeout(action, 260);
+    const motion = typeof document !== "undefined" ? document.documentElement.dataset.motion : undefined;
+    const reduce =
+      motion === "reduced" ||
+      (motion !== "full" && typeof window !== "undefined" && !!window.matchMedia?.("(prefers-reduced-motion: reduce)").matches);
+    window.setTimeout(action, reduce ? 0 : 260);
   };
 
   const submitPrompt = (value: string) => {

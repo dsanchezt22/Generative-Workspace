@@ -125,20 +125,53 @@ export function PromptBar({ onModule, activePageId, refineTarget, onRefineModule
     if (result.degraded) setError(DEGRADED_NOTICE);
   };
 
+  // The default "fresh proposal" path: previewModules with no interfering
+  // state. Extracted so a typed Enter (the default submit branch) and the R-105
+  // entry handoff (submit(..., fresh=true)) open a brand-new proposal identically.
+  const runFreshPreview = async (v: string) => {
+    const result = await api.previewModules(v, activePageId);
+    if (result.question) {
+      // AI needs clarification — enter follow-up mode.
+      setExchange({ original: v, turns: [{ question: result.question, answer: "" }] });
+      setPrompt("");
+      setTimeout(() => inputRef.current?.focus(), 0);
+    } else if (result.previews?.length) {
+      // Show a preview stack to accept before anything lands on the canvas.
+      lastPromptRef.current = v;
+      setPreviews(result.previews);
+      setPlan(result.plan ?? null);
+      setPrompt("");
+    }
+    if (result.degraded) setError(DEGRADED_NOTICE);
+  };
+
   // `overrideText` lets a voice auto-submit (R-202) drive this with the
   // just-appended transcript without waiting a render for `prompt` state to
-  // catch up — every other branch still reads current component state
+  // catch up — every non-fresh branch still reads current component state
   // (isRefining/file/exchange/previews), so the auto-submit takes whichever
   // path a typed Enter would take right now (default preview, refine-the-
-  // preview, or resolving a pending interview question).
-  const submit = async (e?: React.FormEvent, overrideText?: string) => {
+  // preview, or resolving a pending interview question). `fresh=true` (the R-105
+  // entry handoff) bypasses all of that and forces a brand-new proposal.
+  const submit = async (e?: React.FormEvent, overrideText?: string, fresh = false) => {
     e?.preventDefault();
     const v = (overrideText ?? prompt).trim();
     if ((!v && !file) || loading) return;
     setLoading(true);
     setError(null);
     try {
-      if (previews.length > 0 && !isRefining && !file) {
+      if (fresh) {
+        // R-105: the entry-screen handoff must ALWAYS open a brand-new proposal,
+        // even over a dirty PromptBar (preview stack / pending question / attached
+        // file / refine target) — otherwise the fresh prompt gets folded into a
+        // refine-join or sent as the answer to a stale question. Clear the
+        // interfering state first, then run the default preview path.
+        setPreviews([]);
+        setPlan(null);
+        setExchange(null);
+        setFile(null);
+        onClearRefine?.();
+        await runFreshPreview(v);
+      } else if (previews.length > 0 && !isRefining && !file) {
         // Talk to the preview: refine the proposed tools before adding them.
         const combined = `${lastPromptRef.current} — ${v}`;
         const result = await api.previewModules(combined, activePageId);
@@ -167,20 +200,7 @@ export function PromptBar({ onModule, activePageId, refineTarget, onRefineModule
         // Answering a pending question in an ongoing interview.
         await resolveExchange(v);
       } else {
-        const result = await api.previewModules(v, activePageId);
-        if (result.question) {
-          // AI needs clarification — enter follow-up mode.
-          setExchange({ original: v, turns: [{ question: result.question, answer: "" }] });
-          setPrompt("");
-          setTimeout(() => inputRef.current?.focus(), 0);
-        } else if (result.previews?.length) {
-          // Show a preview stack to accept before anything lands on the canvas.
-          lastPromptRef.current = v;
-          setPreviews(result.previews);
-          setPlan(result.plan ?? null);
-          setPrompt("");
-        }
-        if (result.degraded) setError(DEGRADED_NOTICE);
+        await runFreshPreview(v);
       }
     } catch (err) {
       // Deliberate: a failed request mid-interview RETAINS the exchange state so
@@ -218,16 +238,16 @@ export function PromptBar({ onModule, activePageId, refineTarget, onRefineModule
     }
   };
 
-  // R-101: a prompt handed over from the entry-screen front door. Fill it in
-  // and auto-submit ONCE — this takes the default preview path (no file, no
-  // refine, no in-flight interview at handoff), producing a proposal exactly
-  // like a typed prompt would. Cleared immediately via onAutoPromptConsumed so
-  // it can never re-fire.
+  // R-101/R-105: a prompt handed over from the entry-screen front door. Fill it
+  // in and auto-submit ONCE with fresh=true, which clears any in-flight preview/
+  // interview/refine/file state first so re-entry over a dirty PromptBar still
+  // produces a brand-new proposal (not a refine-join or a stale-question answer).
+  // Cleared immediately via onAutoPromptConsumed so it can never re-fire.
   useEffect(() => {
     const v = autoPrompt?.trim();
     if (!v) return;
     setPrompt(autoPrompt as string);
-    void submit(undefined, v);
+    void submit(undefined, v, true);
     onAutoPromptConsumed?.();
   // submit closes over current state; we intentionally run only on autoPrompt change.
   // eslint-disable-next-line react-hooks/exhaustive-deps
