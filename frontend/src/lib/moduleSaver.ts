@@ -32,6 +32,11 @@ export function createModuleSaver(deps: Deps): ModuleSaver {
   const errored = new Set<string>();
   const listeners = new Set<() => void>();
   const retryDelay = new Map<string, number>();
+  // Latest rev the SERVER told us (save response or 409 conflict body). The
+  // caller's getRev reads React state, which syncs a render behind — a
+  // follow-up flush at setTimeout(0) would resend a stale rev and 409 against
+  // our own previous save. Server-known rev always wins over getRev.
+  const knownRevs = new Map<string, number>();
 
   const notify = () => listeners.forEach((fn) => fn());
 
@@ -42,7 +47,8 @@ export function createModuleSaver(deps: Deps): ModuleSaver {
     inFlight.add(id);
     notify();
     try {
-      const saved = await deps.patch(id, config, deps.getRev?.(id));
+      const saved = await deps.patch(id, config, knownRevs.get(id) ?? deps.getRev?.(id));
+      knownRevs.set(id, saved.rev);
       errored.delete(id);
       retryDelay.delete(id);
       deps.onSaved?.(saved);
@@ -57,6 +63,7 @@ export function createModuleSaver(deps: Deps): ModuleSaver {
         pending.delete(id);
         errored.delete(id);
         retryDelay.delete(id);
+        knownRevs.set(id, err.conflict.rev); // learn the winner's rev for the next edit
         deps.onConflict?.(err.conflict);
       } else {
         // keep the newest config: an edit made during the failed save wins
@@ -104,6 +111,7 @@ export function createModuleSaver(deps: Deps): ModuleSaver {
       const t = timers.get(id);
       if (t) clearTimeout(t);
       timers.delete(id); pending.delete(id); errored.delete(id); inFlight.delete(id);
+      knownRevs.delete(id);
       notify();
     },
   };
