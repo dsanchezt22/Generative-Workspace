@@ -35,7 +35,9 @@ def test_health_responds_while_generation_in_flight(monkeypatch, tmp_path):
         t = threading.Thread(target=fire_generation)
         t.start()
         started.wait()
-        entered_handler.wait()  # rendezvous: generation is inside the handler, mid-sleep
+        # rendezvous: generation is inside the handler, mid-sleep. Bound the wait so a
+        # regression that never enters the handler fails loudly instead of hanging.
+        assert entered_handler.wait(timeout=10), "generation never entered the handler"
         t0 = time.monotonic()
         r = client.get("/api/health")
         elapsed = time.monotonic() - t0

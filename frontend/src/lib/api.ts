@@ -174,7 +174,10 @@ export const api = {
       keepalive: true,
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ config, rev }),
-    });
+      // Swallow rejection noise: a cancel-then-stay may double-write, and a stale
+      // rev is handled by the normal saver path (409) — this fire-and-forget copy
+      // has no one awaiting it, so an unhandled rejection is just noise.
+    }).catch(() => {});
   },
   deleteModule: (id: string) =>
     request<void>(`/api/modules/${id}`, { method: "DELETE" }),

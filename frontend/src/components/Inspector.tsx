@@ -96,6 +96,7 @@ export function Inspector({ module, onCommit, onClose, onRefine, onDuplicate, on
       // Compute next from the fresh ref, set it, THEN persist — persist stays
       // outside the setDraft updater so it can't double-fire under StrictMode.
       const next = mutate(draftRef.current);
+      draftRef.current = next; // lock-step: keep the ref fresh for same-tick chained edits
       setDraft(next);
       persist(next, immediate ? 0 : 400);
     },
