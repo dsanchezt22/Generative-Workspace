@@ -989,6 +989,57 @@ def cache_stats() -> dict:
     return {"entries": row["n"], "hits": row["hits"]}
 
 
+# Defensive scan bound so a heavy owner's suggestion query stays a "fast read"
+# (R-104's async route) instead of degrading into an unbounded table scan.
+_SUGGESTION_SCAN_CAP = 500
+
+
+def suggestion_prompts(owner: str, limit: int) -> list[str]:
+    """This owner's recent distinct generation prompts, for suggestion chips
+    (R-104). R-903: scoped to `owner` by WHERE clause — another owner's prompts
+    can never appear. gen_cache first, ordered by hits DESC then created_at DESC
+    (favors prompts that actually got reused); if that yields fewer than `limit`,
+    tops up from recent user-role `messages` rows for the same owner (page-agnostic
+    — messages.session_id doubles as the owner key, same as gen_cache.owner).
+    Deduped case-insensitively; blob-like entries (len > 200, template seeds) and
+    empty/whitespace-only strings are excluded; messages never re-add a prompt
+    gen_cache already contributed."""
+    if limit <= 0:
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+
+    def _consider(text: str | None) -> None:
+        text = (text or "").strip()
+        if not text or len(text) > 200:
+            return
+        key = text.lower()
+        if key in seen:
+            return
+        seen.add(key)
+        out.append(text)
+
+    with _conn() as c:
+        for r in c.execute(
+            "SELECT prompt FROM gen_cache WHERE owner = ? "
+            "ORDER BY hits DESC, created_at DESC LIMIT ?",
+            (owner, _SUGGESTION_SCAN_CAP),
+        ).fetchall():
+            _consider(r["prompt"])
+            if len(out) >= limit:
+                break
+        if len(out) < limit:
+            for r in c.execute(
+                "SELECT text FROM messages WHERE session_id = ? AND role = 'user' "
+                "ORDER BY created_at DESC, rowid DESC LIMIT ?",
+                (owner, _SUGGESTION_SCAN_CAP),
+            ).fetchall():
+                _consider(r["text"])
+                if len(out) >= limit:
+                    break
+    return out
+
+
 # ── Layout Studio library ────────────────────────────────────────────────────
 
 _LAYOUT_COLS = "id, use_case, label, inspired_by, config_json, created_at, capture_meta_json"
