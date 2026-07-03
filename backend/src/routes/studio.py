@@ -139,6 +139,10 @@ def _check_url_allowed(url: str) -> None:
     if parsed.scheme not in ("http", "https") or not parsed.hostname:
         raise HTTPException(status_code=422, detail="Only http(s) image URLs are supported")
     try:
+        # Known accepted limitation (alpha): the fetch is not pinned to these
+        # resolved IPs, so a low-TTL DNS rebind between this check and connect
+        # can still reach a private host. Mitigated by the image/ content-type
+        # gate and the prod-off default; revisit with IP-pinning if exposure grows.
         infos = socket.getaddrinfo(parsed.hostname, None)
     except socket.gaierror as e:
         raise HTTPException(status_code=422, detail="Image URL host could not be resolved") from e
