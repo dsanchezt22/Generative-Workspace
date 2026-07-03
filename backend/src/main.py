@@ -9,6 +9,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from src import db, llm
 from src.routes import auth, conversations, modules, pages, studio
+from src.routes.deps import _parse_cors_origins
 
 logging.basicConfig(
     level=os.environ.get("TRUS_LOG_LEVEL", "INFO"),
@@ -35,11 +36,6 @@ def _require_prod_secret(trus_env: str, secret: str) -> None:
             "SESSION_SECRET must be set to a strong value in prod (R-901): "
             "the default key is public and makes every session forgeable."
         )
-
-
-def _parse_cors_origins(raw: str) -> list[str]:
-    """Comma-separated origin list, tolerant of whitespace/trailing commas/blanks."""
-    return [o.strip() for o in raw.split(",") if o.strip()]
 
 
 def _cookie_settings(cookie_secure: bool) -> tuple[Literal["lax", "none"], bool]:

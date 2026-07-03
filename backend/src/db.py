@@ -199,7 +199,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
         ("embedding", "TEXT"),
     ):
         if col not in lcols:
-            conn.execute(f"ALTER TABLE layout_library ADD COLUMN {col} {decl}")  # nosemgrep
+            # nosemgrep: python.lang.security.audit.formatted-sql-query.formatted-sql-query,python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
+            conn.execute(f"ALTER TABLE layout_library ADD COLUMN {col} {decl}")
     # Identity (Task 6): link a browser session to a claimed user, and give the
     # shared stores a per-owner key. owner backfills to 'local' so pre-identity
     # rows stay reachable under the library's default owner.
@@ -359,7 +360,7 @@ def _page_from_row(r, session_id: str) -> Page:
 def ensure_default_page(session_id: str) -> Page:
     """Return the first page for a session, creating it if none exist."""
     with _conn() as c:
-        row = c.execute(  # nosemgrep
+        row = c.execute(  # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
             f"SELECT {_PAGE_COLS} FROM pages WHERE session_id = ? ORDER BY position LIMIT 1",
             (session_id,),
         ).fetchone()
@@ -378,7 +379,7 @@ def ensure_default_page(session_id: str) -> Page:
 
 def list_pages(session_id: str) -> list[Page]:
     with _conn() as c:
-        rows = c.execute(  # nosemgrep
+        rows = c.execute(  # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
             f"SELECT {_PAGE_COLS} FROM pages WHERE session_id = ? ORDER BY position",
             (session_id,),
         ).fetchall()
@@ -432,12 +433,12 @@ def update_page(
         return get_page(session_id, page_id)
     params += [page_id, session_id]
     with _conn() as c:
-        cur = c.execute(  # nosemgrep
+        cur = c.execute(  # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
             f"UPDATE pages SET {', '.join(sets)} WHERE id = ? AND session_id = ?", params
         )
         if cur.rowcount == 0:
             return None
-        row = c.execute(  # nosemgrep
+        row = c.execute(  # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
             f"SELECT {_PAGE_COLS} FROM pages WHERE id = ?", (page_id,)
         ).fetchone()
     return _page_from_row(row, session_id)
@@ -445,7 +446,7 @@ def update_page(
 
 def get_page(session_id: str, page_id: str) -> Page | None:
     with _conn() as c:
-        row = c.execute(  # nosemgrep
+        row = c.execute(  # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
             f"SELECT {_PAGE_COLS} FROM pages WHERE id = ? AND session_id = ?", (page_id, session_id)
         ).fetchone()
     return _page_from_row(row, session_id) if row else None
@@ -526,7 +527,7 @@ _MOD_COLS = "id, page_id, config_json, created_at, updated_at, archived, rev"
 
 def get_module(session_id: str, module_id: str) -> StoredModule | None:
     with _conn() as c:
-        row = c.execute(  # nosemgrep
+        row = c.execute(  # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
             f"SELECT {_MOD_COLS} FROM modules WHERE id = ? AND session_id = ?",
             (module_id, session_id),
         ).fetchone()
@@ -541,12 +542,12 @@ def list_modules(
     archived_clause = "" if include_archived else " AND archived = 0"
     with _conn() as c:
         if page_id:
-            rows = c.execute(  # nosemgrep
+            rows = c.execute(  # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
                 f"SELECT {_MOD_COLS} FROM modules WHERE session_id = ? AND page_id = ?{archived_clause} ORDER BY created_at",
                 (session_id, page_id),
             ).fetchall()
         else:
-            rows = c.execute(  # nosemgrep
+            rows = c.execute(  # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
                 f"SELECT {_MOD_COLS} FROM modules WHERE session_id = ?{archived_clause} ORDER BY created_at",
                 (session_id,),
             ).fetchall()
@@ -555,7 +556,7 @@ def list_modules(
 
 def list_archived(session_id: str) -> list[StoredModule]:
     with _conn() as c:
-        rows = c.execute(  # nosemgrep
+        rows = c.execute(  # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
             f"SELECT {_MOD_COLS} FROM modules WHERE session_id = ? AND archived = 1 ORDER BY updated_at DESC",
             (session_id,),
         ).fetchall()
@@ -570,7 +571,7 @@ def set_archived(session_id: str, module_id: str, archived: bool) -> StoredModul
         )
         if cur.rowcount == 0:
             return None
-        row = c.execute(  # nosemgrep
+        row = c.execute(  # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
             f"SELECT {_MOD_COLS} FROM modules WHERE id = ?", (module_id,)
         ).fetchone()
     return _stored_from_row(row)
@@ -622,7 +623,7 @@ def update_module(
                 (config_json, now, module_id, session_id, expected_rev),
             )
         if cur.rowcount == 0:
-            row = c.execute(  # nosemgrep
+            row = c.execute(  # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
                 f"SELECT {_MOD_COLS} FROM modules WHERE id = ? AND session_id = ?",
                 (module_id, session_id),
             ).fetchone()
@@ -633,7 +634,7 @@ def update_module(
                 raise RevConflict(current)
             return None
         _record_version(c, module_id, session_id, config_json, now)
-        row = c.execute(  # nosemgrep
+        row = c.execute(  # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
             f"SELECT {_MOD_COLS} FROM modules WHERE id = ?", (module_id,)
         ).fetchone()
     return _stored_from_row(row)
@@ -939,7 +940,7 @@ def undo_module(session_id: str, module_id: str) -> StoredModule | None:
         )
         # Return the true post-write row (never hand-construct a StoredModule
         # here — a hand-built one silently carried the Pydantic rev default).
-        row = c.execute(  # nosemgrep
+        row = c.execute(  # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
             f"SELECT {_MOD_COLS} FROM modules WHERE id = ?", (module_id,)
         ).fetchone()
     return _stored_from_row(row)
@@ -1021,7 +1022,7 @@ def layout_add(
             vals.append(value)
     placeholders = ", ".join("?" for _ in cols)
     with _conn() as c:
-        c.execute(  # nosemgrep
+        c.execute(  # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
             f"INSERT INTO layout_library ({', '.join(cols)}) VALUES ({placeholders})",
             tuple(vals),
         )
@@ -1036,7 +1037,7 @@ def layout_list(use_case: str | None = None, owner: str = "local") -> list[sqlit
                 "ORDER BY created_at DESC",
                 (use_case, owner),
             ).fetchall()
-        return c.execute(  # nosemgrep
+        return c.execute(  # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
             f"SELECT {_LAYOUT_COLS} FROM layout_library WHERE owner = ? ORDER BY created_at DESC",
             (owner,),
         ).fetchall()
@@ -1044,7 +1045,7 @@ def layout_list(use_case: str | None = None, owner: str = "local") -> list[sqlit
 
 def layout_get(layout_id: str, owner: str = "local") -> sqlite3.Row | None:
     with _conn() as c:
-        row = c.execute(  # nosemgrep
+        row = c.execute(  # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
             f"SELECT {_LAYOUT_COLS} FROM layout_library WHERE id = ? AND owner = ?",
             (layout_id, owner),
         ).fetchone()

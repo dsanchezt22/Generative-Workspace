@@ -32,6 +32,18 @@ def test_private_and_metadata_urls_are_refused(tmp_path, monkeypatch, url):
         assert "url" in str(r.json().get("detail", "")).lower()
 
 
+def test_cgnat_address_is_refused():
+    """CGNAT (100.64.0.0/10, RFC 6598): not private/loopback/link-local/
+    reserved/multicast/unspecified by the older named checks, but also not
+    globally routable — only `not ip.is_global` catches it. Tested at the
+    function level (like the prod-flag tests below) so this stays fast and
+    deterministic instead of racing a real 20s network timeout."""
+    from src.routes import studio as studio_routes
+
+    with pytest.raises(HTTPException):
+        studio_routes._check_url_allowed("http://100.64.0.1/cgnat")
+
+
 def test_ipv6_loopback_url_is_refused(client):
     r = client.post(
         "/api/studio/use-cases/calorie/import",
@@ -72,34 +84,28 @@ def test_dns_resolution_failure_is_a_clean_422(client):
     assert "url" in str(r.json().get("detail", "")).lower()
 
 
-def test_redirect_to_metadata_address_is_refused(client, monkeypatch):
+def test_redirect_response_is_refused_outright(client, monkeypatch):
     """Classic SSRF bypass: the initial host is public and passes the pre-fetch
-    check, but the server responds with a redirect that lands on a link-local
-    metadata address. urlopen follows the redirect itself (stdlib behavior), so
-    the guard must re-check the FINAL resp.url before the response is trusted."""
-    import urllib.request
+    check, but the server responds with a redirect that could land anywhere
+    (e.g. a link-local metadata address). The fetch now uses a no-redirect
+    opener (_NO_REDIRECT_OPENER) that refuses to follow ANY 3xx — urllib turns
+    a refused redirect into an HTTPError, which the guard maps to an honest
+    422 without ever connecting to wherever Location points (closes the blind
+    mid-chain connect a normal follow-then-recheck would still make)."""
+    import urllib.error
 
-    class _FakeHeaders:
-        def get(self, key, default=None):
-            return "image/png" if key == "Content-Type" else default
+    from src.routes import studio as studio_routes
 
-    class _FakeRedirectedResp:
-        headers = _FakeHeaders()
-        url = "http://169.254.169.254/latest/meta-data/"
+    class _FakeOpener:
+        def open(self, req, timeout=None):
+            raise urllib.error.HTTPError(
+                req.full_url, 302, "Found", {"Location": "http://169.254.169.254/"}, None
+            )
 
-        def read(self, n=-1):
-            return b"fake-image-bytes"
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *a):
-            return False
-
-    monkeypatch.setattr(urllib.request, "urlopen", lambda req, timeout=None: _FakeRedirectedResp())
+    monkeypatch.setattr(studio_routes, "_NO_REDIRECT_OPENER", _FakeOpener())
     r = client.post(
         "/api/studio/use-cases/calorie/import",
         data={"image_url": "https://example.com/redirects-to-metadata.png"},
     )
     assert r.status_code == 422
-    assert "url" in str(r.json().get("detail", "")).lower()
+    assert "redirect" in str(r.json().get("detail", "")).lower()

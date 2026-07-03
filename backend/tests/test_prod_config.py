@@ -104,6 +104,31 @@ class TestLlmStatusPayload:
         assert "base_url" not in payload["vision"]
 
 
+def test_llm_status_route_dev_and_delegates_to_payload_fn(tmp_path, monkeypatch):
+    """Route-level companion to TestLlmStatusPayload above: the route itself
+    (not just the payload function in isolation) must expose base_url in dev,
+    and must actually CALL _llm_status_payload rather than duplicate its logic
+    — proven by monkeypatching the payload fn and checking the route returns
+    exactly what it returns."""
+    import src.main as main_module
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setenv("TRUS_DB_PATH", str(tmp_path / "t.db"))
+    monkeypatch.setenv("TRUS_ENV", "dev")
+    monkeypatch.setenv("TRUS_LLM_PROVIDER", "openai")
+    monkeypatch.setenv("TRUS_LLM_BASE_URL", "http://localhost:11434/v1")
+    monkeypatch.setenv("TRUS_LLM_MODEL", "qwen")
+    with TestClient(main_module.app) as c:
+        r = c.get("/api/llm/status")
+    assert r.status_code == 200
+    assert r.json()["base_url"] == "http://localhost:11434/v1"
+
+    monkeypatch.setattr(main_module, "_llm_status_payload", lambda: {"sentinel": "value-xyz"})
+    with TestClient(main_module.app) as c:
+        r2 = c.get("/api/llm/status")
+    assert r2.json() == {"sentinel": "value-xyz"}
+
+
 def test_prod_refuses_default_session_secret_on_reload(monkeypatch):
     """Integration: the guard actually runs at module import/reload time, not
     just when called directly."""

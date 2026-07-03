@@ -60,6 +60,13 @@ last_call: contextvars.ContextVar[GenResult | None] = contextvars.ContextVar(
 )
 
 
+def _gemini_model() -> str:
+    """The configured Gemini model, read fresh per call (single source — was
+    duplicated as `os.environ.get("GEMINI_MODEL", DEFAULT_MODEL)` at every
+    gemini call site)."""
+    return os.environ.get("GEMINI_MODEL", DEFAULT_MODEL)
+
+
 def _timeout() -> float:
     try:
         return float(os.environ.get("TRUS_LLM_TIMEOUT", "60"))
@@ -114,7 +121,7 @@ def provider_info() -> dict:
     p = _resolve_provider()
     info: dict[str, str] = {"provider": p}
     if p == "gemini":
-        info["model"] = os.environ.get("GEMINI_MODEL", DEFAULT_MODEL)
+        info["model"] = _gemini_model()
     elif p == "openai":
         info["model"] = os.environ.get("TRUS_LLM_MODEL", "")
         info["base_url"] = os.environ.get("TRUS_LLM_BASE_URL", "")
@@ -160,7 +167,7 @@ def _gemini_config(system: str | None):
 
 
 def _gemini_generate(prompt: str, system: str | None) -> str:
-    model = os.environ.get("GEMINI_MODEL", DEFAULT_MODEL)
+    model = _gemini_model()
     try:
         response = _get_client().models.generate_content(
             model=model,
@@ -183,7 +190,7 @@ def _gemini_generate_file_raw(
     telemetry (R-1201/R-1202) without re-issuing the request."""
     from google.genai import types
 
-    model = os.environ.get("GEMINI_MODEL", DEFAULT_MODEL)
+    model = _gemini_model()
     try:
         response = _get_client().models.generate_content(
             model=model,
@@ -256,7 +263,8 @@ def _openai_chat(
 
     try:
         # base is operator-configured (TRUS_LLM_BASE_URL), never end-user input.
-        with urllib.request.urlopen(req, timeout=_timeout()) as resp:  # nosemgrep
+        # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected
+        with urllib.request.urlopen(req, timeout=_timeout()) as resp:
             payload = json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
         detail = e.read().decode("utf-8", "ignore")[:400] if hasattr(e, "read") else ""
@@ -293,9 +301,6 @@ def generate(
     def _done(r: GenResult) -> GenResult:
         last_call.set(r)
         return r
-
-    def _gemini_model() -> str:
-        return os.environ.get("GEMINI_MODEL", DEFAULT_MODEL)
 
     def _stub_text() -> str:
         if expect_array:
@@ -386,7 +391,7 @@ def generate_from_file(user_message: str, system: str | None, data: bytes, mime:
         GenResult(
             text,
             "gemini",
-            os.environ.get("GEMINI_MODEL", DEFAULT_MODEL),
+            _gemini_model(),
             tokens_in=tokens_in,
             tokens_out=tokens_out,
         )
@@ -460,7 +465,8 @@ def vision_describe(system: str | None, user_text: str, data: bytes, mime: str) 
         req.add_header("Authorization", f"Bearer {api_key}")
     try:
         # base is operator-configured (TRUS_VISION_BASE_URL/TRUS_LLM_BASE_URL), never end-user input.
-        with urllib.request.urlopen(req, timeout=timeout) as resp:  # nosemgrep
+        # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
             payload = json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
         detail = e.read().decode("utf-8", "ignore")[:400] if hasattr(e, "read") else ""

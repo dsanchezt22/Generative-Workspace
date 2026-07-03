@@ -11,6 +11,18 @@ from src.schema import LLMError
 _logger = logging.getLogger(__name__)
 
 
+def _parse_cors_origins(raw: str) -> list[str]:
+    """Comma-separated origin list, tolerant of whitespace/trailing commas/blanks.
+
+    Single source of truth: main.py imports this for the CORS middleware, and
+    `_require_trusted_origin` below uses it directly — previously each kept its
+    own copy. Defined HERE (not in main.py) so both directions work: main.py
+    can import from this module, but this module importing from main.py would
+    be circular (main imports routes.modules/routes.studio, which import this
+    module, before main.py finishes defining anything)."""
+    return [o.strip() for o in raw.split(",") if o.strip()]
+
+
 def _llm_error_detail(e: LLMError) -> str:
     """Map an internal LLMError to a small set of safe, honest client messages.
 
@@ -40,18 +52,12 @@ def _require_trusted_origin(request: Request) -> None:
     without an Origin header (curl, same-origin) pass — the browser vector is
     the one being closed.
 
-    Re-parses TRUS_CORS_ORIGINS with the same rules as main._parse_cors_origins
-    (kept identical, not imported: importing from src.main here would be
-    circular — main imports routes.modules/routes.studio, which import this
-    module, before main.py defines _parse_cors_origins)."""
+    Parses TRUS_CORS_ORIGINS via `_parse_cors_origins` above (same rules the
+    CORS middleware in main.py uses)."""
     origin = request.headers.get("origin")
     if not origin:
         return
-    allowed = [
-        o.strip()
-        for o in os.environ.get("TRUS_CORS_ORIGINS", "http://localhost:3000").split(",")
-        if o.strip()
-    ]
+    allowed = _parse_cors_origins(os.environ.get("TRUS_CORS_ORIGINS", "http://localhost:3000"))
     if origin not in allowed:
         raise HTTPException(status_code=403, detail="Cross-site upload refused")
 

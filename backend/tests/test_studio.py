@@ -514,8 +514,7 @@ def test_import_without_file_or_url_returns_422(client):
 
 
 def test_import_via_image_url_fetches_and_stores(client, monkeypatch):
-    import urllib.request
-
+    from src.routes import studio as studio_routes
     from src.services import studio
 
     class _FakeHeaders:
@@ -535,7 +534,9 @@ def test_import_via_image_url_fetches_and_stores(client, monkeypatch):
         def __exit__(self, *a):
             return False
 
-    monkeypatch.setattr(urllib.request, "urlopen", lambda req, timeout=None: _FakeUrlResp())
+    monkeypatch.setattr(
+        studio_routes._NO_REDIRECT_OPENER, "open", lambda req, timeout=None: _FakeUrlResp()
+    )
     monkeypatch.setattr(
         studio,
         "import_from_image",
@@ -557,7 +558,7 @@ def test_import_via_image_url_fetches_and_stores(client, monkeypatch):
 
 
 def test_import_via_image_url_non_image_content_type_422(client, monkeypatch):
-    import urllib.request
+    from src.routes import studio as studio_routes
 
     class _FakeHeaders:
         def get(self, key, default=None):
@@ -576,7 +577,9 @@ def test_import_via_image_url_non_image_content_type_422(client, monkeypatch):
         def __exit__(self, *a):
             return False
 
-    monkeypatch.setattr(urllib.request, "urlopen", lambda req, timeout=None: _FakeUrlResp())
+    monkeypatch.setattr(
+        studio_routes._NO_REDIRECT_OPENER, "open", lambda req, timeout=None: _FakeUrlResp()
+    )
     r = client.post(
         "/api/studio/use-cases/calorie/import",
         data={"image_url": "https://example.com/page.html"},
@@ -585,12 +588,12 @@ def test_import_via_image_url_non_image_content_type_422(client, monkeypatch):
 
 
 def test_import_via_image_url_network_failure_422(client, monkeypatch):
-    import urllib.request
+    from src.routes import studio as studio_routes
 
     def boom(req, timeout=None):
         raise OSError("refused")
 
-    monkeypatch.setattr(urllib.request, "urlopen", boom)
+    monkeypatch.setattr(studio_routes._NO_REDIRECT_OPENER, "open", boom)
     r = client.post(
         "/api/studio/use-cases/calorie/import",
         data={"image_url": "https://example.com/x.png"},

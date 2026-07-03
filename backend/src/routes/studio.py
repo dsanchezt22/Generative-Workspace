@@ -162,10 +162,30 @@ def _check_url_allowed(url: str) -> None:
             or ip.is_reserved
             or ip.is_multicast
             or ip.is_unspecified
+            # Belt and braces: is_global alone is the complete modern check, but
+            # the named checks above stay too — older Pythons' is_global misses
+            # some ranges. not is_global additionally covers CGNAT (100.64.0.0/10,
+            # RFC 6598), which none of the named checks catch.
+            or not ip.is_global
         ):
             raise HTTPException(
                 status_code=422, detail="Image URL points at a private address; refused"
             )
+
+
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Refuses to follow any redirect: `redirect_request` returning None makes
+    urllib raise an HTTPError on the 3xx instead of transparently connecting to
+    wherever Location points. This closes the blind mid-chain connect a normal
+    urlopen would make — it follows redirects itself, so a resolved-host-only
+    pre-check (_check_url_allowed above) can't see the redirect target before
+    the connection to it is already made."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+_NO_REDIRECT_OPENER = urllib.request.build_opener(_NoRedirectHandler)
 
 
 def _load_image(file: UploadFile | None, image_url: str) -> tuple[bytes, str]:
@@ -189,19 +209,24 @@ def _load_image(file: UploadFile | None, image_url: str) -> tuple[bytes, str]:
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "Trus/0.1 (layout studio)"})
         # Scheme + host validated by _check_url_allowed above (SSRF guard, Stage-1
-        # review decision B); the redirect re-check below closes the TOCTOU gap.
-        with urllib.request.urlopen(req, timeout=20) as resp:  # nosemgrep
-            # TOCTOU: _check_url_allowed above only resolved the ORIGINAL host — a
-            # redirect can still bounce to a private/metadata address (the classic
-            # 169.254.169.254 bypass). urlopen follows redirects itself, so re-check
-            # the FINAL url it actually landed on before trusting the response.
-            _check_url_allowed(resp.url)
+        # review decision B); _NO_REDIRECT_OPENER refuses to follow a redirect at
+        # all (see _NoRedirectHandler) rather than following it and re-checking
+        # the final host, so there is no window where an unvalidated host is ever
+        # connected to.
+        with _NO_REDIRECT_OPENER.open(req, timeout=20) as resp:
             ct = (resp.headers.get("Content-Type") or "").split(";")[0].strip()
             if not ct.startswith("image/"):
                 raise HTTPException(status_code=422, detail="That URL didn't return an image.")
             data = resp.read(_MAX_IMAGE_BYTES + 1)
     except HTTPException:
         raise
+    except urllib.error.HTTPError as e:
+        if e.code in (301, 302, 303, 307, 308):
+            raise HTTPException(
+                status_code=422,
+                detail="Redirecting image URLs are not supported — link the image directly.",
+            ) from e
+        raise HTTPException(status_code=422, detail=f"Couldn't fetch that image: {e}") from e
     except (urllib.error.URLError, OSError) as e:
         raise HTTPException(status_code=422, detail=f"Couldn't fetch that image: {e}") from e
     if len(data) > _MAX_IMAGE_BYTES:
