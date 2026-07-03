@@ -64,6 +64,13 @@ def _isolate_llm_env(monkeypatch):
         "TRUS_VISION_MODEL",
         "TRUS_VISION_BASE_URL",
         "TRUS_VISION_API_KEY",
+        # Voice transcription endpoint (R-201/R-204) — same isolation rationale
+        # as TRUS_VISION_* above: a developer's local .env must not make
+        # /api/transcribe deterministic-unavailable tests silently see it configured.
+        "TRUS_STT_BASE_URL",
+        "TRUS_STT_MODEL",
+        "TRUS_STT_API_KEY",
+        "TRUS_STT_TIMEOUT",
         # GEMINI_API_KEY decides gemini-vs-stub; clearing it makes the default
         # provider deterministically "stub" on every machine (incl. a dev box
         # with a real key) so no test silently depends on it or hits a live API.

@@ -31,6 +31,7 @@ import json
 import os
 import urllib.error
 import urllib.request
+import uuid
 from dataclasses import dataclass
 
 from dotenv import load_dotenv
@@ -499,3 +500,86 @@ def vision_capture(system: str | None, user_text: str, data: bytes, mime: str) -
         "No vision backend available. Set TRUS_VISION_MODEL (local vision endpoint) "
         "or GEMINI_API_KEY (cloud) to capture screenshots."
     )
+
+
+# ------------------------------------------------ speech-to-text (voice → text) -----
+# Voice rambling → text (R-201/R-204 half). A SEPARATE pluggable endpoint — most
+# local/hosted LLM servers don't also serve speech-to-text, so this mirrors the
+# vision section above rather than reusing TRUS_LLM_*. Config:
+#   TRUS_STT_BASE_URL  e.g. http://localhost:8000/v1  (any OpenAI-compatible
+#                      /audio/transcriptions server — whisper.cpp server,
+#                      faster-whisper server, or a hosted Whisper-compatible endpoint)
+#   TRUS_STT_MODEL     e.g. whisper-1                  (required to enable)
+#   TRUS_STT_API_KEY   optional; local servers ignore it
+#   TRUS_STT_TIMEOUT   seconds (default 120 — audio can run long)
+# BOTH TRUS_STT_BASE_URL and TRUS_STT_MODEL must be set — unlike vision, there's
+# no plausible "the text-model server also happens to serve STT" default, so no
+# fallback to TRUS_LLM_BASE_URL. Unset → the route refuses honestly (422).
+
+
+def _stt_timeout() -> float:
+    try:
+        return float(os.environ.get("TRUS_STT_TIMEOUT", "120"))
+    except ValueError:
+        return 120.0
+
+
+def stt_available() -> bool:
+    return bool(os.environ.get("TRUS_STT_BASE_URL", "").strip()) and bool(
+        os.environ.get("TRUS_STT_MODEL", "").strip()
+    )
+
+
+def transcribe(data: bytes, mime: str, filename: str | None) -> str:
+    """Voice → text via an OpenAI-compatible POST {base}/audio/transcriptions.
+    The only MULTIPART (not JSON) call in this module — the body is built by
+    hand with urllib, mirroring `_openai_chat`'s zero-dep ethos (no `requests`).
+
+    Transcription is NOT a "generation" (no ModuleConfig, no semantic cache, no
+    cascade) — this never touches `last_call`; the route records its own
+    telemetry instead of the shared `_track` contextmanager in routes/modules.py,
+    which reads `last_call` for provider/model/tokens that don't apply here."""
+    base = os.environ.get("TRUS_STT_BASE_URL", "").strip().rstrip("/")
+    model = os.environ.get("TRUS_STT_MODEL", "").strip()
+    if not base or not model:
+        raise LLMError("Set TRUS_STT_BASE_URL and TRUS_STT_MODEL to use voice transcription.")
+    api_key = os.environ.get("TRUS_STT_API_KEY", "").strip()
+
+    boundary = uuid.uuid4().hex
+    name = (filename or "audio").replace('"', "")
+    body = b"".join(
+        [
+            f"--{boundary}\r\n".encode(),
+            b'Content-Disposition: form-data; name="model"\r\n\r\n',
+            model.encode("utf-8"),
+            b"\r\n",
+            f"--{boundary}\r\n".encode(),
+            f'Content-Disposition: form-data; name="file"; filename="{name}"\r\n'.encode(),
+            f"Content-Type: {mime}\r\n\r\n".encode(),
+            data,
+            b"\r\n",
+            f"--{boundary}--\r\n".encode(),
+        ]
+    )
+    req = urllib.request.Request(base + "/audio/transcriptions", data=body, method="POST")
+    req.add_header("Content-Type", f"multipart/form-data; boundary={boundary}")
+    if api_key:
+        req.add_header("Authorization", f"Bearer {api_key}")
+
+    try:
+        # base is operator-configured (TRUS_STT_BASE_URL), never end-user input.
+        # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected
+        with urllib.request.urlopen(req, timeout=_stt_timeout()) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode("utf-8", "ignore")[:400] if hasattr(e, "read") else ""
+        raise LLMError(f"STT endpoint returned HTTP {e.code}: {detail}") from e
+    except (urllib.error.URLError, OSError) as e:
+        raise LLMError(f"Could not reach the STT endpoint at {base}: {e}") from e
+    except json.JSONDecodeError as e:
+        raise LLMError(f"STT endpoint returned non-JSON: {e}") from e
+
+    text = payload.get("text")
+    if text is None:
+        raise LLMError(f"Unexpected STT response shape: {str(payload)[:300]}")
+    return str(text)

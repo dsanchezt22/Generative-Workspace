@@ -26,6 +26,8 @@ The image bakes in the prod posture; the rest is per-deployment.
 |---|---|---|
 | `TRUS_CORS_ORIGINS` | `https://trus.example.com` | Comma-separated list of allowed browser origins = your Vercel URL(s). No trailing slash. Whitespace/trailing commas are tolerated. |
 | `TRUS_PUBLIC_URL` | `https://trus.example.com` | The **frontend** origin, used to build invite claim links (`{TRUS_PUBLIC_URL}/claim?token=…`). Pair it with `TRUS_CORS_ORIGINS` — they normally hold the same value. |
+| `TRUS_STT_BASE_URL` | `https://your-stt-host/v1` | Voice transcription (`POST /api/transcribe`, R-201/R-204): any OpenAI-compatible `/audio/transcriptions` endpoint. Pair with `TRUS_STT_MODEL`. Unset ⇒ the route honestly 422s instead of failing silently; see `.env.example`. |
+| `TRUS_STT_MODEL` | `whisper-1` | Model name passed to the transcription endpoint above. |
 
 ### Secrets (set via `fly secrets set NAME=value` — never in fly.toml, never committed)
 
@@ -34,6 +36,7 @@ The image bakes in the prod posture; the rest is per-deployment.
 | `SESSION_SECRET` | Session-cookie signing key. Generate: `python -c "import secrets; print(secrets.token_urlsafe(48))"`. **The app refuses to boot in prod with the default value.** |
 | `TRUS_OPS_TOKEN` | Gates `GET /api/ops/summary?token=…` (generation volume + DAU). Unset ⇒ endpoint always 401s. |
 | `GEMINI_API_KEY` | LLM provider key (or configure an OpenAI-compatible endpoint via `TRUS_LLM_*`; see `.env.example`). |
+| `TRUS_STT_API_KEY` | Optional bearer token for the `TRUS_STT_BASE_URL` endpoint above (local STT servers usually don't need one). |
 
 ## 2. Persistent volume
 
