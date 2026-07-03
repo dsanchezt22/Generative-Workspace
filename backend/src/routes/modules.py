@@ -188,6 +188,7 @@ async def seed_onboarding(
 ) -> list[StoredModule]:
     """Pre-populate a brand-new session's canvas (no LLM cost). Never reseeds an
     existing workspace — if anything already exists, returns it unchanged."""
+    _require_trusted_origin(request)
     sid = _owner_id(request)
     if db.list_modules(sid):
         return db.list_modules(sid, page_id=page_id)
@@ -381,6 +382,7 @@ def workspace_insights(
     request: Request,
     page_id: str | None = Query(default=None),
 ) -> GenerateResponse:
+    _require_trusted_origin(request)
     sid = _owner_id(request)
     modules = db.list_modules(sid, page_id=page_id)
     if not modules:

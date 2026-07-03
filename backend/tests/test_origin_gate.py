@@ -31,6 +31,27 @@ def test_allowed_origin_and_no_origin_pass_the_gate(tmp_path, monkeypatch):
         assert r2.status_code != 403
 
 
+def test_bodyless_token_spending_posts_are_gated(tmp_path, monkeypatch):
+    """Decision-A completion: cross-site <form method=POST> (urlencoded, no
+    preflight) can hit token-spending BODYLESS POSTs with a SameSite=None cookie.
+    Gate them like the multipart handlers: foreign Origin → 403; allowed/no
+    Origin → not 403 (they may 2xx/4xx further down)."""
+    monkeypatch.setenv("TRUS_DB_PATH", str(tmp_path / "t.db"))
+    with TestClient(app) as client:
+        for path in (
+            "/api/workspace/insights",
+            "/api/studio/use-cases/calorie/generate",
+            "/api/onboarding/seed",
+        ):
+            assert (
+                client.post(path, headers={"Origin": "https://evil.example"}).status_code == 403
+            ), path
+            assert (
+                client.post(path, headers={"Origin": "http://localhost:3000"}).status_code != 403
+            ), path
+            assert client.post(path).status_code != 403, path  # no Origin (curl / same-origin)
+
+
 def test_studio_import_and_capture_are_gated(tmp_path, monkeypatch):
     monkeypatch.setenv("TRUS_DB_PATH", str(tmp_path / "t.db"))
     with TestClient(app) as client:

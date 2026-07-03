@@ -100,6 +100,7 @@ def generate(
 ) -> list[StudioLayout]:
     """Mine N candidate layouts for a use case (modelled after leading apps) and
     store them in the library."""
+    _require_trusted_origin(request)
     owner = _owner_id(request)
     if studio.get_use_case(key) is None:
         raise HTTPException(status_code=404, detail=f"Unknown use case: {key}")
