@@ -95,6 +95,23 @@ def test_transcribe_rejects_oversized_file(client, monkeypatch):
     assert resp.status_code == 413, resp.text
 
 
+def test_transcribe_non_audio_mime_refuses(client, monkeypatch):
+    """A non-audio upload is a cheap honest 422 (mirrors studio.py's image/* gate)
+    — never reaches llm.transcribe. Also shrinks the header-injection surface."""
+    _configure_stt(monkeypatch)
+    called = {"n": 0}
+    monkeypatch.setattr(
+        llm, "transcribe", lambda *a, **k: called.__setitem__("n", called["n"] + 1) or "x"
+    )
+    resp = client.post(
+        "/api/transcribe",
+        files={"file": ("notes.txt", b"not audio", "text/plain")},
+    )
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["detail"] == "Upload an audio recording."
+    assert called["n"] == 0
+
+
 def test_transcribe_foreign_origin_is_403(client, monkeypatch):
     _configure_stt(monkeypatch)
     resp = client.post(
@@ -203,6 +220,27 @@ def test_transcribe_provider_error_records_error_telemetry(client, monkeypatch):
     assert rows[0]["provider"] == "stt"
 
 
+def test_transcribe_empty_transcript_records_error_telemetry(client, monkeypatch):
+    """An empty/whitespace transcript is a non-ok outcome — pinned as "error"
+    (the contract's only two outcomes are ok/error)."""
+    _configure_stt(monkeypatch)
+    monkeypatch.setattr(llm, "transcribe", lambda data, mime, filename: "   ")
+
+    resp = client.post(
+        "/api/transcribe",
+        files={"file": ("silence.webm", b"fake-audio-bytes", "audio/webm")},
+    )
+    assert resp.status_code == 422, resp.text
+
+    with db._conn() as c:
+        rows = c.execute(
+            "SELECT outcome, provider FROM gen_events WHERE kind = 'transcribe'"
+        ).fetchall()
+    assert len(rows) == 1
+    assert rows[0]["outcome"] == "error"
+    assert rows[0]["provider"] == "stt"
+
+
 # ---------------------------------------------------------------------------
 # llm.transcribe — unit level (mirrors test_providers.py's urlopen mocking).
 # ---------------------------------------------------------------------------
@@ -264,6 +302,54 @@ def test_llm_transcribe_posts_multipart_with_model_and_file(monkeypatch):
     assert b'name="file"; filename="ramble.webm"' in captured["body"]
     assert b"Content-Type: audio/webm" in captured["body"]
     assert b"raw-audio-bytes" in captured["body"]
+
+
+def test_llm_transcribe_sanitizes_filename_header_injection(monkeypatch):
+    """A CR/LF in the client-supplied filename must NOT smuggle an extra form
+    field into the multipart body POSTed to the operator's STT server. The body
+    must contain EXACTLY ONE file part and no injected field."""
+    monkeypatch.setenv("TRUS_STT_BASE_URL", "http://h/v1")
+    monkeypatch.setenv("TRUS_STT_MODEL", "whisper-1")
+    captured = {}
+
+    def fake_urlopen(req, timeout=None):
+        captured["body"] = req.data
+        return _FakeResp({"text": "ok"})
+
+    monkeypatch.setattr(llm.urllib.request, "urlopen", fake_urlopen)
+    # Attempt to close the file part and open a "language" field.
+    evil = 'r.webm"\r\nContent-Disposition: form-data; name="language"\r\n\r\nen\r\n--x'
+    llm.transcribe(b"data", "audio/webm", evil)
+
+    body = captured["body"]
+    # A boundary-preceded header line always reads `\r\nContent-Disposition:`; only
+    # the two legitimate parts (model, file) produce it. The injected one lost its
+    # CRLF, so it can't materialize as a third part.
+    assert body.count(b"\r\nContent-Disposition:") == 2
+    assert b'name="language"' not in body  # quoted field name (how a real field appears)
+    assert b"\r\nen\r\n" not in body  # the smuggled value never lands as its own part
+
+
+def test_llm_transcribe_sanitizes_mime_header_injection(monkeypatch):
+    """Same guard for a CR/LF-bearing content_type spliced into the Content-Type
+    header line."""
+    monkeypatch.setenv("TRUS_STT_BASE_URL", "http://h/v1")
+    monkeypatch.setenv("TRUS_STT_MODEL", "whisper-1")
+    captured = {}
+
+    def fake_urlopen(req, timeout=None):
+        captured["body"] = req.data
+        return _FakeResp({"text": "ok"})
+
+    monkeypatch.setattr(llm.urllib.request, "urlopen", fake_urlopen)
+    evil_mime = 'audio/webm\r\nContent-Disposition: form-data; name="language"\r\n\r\nen'
+    llm.transcribe(b"data", evil_mime, "r.webm")
+
+    body = captured["body"]
+    assert b'name="language"' not in body  # quoted field name (how a real field appears)
+    # Only the two legitimate boundary-preceded header lines survive; the CRLF-
+    # stripped injection collapses inertly onto the Content-Type value line.
+    assert body.count(b"\r\nContent-Disposition:") == 2
 
 
 def test_llm_transcribe_sends_bearer_when_key_set(monkeypatch):

@@ -59,12 +59,17 @@ def transcribe_audio(request: Request, file: UploadFile = File(...)) -> Transcri
             status_code=422,
             detail="Voice transcription needs a configured model — set TRUS_STT_* or type instead.",
         )
+    mime = file.content_type or "application/octet-stream"
+    # Only accept audio uploads (mirrors studio.py's image/* gate): a cheap honest
+    # 422 for the wrong file, and it shrinks the header-injection surface — an
+    # audio/* content_type can't carry the CR/LF a smuggled form field needs.
+    if not mime.startswith("audio/"):
+        raise HTTPException(status_code=422, detail="Upload an audio recording.")
     # Cap the read before materializing the whole upload in memory: read one byte
     # past the limit so the size check below still fires for oversized files.
     data = file.file.read(_MAX_BYTES + 1)
     if len(data) > _MAX_BYTES:
         raise HTTPException(status_code=413, detail="That recording is too large (max 25MB).")
-    mime = file.content_type or "application/octet-stream"
 
     t0 = time.monotonic()
     try:

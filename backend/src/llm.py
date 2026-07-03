@@ -524,6 +524,16 @@ def _stt_timeout() -> float:
         return 120.0
 
 
+def _sanitize_header_value(v: str) -> str:
+    """Strip CR/LF (and quotes) from a value before it's spliced into a manually
+    built multipart header line. python-multipart passes a client's raw filename
+    and content_type through unmodified — a bare `\\n` in either would smuggle a
+    fully-formed extra form field into the body we POST to the operator's STT
+    server (header injection). No legitimate filename or MIME type contains these,
+    so removing them is loss-free."""
+    return v.replace("\r", "").replace("\n", "").replace('"', "")
+
+
 def stt_available() -> bool:
     return bool(os.environ.get("TRUS_STT_BASE_URL", "").strip()) and bool(
         os.environ.get("TRUS_STT_MODEL", "").strip()
@@ -546,7 +556,10 @@ def transcribe(data: bytes, mime: str, filename: str | None) -> str:
     api_key = os.environ.get("TRUS_STT_API_KEY", "").strip()
 
     boundary = uuid.uuid4().hex
-    name = (filename or "audio").replace('"', "")
+    # Both filename and mime are client-supplied and spliced raw into header lines
+    # below — sanitize CR/LF/quotes out of each to close multipart header injection.
+    name = _sanitize_header_value(filename or "audio") or "audio"
+    safe_mime = _sanitize_header_value(mime)
     body = b"".join(
         [
             f"--{boundary}\r\n".encode(),
@@ -555,7 +568,7 @@ def transcribe(data: bytes, mime: str, filename: str | None) -> str:
             b"\r\n",
             f"--{boundary}\r\n".encode(),
             f'Content-Disposition: form-data; name="file"; filename="{name}"\r\n'.encode(),
-            f"Content-Type: {mime}\r\n\r\n".encode(),
+            f"Content-Type: {safe_mime}\r\n\r\n".encode(),
             data,
             b"\r\n",
             f"--{boundary}--\r\n".encode(),
