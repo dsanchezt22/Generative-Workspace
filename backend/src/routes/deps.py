@@ -31,6 +31,31 @@ def _llm_error_detail(e: LLMError) -> str:
     return "AI generation is temporarily unavailable. Please try again in a moment."
 
 
+def _require_trusted_origin(request: Request) -> None:
+    """CSRF gate for state-changing multipart endpoints (Stage-1 review decision A).
+
+    Multipart POSTs are CORS-'simple': with SameSite=None cookies a malicious
+    page can send credentialed FormData cross-site without a preflight. If the
+    browser declares a cross-site Origin that isn't ours, refuse. Requests
+    without an Origin header (curl, same-origin) pass — the browser vector is
+    the one being closed.
+
+    Re-parses TRUS_CORS_ORIGINS with the same rules as main._parse_cors_origins
+    (kept identical, not imported: importing from src.main here would be
+    circular — main imports routes.modules/routes.studio, which import this
+    module, before main.py defines _parse_cors_origins)."""
+    origin = request.headers.get("origin")
+    if not origin:
+        return
+    allowed = [
+        o.strip()
+        for o in os.environ.get("TRUS_CORS_ORIGINS", "http://localhost:3000").split(",")
+        if o.strip()
+    ]
+    if origin not in allowed:
+        raise HTTPException(status_code=403, detail="Cross-site upload refused")
+
+
 def _owner_id(request: Request) -> str:
     """The data-owner key: the claimed user id, else (dev only) the anonymous sid.
 

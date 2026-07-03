@@ -5,7 +5,7 @@ from typing import Literal
 from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile
 
 from src import db, llm
-from src.routes.deps import _llm_error_detail, _owner_id
+from src.routes.deps import _llm_error_detail, _owner_id, _require_trusted_origin
 from src.schema import (
     ClarifyingQuestion,
     CreateSnapshotRequest,
@@ -150,6 +150,7 @@ def generate_from_file(
     prompt: str = Form(""),
     page_id: str | None = Query(default=None),
 ) -> GenerateResponse:
+    _require_trusted_origin(request)
     sid = _owner_id(request)
     # Cap the read before materializing the whole upload in memory: read one byte
     # past the limit so the size check below still fires for oversized files.

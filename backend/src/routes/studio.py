@@ -11,7 +11,7 @@ from fastapi import APIRouter, File, Form, HTTPException, Query, Request, Upload
 from pydantic import BaseModel
 
 from src import db, llm, semantic_cache
-from src.routes.deps import _llm_error_detail, _owner_id
+from src.routes.deps import _llm_error_detail, _owner_id, _require_trusted_origin
 from src.schema import LLMError, ModuleConfig, RefusalError
 from src.services import studio
 
@@ -163,6 +163,7 @@ def import_layout(
 ) -> StudioLayout:
     """Read a reference screenshot (upload or image URL) with a vision model and add
     the DERIVED layout to the library. Only the layout is stored — never the image."""
+    _require_trusted_origin(request)
     owner = _owner_id(request)
     if studio.get_use_case(key) is None:
         raise HTTPException(status_code=404, detail=f"Unknown use case: {key}")
@@ -197,6 +198,7 @@ def capture_layout(
     TRANSFORM it onto the trusted component library (re-skinned, no feature dropped),
     score capability coverage, store the enriched layout, and auto-seed high-confidence
     captures into the generation pool. Only the layout is stored — never the image."""
+    _require_trusted_origin(request)
     owner = _owner_id(request)
     if studio.get_use_case(key) is None:
         raise HTTPException(status_code=404, detail=f"Unknown use case: {key}")
