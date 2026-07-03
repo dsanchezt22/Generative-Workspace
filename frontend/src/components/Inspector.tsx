@@ -13,7 +13,6 @@ interface Props {
   onCommit: (id: string, config: ModuleConfig, delay?: number) => void;
   onClose: () => void;
   onRefine: (id: string) => void;
-  onDelete: (id: string) => void;
   onDuplicate: (id: string) => void;
   onArchive: (id: string) => void;
 }
@@ -34,7 +33,7 @@ function convertType(c: Component, type: ComponentType): Component {
   return { ...makeComponent(type, c.label), id: c.id };
 }
 
-export function Inspector({ module, onCommit, onClose, onRefine, onDelete, onDuplicate, onArchive }: Props) {
+export function Inspector({ module, onCommit, onClose, onRefine, onDuplicate, onArchive }: Props) {
   const [draft, setDraft] = useState<Draft>(() => fromModule(module));
   const [dragId, setDragId] = useState<string | null>(null);
   // Field ids whose type changed — their stored value is from the old type and
@@ -271,10 +270,8 @@ export function Inspector({ module, onCommit, onClose, onRefine, onDelete, onDup
         <div className="flex items-center gap-2">
           <button type="button" onClick={() => onDuplicate(module.id)}
             className="flex-1 rounded-md border border-[var(--border)] px-3 py-1.5 text-xs text-[var(--muted)] hover:text-[var(--foreground)] transition">Duplicate</button>
-          <button type="button" onClick={() => onArchive(module.id)}
+          <button type="button" onClick={() => onArchive(module.id)} aria-label="Archive"
             className="flex-1 rounded-md border border-[var(--border)] px-3 py-1.5 text-xs text-[var(--muted)] hover:text-[var(--foreground)] transition">Archive</button>
-          <button type="button" onClick={() => onDelete(module.id)}
-            className="flex-1 rounded-md border border-[var(--border)] px-3 py-1.5 text-xs text-[var(--muted)] hover:text-[var(--danger)] hover:border-[var(--danger)] transition">Delete</button>
         </div>
       </div>
     </aside>

@@ -328,14 +328,6 @@ export default function Home() {
     setModules((prev) => prev.map((m) => (m.id === updated.id ? updated : m)));
   }, []);
 
-  const handleDeleteModule = useCallback((id: string) => {
-    saver.forget(id); // drop any pending save so it can't resurrect a deleted module
-    setModules((prev) => prev.filter((m) => m.id !== id));
-    setSelectedId((cur) => (cur === id ? null : cur));
-    setInspectorId((cur) => (cur === id ? null : cur));
-    void api.deleteModule(id).catch((err) => console.error("Failed to delete module", err));
-  }, [saver]);
-
   const handleUndoModule = useCallback(async (id: string) => {
     try {
       const reverted = await api.undoModule(id);
@@ -828,7 +820,6 @@ export default function Home() {
           onCommit={commitModule}
           onClose={() => setInspectorId(null)}
           onRefine={(id) => { handleSelectForRefine(id); setInspectorId(null); }}
-          onDelete={(id) => { handleDeleteModule(id); }}
           onDuplicate={handleDuplicateModule}
           onArchive={handleArchiveModule}
         />
