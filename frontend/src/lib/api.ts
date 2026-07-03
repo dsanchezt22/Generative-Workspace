@@ -53,6 +53,18 @@ export class ApiError extends Error {
     }
     return null;
   }
+  // R-902: claiming an invite while the session already belongs to a
+  // different, live user arrives as 409 { rebind: "<current user name>" }.
+  get rebind(): string | null {
+    if (
+      this.detail &&
+      typeof this.detail === "object" &&
+      "rebind" in (this.detail as Record<string, unknown>)
+    ) {
+      return String((this.detail as { rebind: unknown }).rebind);
+    }
+    return null;
+  }
 }
 
 export interface GenerateResponse {
@@ -64,6 +76,18 @@ export interface GenerateResponse {
 }
 
 export const api = {
+  // Invite claim (R-901-905). GET is a read-only preview (no session write);
+  // POST performs the claim. See `backend/src/routes/auth.py` for the
+  // security rationale (a GET must never mutate who a browser is signed in as).
+  authClaimPreview: (token: string) =>
+    request<{ valid: boolean; name: string }>(`/api/auth/claim?token=${encodeURIComponent(token)}`),
+  authClaim: (token: string, confirm = false) =>
+    request<{ ok: boolean; name: string }>("/api/auth/claim", {
+      method: "POST",
+      body: JSON.stringify({ token, confirm }),
+    }),
+  authMe: () => request<{ claimed: boolean; name: string | null }>("/api/auth/me"),
+
   listPages: () => request<Page[]>("/api/pages"),
   createPage: (name: string, icon?: string, parentId?: string | null) =>
     request<Page>("/api/pages", {

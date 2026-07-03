@@ -15,6 +15,7 @@ import { EmptyState } from "@/components/EmptyState";
 import { CommandPalette, type Action } from "@/components/CommandPalette";
 import { ShortcutsModal } from "@/components/ShortcutsModal";
 import { IntroSplash } from "@/components/IntroSplash";
+import { InviteGate } from "@/components/InviteGate";
 import { Icon } from "@/components/Icon";
 import { api, ApiError } from "@/lib/api";
 import { useAppearance } from "@/lib/appearance";
@@ -101,6 +102,10 @@ export default function Home() {
   const [fitReq, setFitReq] = useState(0);
   const [promptFocus, setPromptFocus] = useState(0);
   const [introOpen, setIntroOpen] = useState(false);
+  // R-901: unclaimed sessions (prod, anon off) see the gate instead of the
+  // canvas. `identityName` powers the header identity chip once claimed.
+  const [gated, setGated] = useState(false);
+  const [identityName, setIdentityName] = useState<string | null>(null);
   const pendingFocusRef = useRef<string | null>(null);
   const { theme, setTheme } = useAppearance();
 
@@ -132,35 +137,56 @@ export default function Home() {
     api.listConversation(pageId).then(setMessages).catch(() => {});
   }, []);
 
-  // Load pages on mount, then load modules + conversation for the first page.
+  // Check invite-claim status first (R-901): an unclaimed session (prod, anon
+  // off) gets the gate instead of the canvas, before any workspace data loads.
+  // Then load pages, then modules + conversation for the first page. The
+  // outer catch is belt-and-braces: a 401 from the data loads themselves
+  // (e.g. the session was revoked mid-flight) also swaps to the gate.
   useEffect(() => {
     let firstId: string | null = null;
     api
-      .listPages()
-      .then((list) => {
-        setPages(list);
-        firstId = list[0]?.id ?? null;
-        if (firstId) setActivePageId(firstId);
-        return firstId ? api.listModules(firstId) : Promise.resolve([] as StoredModule[]);
-      })
-      .then(async (mods) => {
-        // Pre-populate a brand-new workspace once (never reseed after clearing).
-        if (mods.length === 0 && firstId && !localStorage.getItem("trus-seeded")) {
-          try {
-            const seeded = await api.seedStarter(firstId);
-            localStorage.setItem("trus-seeded", "1");
-            setModules(seeded);
-            setShowWelcome(true);
-          } catch {
-            setModules(mods);
-          }
-        } else {
-          setModules(mods);
+      .authMe()
+      .then((me) => {
+        setIdentityName(me.name);
+        if (!me.claimed) {
+          setGated(true);
+          setLoading(false);
+          return null;
         }
-        if (firstId) reloadConvo(firstId);
+        return api
+          .listPages()
+          .then((list) => {
+            setPages(list);
+            firstId = list[0]?.id ?? null;
+            if (firstId) setActivePageId(firstId);
+            return firstId ? api.listModules(firstId) : Promise.resolve([] as StoredModule[]);
+          })
+          .then(async (mods) => {
+            // Pre-populate a brand-new workspace once (never reseed after clearing).
+            if (mods.length === 0 && firstId && !localStorage.getItem("trus-seeded")) {
+              try {
+                const seeded = await api.seedStarter(firstId);
+                localStorage.setItem("trus-seeded", "1");
+                setModules(seeded);
+                setShowWelcome(true);
+              } catch {
+                setModules(mods);
+              }
+            } else {
+              setModules(mods);
+            }
+            if (firstId) reloadConvo(firstId);
+          })
+          .finally(() => setLoading(false));
       })
-      .catch((err) => console.error("Failed to load workspace", err))
-      .finally(() => setLoading(false));
+      .catch((err) => {
+        if (err instanceof ApiError && err.status === 401) {
+          setGated(true);
+        } else {
+          console.error("Failed to load workspace", err);
+        }
+        setLoading(false);
+      });
   }, [reloadConvo]);
 
   // Reload modules + conversation whenever active page changes (not on first mount).
@@ -488,6 +514,10 @@ export default function Home() {
     }
   }
 
+  if (gated) {
+    return <InviteGate />;
+  }
+
   return (
     <div className="flex h-screen w-full">
       <Sidebar
@@ -570,6 +600,15 @@ export default function Home() {
           <Icon name="grid" size={14} />
           <span className="hidden sm:inline">Studio</span>
         </Link>
+
+        {identityName && (
+          <span
+            className="hidden sm:inline-flex shrink-0 items-center rounded-md border border-[var(--border)] px-2.5 py-1 text-xs text-[var(--muted)]"
+            title={`Signed in as ${identityName}`}
+          >
+            {identityName}
+          </span>
+        )}
 
         <AppearanceMenu />
       </header>
