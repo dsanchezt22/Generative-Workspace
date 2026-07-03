@@ -1,11 +1,14 @@
 """Layout Studio API — build/browse a use-case-indexed library of candidate
 ModuleConfig layouts, and promote chosen ones into the generation seed pool."""
 
+import ipaddress
 import json
 import logging
 import os
+import socket
 import urllib.error
 import urllib.request
+from urllib.parse import urlparse
 
 from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile
 from pydantic import BaseModel
@@ -121,6 +124,39 @@ def generate(
     return stored
 
 
+def _check_url_allowed(url: str) -> None:
+    """SSRF guard (Stage-1 review decision B): refuse non-http(s) schemes,
+    private/loopback/link-local/metadata targets, and all URL imports in prod
+    unless TRUS_ALLOW_URL_IMPORT=1. Raises HTTPException(422)."""
+    if (
+        os.environ.get("TRUS_ENV", "dev") == "prod"
+        and os.environ.get("TRUS_ALLOW_URL_IMPORT", "0") != "1"
+    ):
+        raise HTTPException(
+            status_code=422, detail="URL import is disabled; upload the image file instead"
+        )
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        raise HTTPException(status_code=422, detail="Only http(s) image URLs are supported")
+    try:
+        infos = socket.getaddrinfo(parsed.hostname, None)
+    except socket.gaierror as e:
+        raise HTTPException(status_code=422, detail="Image URL host could not be resolved") from e
+    for info in infos:
+        ip = ipaddress.ip_address(info[4][0])
+        if (
+            ip.is_private
+            or ip.is_loopback
+            or ip.is_link_local
+            or ip.is_reserved
+            or ip.is_multicast
+            or ip.is_unspecified
+        ):
+            raise HTTPException(
+                status_code=422, detail="Image URL points at a private address; refused"
+            )
+
+
 def _load_image(file: UploadFile | None, image_url: str) -> tuple[bytes, str]:
     """Image bytes + mime from an upload or a single http(s) fetch of a URL."""
     if file is not None:
@@ -138,9 +174,17 @@ def _load_image(file: UploadFile | None, image_url: str) -> tuple[bytes, str]:
         raise HTTPException(status_code=422, detail="Provide an image file or an image_url.")
     if not (url.startswith("http://") or url.startswith("https://")):
         raise HTTPException(status_code=422, detail="image_url must be an http(s) link.")
+    _check_url_allowed(url)
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "Trus/0.1 (layout studio)"})
-        with urllib.request.urlopen(req, timeout=20) as resp:
+        # Scheme + host validated by _check_url_allowed above (SSRF guard, Stage-1
+        # review decision B); the redirect re-check below closes the TOCTOU gap.
+        with urllib.request.urlopen(req, timeout=20) as resp:  # nosemgrep
+            # TOCTOU: _check_url_allowed above only resolved the ORIGINAL host — a
+            # redirect can still bounce to a private/metadata address (the classic
+            # 169.254.169.254 bypass). urlopen follows redirects itself, so re-check
+            # the FINAL url it actually landed on before trusting the response.
+            _check_url_allowed(resp.url)
             ct = (resp.headers.get("Content-Type") or "").split(";")[0].strip()
             if not ct.startswith("image/"):
                 raise HTTPException(status_code=422, detail="That URL didn't return an image.")

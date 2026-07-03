@@ -489,6 +489,7 @@ def test_import_via_image_url_fetches_and_stores(client, monkeypatch):
 
     class _FakeUrlResp:
         headers = _FakeHeaders()
+        url = "https://example.com/screenshot.png"
 
         def read(self, n=-1):
             return _PNG
@@ -529,6 +530,7 @@ def test_import_via_image_url_non_image_content_type_422(client, monkeypatch):
 
     class _FakeUrlResp:
         headers = _FakeHeaders()
+        url = "https://example.com/page.html"
 
         def read(self, n=-1):
             return b"<html></html>"
