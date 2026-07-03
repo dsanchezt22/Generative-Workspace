@@ -7,10 +7,11 @@ import os
 import urllib.error
 import urllib.request
 
-from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile
 from pydantic import BaseModel
 
 from src import db, llm, semantic_cache
+from src.routes.deps import _owner_id
 from src.schema import LLMError, ModuleConfig, RefusalError
 from src.services import studio
 
@@ -69,8 +70,8 @@ def _row_to_layout(r) -> StudioLayout:
 
 
 @router.get("/use-cases", response_model=list[StudioUseCase])
-def list_use_cases() -> list[StudioUseCase]:
-    counts = db.layout_counts()
+def list_use_cases(request: Request) -> list[StudioUseCase]:
+    counts = db.layout_counts(_owner_id(request))
     return [
         StudioUseCase(
             key=u["key"],
@@ -85,9 +86,12 @@ def list_use_cases() -> list[StudioUseCase]:
 
 
 @router.post("/use-cases/{key}/generate", response_model=list[StudioLayout])
-def generate(key: str, n: int = Query(default=4, ge=1, le=8)) -> list[StudioLayout]:
+def generate(
+    key: str, request: Request, n: int = Query(default=4, ge=1, le=8)
+) -> list[StudioLayout]:
     """Mine N candidate layouts for a use case (modelled after leading apps) and
     store them in the library."""
+    owner = _owner_id(request)
     if studio.get_use_case(key) is None:
         raise HTTPException(status_code=404, detail=f"Unknown use case: {key}")
     layouts = studio.generate_layouts(key, n)
@@ -102,6 +106,7 @@ def generate(key: str, n: int = Query(default=4, ge=1, le=8)) -> list[StudioLayo
             ly.get("inspired_by"),
             json.dumps(ly["config"]),
             capture_meta_json=json.dumps(capture_meta),
+            owner=owner,
         )
         stored.append(
             StudioLayout(
@@ -152,11 +157,13 @@ def _load_image(file: UploadFile | None, image_url: str) -> tuple[bytes, str]:
 @router.post("/use-cases/{key}/import", response_model=StudioLayout)
 def import_layout(
     key: str,
+    request: Request,
     file: UploadFile | None = File(default=None),
     image_url: str = Form(default=""),
 ) -> StudioLayout:
     """Read a reference screenshot (upload or image URL) with a vision model and add
     the DERIVED layout to the library. Only the layout is stored — never the image."""
+    owner = _owner_id(request)
     if studio.get_use_case(key) is None:
         raise HTTPException(status_code=404, detail=f"Unknown use case: {key}")
     data, mime = _load_image(file, image_url)
@@ -166,7 +173,9 @@ def import_layout(
         raise HTTPException(status_code=422, detail={"refusal": e.reason}) from e
     except LLMError as e:
         raise HTTPException(status_code=503, detail=str(e)) from e
-    lid = db.layout_add(key, ly["label"], ly.get("inspired_by"), json.dumps(ly["config"]))
+    lid = db.layout_add(
+        key, ly["label"], ly.get("inspired_by"), json.dumps(ly["config"]), owner=owner
+    )
     return StudioLayout(
         id=lid,
         use_case=key,
@@ -179,6 +188,7 @@ def import_layout(
 @router.post("/use-cases/{key}/capture", response_model=StudioLayout)
 def capture_layout(
     key: str,
+    request: Request,
     file: UploadFile | None = File(default=None),
     image_url: str = Form(default=""),
     match_colors: bool = Form(default=False),
@@ -187,6 +197,7 @@ def capture_layout(
     TRANSFORM it onto the trusted component library (re-skinned, no feature dropped),
     score capability coverage, store the enriched layout, and auto-seed high-confidence
     captures into the generation pool. Only the layout is stored — never the image."""
+    owner = _owner_id(request)
     if studio.get_use_case(key) is None:
         raise HTTPException(status_code=404, detail=f"Unknown use case: {key}")
     data, mime = _load_image(file, image_url)
@@ -214,6 +225,7 @@ def capture_layout(
         capture_meta_json=json.dumps(ly.get("capture_meta")),
         ir_digest_json=json.dumps(ly.get("ir_digest")),
         confidence=ly.get("confidence"),
+        owner=owner,
     )
 
     # Auto-seed: high-confidence captures join the generation seed pool so future
@@ -226,7 +238,7 @@ def capture_layout(
             uc = studio.get_use_case(key)
             seed_prompt = (uc.get("seed_prompts") or [ly["label"]])[0] if uc else ly["label"]
             semantic_cache.store_structured(
-                "system", ly.get("structured_text", ""), seed_prompt, [ly["config"]]
+                "system", ly.get("structured_text", ""), seed_prompt, [ly["config"]], owner=owner
             )
 
     return StudioLayout(
@@ -241,21 +253,24 @@ def capture_layout(
 
 
 @router.get("/layouts", response_model=list[StudioLayout])
-def list_layouts(use_case: str | None = Query(default=None)) -> list[StudioLayout]:
-    return [_row_to_layout(r) for r in db.layout_list(use_case)]
+def list_layouts(
+    request: Request, use_case: str | None = Query(default=None)
+) -> list[StudioLayout]:
+    return [_row_to_layout(r) for r in db.layout_list(use_case, owner=_owner_id(request))]
 
 
 @router.delete("/layouts/{layout_id}", status_code=204)
-def delete_layout(layout_id: str) -> None:
-    if not db.layout_delete(layout_id):
+def delete_layout(layout_id: str, request: Request) -> None:
+    if not db.layout_delete(layout_id, owner=_owner_id(request)):
         raise HTTPException(status_code=404, detail="Layout not found")
 
 
 @router.post("/layouts/{layout_id}/promote", response_model=PromoteResponse)
-def promote_layout(layout_id: str) -> PromoteResponse:
+def promote_layout(layout_id: str, request: Request) -> PromoteResponse:
     """Add a layout to the main app's generation seed pool, so future generations
     for this use case draw on it (the 'upload template ideas' connection)."""
-    row = db.layout_get(layout_id)
+    owner = _owner_id(request)
+    row = db.layout_get(layout_id, owner=owner)
     if row is None:
         raise HTTPException(status_code=404, detail="Layout not found")
     # Fail closed: unparseable or non-dict capture_meta is UNKNOWN provenance, which
@@ -281,5 +296,5 @@ def promote_layout(layout_id: str) -> PromoteResponse:
     uc = studio.get_use_case(row["use_case"])
     seed_prompt = (uc.get("seed_prompts") or [row["label"]])[0] if uc else row["label"]
     config = json.loads(row["config_json"])
-    semantic_cache.store("system", seed_prompt, [config])
+    semantic_cache.store("system", seed_prompt, [config], owner=owner)
     return PromoteResponse(ok=True, seed_prompt=seed_prompt, library=db.cache_stats())

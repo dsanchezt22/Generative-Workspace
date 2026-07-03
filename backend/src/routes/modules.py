@@ -6,6 +6,7 @@ from typing import Literal
 from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile
 
 from src import db, llm
+from src.routes.deps import _owner_id
 from src.schema import (
     ClarifyingQuestion,
     CreateSnapshotRequest,
@@ -47,13 +48,6 @@ def _llm_error_detail(e: LLMError) -> str:
     ):
         return "The AI model returned an unusable response. Please try again."
     return "AI generation is temporarily unavailable. Please try again in a moment."
-
-
-def _session_id(request: Request) -> str:
-    sid = request.session.get("sid")
-    sid = db.ensure_session(sid)
-    request.session["sid"] = sid
-    return sid
 
 
 def _log(
@@ -112,11 +106,11 @@ def generate_module(
     prompt = body.prompt.strip()
     if not prompt:
         raise HTTPException(status_code=422, detail="Prompt cannot be empty")
-    sid = _session_id(request)
+    sid = _owner_id(request)
     existing = [m.config for m in db.list_modules(sid)]
     try:
         with _track(sid, "generate"):
-            configs = orchestrator.generate_modules(prompt, existing_modules=existing)
+            configs = orchestrator.generate_modules(prompt, existing_modules=existing, owner=sid)
     except ClarifyingQuestion as e:
         return GenerateResponse(question=e.question)
     except RefusalError as e:
@@ -141,11 +135,11 @@ def preview_modules(
     prompt = body.prompt.strip()
     if not prompt:
         raise HTTPException(status_code=422, detail="Prompt cannot be empty")
-    sid = _session_id(request)
+    sid = _owner_id(request)
     existing = [m.config for m in db.list_modules(sid)]
     try:
         with _track(sid, "preview"):
-            configs = orchestrator.generate_modules(prompt, existing_modules=existing)
+            configs = orchestrator.generate_modules(prompt, existing_modules=existing, owner=sid)
     except ClarifyingQuestion as e:
         return GenerateResponse(question=e.question)
     except RefusalError as e:
@@ -163,7 +157,7 @@ async def insert_modules(
     page_id: str | None = Query(default=None),
 ) -> list[StoredModule]:
     """Persist accepted preview tools onto the canvas."""
-    sid = _session_id(request)
+    sid = _owner_id(request)
     stored = [db.insert_module(sid, c, page_id=page_id) for c in body.configs]
     if stored and body.prompt:
         _log(sid, "user", body.prompt, page_id=stored[0].page_id)
@@ -179,7 +173,7 @@ def generate_from_file(
     prompt: str = Form(""),
     page_id: str | None = Query(default=None),
 ) -> GenerateResponse:
-    sid = _session_id(request)
+    sid = _owner_id(request)
     # Cap the read before materializing the whole upload in memory: read one byte
     # past the limit so the size check below still fires for oversized files.
     data = file.file.read(15 * 1024 * 1024 + 1)
@@ -215,7 +209,7 @@ async def seed_onboarding(
 ) -> list[StoredModule]:
     """Pre-populate a brand-new session's canvas (no LLM cost). Never reseeds an
     existing workspace — if anything already exists, returns it unchanged."""
-    sid = _session_id(request)
+    sid = _owner_id(request)
     if db.list_modules(sid):
         return db.list_modules(sid, page_id=page_id)
     note = {
@@ -256,13 +250,13 @@ async def list_modules(
     request: Request,
     page_id: str | None = Query(default=None),
 ) -> list[StoredModule]:
-    sid = _session_id(request)
+    sid = _owner_id(request)
     return db.list_modules(sid, page_id=page_id)
 
 
 @router.patch("/modules/{module_id}", response_model=StoredModule)
 async def patch_module(module_id: str, body: PatchRequest, request: Request) -> StoredModule:
-    sid = _session_id(request)
+    sid = _owner_id(request)
     updated = db.update_module(sid, module_id, body.config)
     if updated is None:
         raise HTTPException(status_code=404, detail="Module not found")
@@ -271,20 +265,20 @@ async def patch_module(module_id: str, body: PatchRequest, request: Request) -> 
 
 @router.delete("/modules/{module_id}", status_code=204)
 async def delete_module(module_id: str, request: Request) -> None:
-    sid = _session_id(request)
+    sid = _owner_id(request)
     if not db.delete_module(sid, module_id):
         raise HTTPException(status_code=404, detail="Module not found")
 
 
 @router.get("/modules/archived", response_model=list[StoredModule])
 async def list_archived(request: Request) -> list[StoredModule]:
-    sid = _session_id(request)
+    sid = _owner_id(request)
     return db.list_archived(sid)
 
 
 @router.post("/modules/{module_id}/archive", response_model=StoredModule)
 async def archive_module(module_id: str, request: Request) -> StoredModule:
-    sid = _session_id(request)
+    sid = _owner_id(request)
     m = db.set_archived(sid, module_id, True)
     if m is None:
         raise HTTPException(status_code=404, detail="Module not found")
@@ -293,7 +287,7 @@ async def archive_module(module_id: str, request: Request) -> StoredModule:
 
 @router.post("/modules/{module_id}/restore", response_model=StoredModule)
 async def restore_module(module_id: str, request: Request) -> StoredModule:
-    sid = _session_id(request)
+    sid = _owner_id(request)
     m = db.set_archived(sid, module_id, False)
     if m is None:
         raise HTTPException(status_code=404, detail="Module not found")
@@ -302,7 +296,7 @@ async def restore_module(module_id: str, request: Request) -> StoredModule:
 
 @router.post("/modules/{module_id}/duplicate", response_model=StoredModule)
 async def duplicate_module(module_id: str, request: Request) -> StoredModule:
-    sid = _session_id(request)
+    sid = _owner_id(request)
     m = db.duplicate_module(sid, module_id)
     if m is None:
         raise HTTPException(status_code=404, detail="Module not found")
@@ -314,7 +308,7 @@ def refine_module(module_id: str, body: RefineRequest, request: Request) -> Stor
     prompt = body.prompt.strip()
     if not prompt:
         raise HTTPException(status_code=422, detail="Prompt cannot be empty")
-    sid = _session_id(request)
+    sid = _owner_id(request)
     existing = db.get_module(sid, module_id)
     if existing is None:
         raise HTTPException(status_code=404, detail="Module not found")
@@ -346,7 +340,7 @@ def refine_module(module_id: str, body: RefineRequest, request: Request) -> Stor
 
 @router.post("/modules/{module_id}/undo", response_model=StoredModule)
 async def undo_module(module_id: str, request: Request) -> StoredModule:
-    sid = _session_id(request)
+    sid = _owner_id(request)
     reverted = db.undo_module(sid, module_id)
     if reverted is None:
         raise HTTPException(status_code=409, detail="Nothing to undo")
@@ -355,33 +349,33 @@ async def undo_module(module_id: str, request: Request) -> StoredModule:
 
 @router.get("/modules/{module_id}/history", response_model=list[ModuleVersion])
 async def module_history(module_id: str, request: Request) -> list[ModuleVersion]:
-    sid = _session_id(request)
+    sid = _owner_id(request)
     return db.list_versions(sid, module_id)
 
 
 @router.post("/pages/{page_id}/snapshots", response_model=Snapshot, status_code=201)
 async def create_snapshot(page_id: str, body: CreateSnapshotRequest, request: Request) -> Snapshot:
-    sid = _session_id(request)
+    sid = _owner_id(request)
     label = (body.label or "").strip() or "Snapshot"
     return db.create_snapshot(sid, page_id, label)
 
 
 @router.get("/pages/{page_id}/snapshots", response_model=list[Snapshot])
 async def list_snapshots(page_id: str, request: Request) -> list[Snapshot]:
-    sid = _session_id(request)
+    sid = _owner_id(request)
     return db.list_snapshots(sid, page_id)
 
 
 @router.post("/snapshots/{snapshot_id}/restore", status_code=204)
 async def restore_snapshot(snapshot_id: str, request: Request) -> None:
-    sid = _session_id(request)
+    sid = _owner_id(request)
     if not db.restore_snapshot(sid, snapshot_id):
         raise HTTPException(status_code=404, detail="Snapshot not found")
 
 
 @router.delete("/snapshots/{snapshot_id}", status_code=204)
 async def delete_snapshot(snapshot_id: str, request: Request) -> None:
-    sid = _session_id(request)
+    sid = _owner_id(request)
     if not db.delete_snapshot(sid, snapshot_id):
         raise HTTPException(status_code=404, detail="Snapshot not found")
 
@@ -391,7 +385,7 @@ def workspace_insights(
     request: Request,
     page_id: str | None = Query(default=None),
 ) -> GenerateResponse:
-    sid = _session_id(request)
+    sid = _owner_id(request)
     modules = db.list_modules(sid, page_id=page_id)
     if not modules:
         raise HTTPException(status_code=422, detail="No modules on canvas to synthesize.")

@@ -75,6 +75,9 @@ def _isolate_llm_env(monkeypatch):
         # Ops-summary gate token — a developer's local .env must not leak a real
         # token into tests that assert 401-without-token behavior.
         "TRUS_OPS_TOKEN",
+        # Identity gate — default (unset → "1", dev/anon) so the existing suite
+        # keeps its anonymous flows; identity tests opt into "0" explicitly.
+        "TRUS_ALLOW_ANON",
     ):
         monkeypatch.delenv(k, raising=False)
 

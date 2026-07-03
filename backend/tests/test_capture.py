@@ -136,8 +136,11 @@ def client(monkeypatch):
 
 
 def test_capture_route_end_to_end_and_autoseed(client, monkeypatch):
-    from src import semantic_cache
+    from src import db, semantic_cache
 
+    # Claim a user so the capture route seeds the pool under a known owner (R-903).
+    user = db.create_user("Capturer")
+    client.get(f"/api/auth/claim?token={user['invite_token']}")
     monkeypatch.setattr(llm, "vision_capture", lambda *a, **k: json.dumps(_IR))
     monkeypatch.setattr(llm, "generate", fake_generate(json.dumps(_FULL_CONFIG)))
 
@@ -158,8 +161,8 @@ def test_capture_route_end_to_end_and_autoseed(client, monkeypatch):
     # it landed in the library …
     listed = client.get("/api/studio/layouts?use_case=calorie").json()
     assert any(x["id"] == ly["id"] for x in listed)
-    # … and a high-confidence capture auto-seeded the generation pool
-    mode, cached = semantic_cache.lookup("system", "calorie tracker")
+    # … and a high-confidence capture auto-seeded the generation pool (for this owner)
+    mode, cached = semantic_cache.lookup("system", "calorie tracker", owner=user["id"])
     assert mode == "hit" and cached and cached[0]["title"]
 
 

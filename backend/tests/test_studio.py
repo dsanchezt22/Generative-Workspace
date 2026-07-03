@@ -71,8 +71,11 @@ def _clean_layouts_raw() -> str:
 def test_promote_seeds_the_generation_pool(client, monkeypatch):
     """Promoting a CLEAN (non-degraded) studio layout makes it retrievable as a
     generation seed — this is the connection to the main app's real-time generation."""
-    from src import llm, semantic_cache
+    from src import db, llm, semantic_cache
 
+    # Claim a user so the promote seeds (and is retrievable) under a known owner (R-903).
+    user = db.create_user("Promoter")
+    client.get(f"/api/auth/claim?token={user['invite_token']}")
     monkeypatch.setattr(llm, "is_stub_mode", lambda: False)
     monkeypatch.setattr(llm, "generate", fake_generate(_clean_layouts_raw()))
 
@@ -85,7 +88,7 @@ def test_promote_seeds_the_generation_pool(client, monkeypatch):
     assert pr["library"]["entries"] >= 1
 
     # A main-app generation for this use case now finds the promoted layout.
-    mode, cached = semantic_cache.lookup("system", "calorie tracker")
+    mode, cached = semantic_cache.lookup("system", "calorie tracker", owner=user["id"])
     assert mode == "hit"
     assert cached and cached[0]["title"]
 

@@ -231,8 +231,16 @@ def test_promote_fails_closed_on_unparseable_capture_meta(client):
     provenance — treat it as degraded and refuse (409), never promote."""
     from src import db
 
+    # Own the corrupt layouts as a claimed user so the owner-scoped promote finds them.
+    user = db.create_user("Curator")
+    client.get(f"/api/auth/claim?token={user['invite_token']}")
     bad = db.layout_add(
-        "calorie", "Corrupt", None, _PROMOTABLE_CONFIG, capture_meta_json="not-json{{{"
+        "calorie",
+        "Corrupt",
+        None,
+        _PROMOTABLE_CONFIG,
+        capture_meta_json="not-json{{{",
+        owner=user["id"],
     )
     r = client.post(f"/api/studio/layouts/{bad}/promote")
     assert r.status_code == 409
@@ -240,7 +248,12 @@ def test_promote_fails_closed_on_unparseable_capture_meta(client):
 
     # A non-dict (but valid JSON) capture_meta is equally unsafe.
     non_dict = db.layout_add(
-        "calorie", "NonDict", None, _PROMOTABLE_CONFIG, capture_meta_json="[1, 2, 3]"
+        "calorie",
+        "NonDict",
+        None,
+        _PROMOTABLE_CONFIG,
+        capture_meta_json="[1, 2, 3]",
+        owner=user["id"],
     )
     r2 = client.post(f"/api/studio/layouts/{non_dict}/promote")
     assert r2.status_code == 409

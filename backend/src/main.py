@@ -7,7 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 
 from src import db, llm
-from src.routes import conversations, modules, pages, studio
+from src.routes import auth, conversations, modules, pages, studio
 
 logging.basicConfig(
     level=os.environ.get("TRUS_LOG_LEVEL", "INFO"),
@@ -51,6 +51,7 @@ async def log_unhandled(request, call_next):
         raise
 
 
+app.include_router(auth.router, prefix="/api")
 app.include_router(modules.router, prefix="/api")
 app.include_router(pages.router, prefix="/api")
 app.include_router(conversations.router, prefix="/api")

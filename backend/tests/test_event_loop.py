@@ -13,7 +13,7 @@ def test_health_responds_while_generation_in_flight(monkeypatch, tmp_path):
 
     from src.services import orchestrator
 
-    def slow_generate(prompt, existing_modules=None):
+    def slow_generate(prompt, existing_modules=None, owner="local"):
         time.sleep(1.5)
         from src.schema import ModuleConfig
         from src.stub_templates import pick_system

@@ -31,6 +31,16 @@ CREATE TABLE IF NOT EXISTS sessions (
     id          TEXT PRIMARY KEY,
     created_at  TEXT NOT NULL
 );
+-- Invite-claimed identities (R-901-905). A user is a data OWNER: their id also
+-- gets a sessions row (see create_user) so owner-keyed content satisfies the
+-- session_id foreign keys below.
+CREATE TABLE IF NOT EXISTS users (
+    id           TEXT PRIMARY KEY,
+    name         TEXT NOT NULL,
+    invite_token TEXT NOT NULL UNIQUE,
+    created_at   TEXT NOT NULL,
+    revoked_at   TEXT
+);
 CREATE TABLE IF NOT EXISTS pages (
     id          TEXT PRIMARY KEY,
     session_id  TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
@@ -187,6 +197,17 @@ def _migrate(conn: sqlite3.Connection) -> None:
     ):
         if col not in lcols:
             conn.execute(f"ALTER TABLE layout_library ADD COLUMN {col} {decl}")
+    # Identity (Task 6): link a browser session to a claimed user, and give the
+    # shared stores a per-owner key. owner backfills to 'local' so pre-identity
+    # rows stay reachable under the library's default owner.
+    scols = {r[1] for r in conn.execute("PRAGMA table_info(sessions)").fetchall()}
+    if "user_id" not in scols:
+        conn.execute("ALTER TABLE sessions ADD COLUMN user_id TEXT")
+    gcols = {r[1] for r in conn.execute("PRAGMA table_info(gen_cache)").fetchall()}
+    if "owner" not in gcols:
+        conn.execute("ALTER TABLE gen_cache ADD COLUMN owner TEXT NOT NULL DEFAULT 'local'")
+    if "owner" not in lcols:
+        conn.execute("ALTER TABLE layout_library ADD COLUMN owner TEXT NOT NULL DEFAULT 'local'")
 
 
 @contextmanager
@@ -242,6 +263,75 @@ def ensure_session(session_id: str | None) -> str:
     with _conn() as c:
         c.execute("INSERT INTO sessions (id, created_at) VALUES (?, ?)", (new_id, _now()))
     return new_id
+
+
+# ---------------------------------------------------------------------------
+# Users / identity (R-901-905)
+# ---------------------------------------------------------------------------
+
+
+def create_user(name: str) -> dict:
+    """Provision an invite-claimable identity. The double uuid4-hex token is
+    unguessable and URL-safe. The user id also gets a sessions row so any
+    owner-keyed content (pages/modules/…) satisfies the session_id foreign keys."""
+    token = uuid.uuid4().hex + uuid.uuid4().hex
+    uid = str(uuid.uuid4())
+    now = _now()
+    with _conn() as c:
+        c.execute(
+            "INSERT INTO users (id, name, invite_token, created_at) VALUES (?, ?, ?, ?)",
+            (uid, name, token, now),
+        )
+        c.execute("INSERT OR IGNORE INTO sessions (id, created_at) VALUES (?, ?)", (uid, now))
+    return {"id": uid, "name": name, "invite_token": token}
+
+
+def user_by_token(token: str) -> dict | None:
+    with _conn() as c:
+        r = c.execute(
+            "SELECT id, name, revoked_at FROM users WHERE invite_token = ?", (token,)
+        ).fetchone()
+    return dict(r) if r else None
+
+
+def user_by_id(user_id: str) -> dict | None:
+    with _conn() as c:
+        r = c.execute("SELECT id, name, revoked_at FROM users WHERE id = ?", (user_id,)).fetchone()
+    return dict(r) if r else None
+
+
+def list_users() -> list[dict]:
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT id, name, invite_token, created_at, revoked_at FROM users ORDER BY created_at"
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def revoke_user(user_id: str) -> bool:
+    with _conn() as c:
+        cur = c.execute("UPDATE users SET revoked_at = ? WHERE id = ?", (_now(), user_id))
+        return cur.rowcount > 0
+
+
+def adopt_session_data(old_owner: str, user_id: str) -> None:
+    """First claim from a device that already has anonymous data: move every
+    owner-keyed row from the anonymous session to the user, so pre-claim work
+    is preserved (R-902). Covers the session_id-keyed workspace tables plus the
+    owner-keyed shared stores (gen_cache, layout_library). gen_events is left
+    under the anonymous owner — it is historical telemetry, not user content."""
+    if old_owner == user_id:
+        return
+    with _conn() as c:
+        c.execute("UPDATE pages SET session_id = ? WHERE session_id = ?", (user_id, old_owner))
+        c.execute("UPDATE modules SET session_id = ? WHERE session_id = ?", (user_id, old_owner))
+        c.execute(
+            "UPDATE module_versions SET session_id = ? WHERE session_id = ?", (user_id, old_owner)
+        )
+        c.execute("UPDATE messages SET session_id = ? WHERE session_id = ?", (user_id, old_owner))
+        c.execute("UPDATE snapshots SET session_id = ? WHERE session_id = ?", (user_id, old_owner))
+        c.execute("UPDATE gen_cache SET owner = ? WHERE owner = ?", (user_id, old_owner))
+        c.execute("UPDATE layout_library SET owner = ? WHERE owner = ?", (user_id, old_owner))
 
 
 # ---------------------------------------------------------------------------
@@ -740,22 +830,30 @@ def undo_module(session_id: str, module_id: str) -> StoredModule | None:
 # ── Generation cache / template library ──────────────────────────────────────
 
 
-def cache_rows(kind: str, limit: int = 1000) -> list[sqlite3.Row]:
-    """Most-recent cache entries for a kind (small N → brute-force cosine upstream)."""
+def cache_rows(kind: str, owner: str = "local", limit: int = 1000) -> list[sqlite3.Row]:
+    """Most-recent cache entries for a kind, scoped to one owner (R-903 — a prompt
+    is never served across owners). Small N → brute-force cosine upstream."""
     with _conn() as c:
         return c.execute(
             "SELECT id, prompt, norm, embedding, configs_json FROM gen_cache "
-            "WHERE kind = ? ORDER BY created_at DESC LIMIT ?",
-            (kind, limit),
+            "WHERE kind = ? AND owner = ? ORDER BY created_at DESC LIMIT ?",
+            (kind, owner, limit),
         ).fetchall()
 
 
-def cache_add(kind: str, prompt: str, norm: str, embedding_json: str, configs_json: str) -> None:
+def cache_add(
+    kind: str,
+    prompt: str,
+    norm: str,
+    embedding_json: str,
+    configs_json: str,
+    owner: str = "local",
+) -> None:
     with _conn() as c:
         c.execute(
-            "INSERT INTO gen_cache (id, kind, prompt, norm, embedding, configs_json, hits, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, 0, ?)",
-            (uuid.uuid4().hex, kind, prompt, norm, embedding_json, configs_json, _now()),
+            "INSERT INTO gen_cache (id, kind, prompt, norm, embedding, configs_json, hits, owner, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)",
+            (uuid.uuid4().hex, kind, prompt, norm, embedding_json, configs_json, owner, _now()),
         )
 
 
@@ -787,12 +885,13 @@ def layout_add(
     ir_digest_json: str | None = None,
     confidence: float | None = None,
     embedding: str | None = None,
+    owner: str = "local",
 ) -> str:
     """Insert a library layout. The capture_* fields are optional screenshot-capture
     metadata (None for non-vision layouts) — additive, so existing callers are unaffected."""
     lid = uuid.uuid4().hex
-    cols = ["id", "use_case", "label", "inspired_by", "config_json", "created_at"]
-    vals: list = [lid, use_case, label, inspired_by, config_json, _now()]
+    cols = ["id", "use_case", "label", "inspired_by", "config_json", "created_at", "owner"]
+    vals: list = [lid, use_case, label, inspired_by, config_json, _now(), owner]
     for name, value in (
         ("capture_meta_json", capture_meta_json),
         ("ir_digest_json", ir_digest_json),
@@ -811,35 +910,40 @@ def layout_add(
     return lid
 
 
-def layout_list(use_case: str | None = None) -> list[sqlite3.Row]:
+def layout_list(use_case: str | None = None, owner: str = "local") -> list[sqlite3.Row]:
     with _conn() as c:
         if use_case:
             return c.execute(
-                f"SELECT {_LAYOUT_COLS} FROM layout_library WHERE use_case = ? ORDER BY created_at DESC",
-                (use_case,),
+                f"SELECT {_LAYOUT_COLS} FROM layout_library WHERE use_case = ? AND owner = ? "
+                "ORDER BY created_at DESC",
+                (use_case, owner),
             ).fetchall()
         return c.execute(
-            f"SELECT {_LAYOUT_COLS} FROM layout_library ORDER BY created_at DESC"
+            f"SELECT {_LAYOUT_COLS} FROM layout_library WHERE owner = ? ORDER BY created_at DESC",
+            (owner,),
         ).fetchall()
 
 
-def layout_get(layout_id: str) -> sqlite3.Row | None:
+def layout_get(layout_id: str, owner: str = "local") -> sqlite3.Row | None:
     with _conn() as c:
         row = c.execute(
-            f"SELECT {_LAYOUT_COLS} FROM layout_library WHERE id = ?", (layout_id,)
+            f"SELECT {_LAYOUT_COLS} FROM layout_library WHERE id = ? AND owner = ?",
+            (layout_id, owner),
         ).fetchone()
         return cast("sqlite3.Row | None", row)
 
 
-def layout_delete(layout_id: str) -> bool:
+def layout_delete(layout_id: str, owner: str = "local") -> bool:
     with _conn() as c:
-        return c.execute("DELETE FROM layout_library WHERE id = ?", (layout_id,)).rowcount > 0
+        cur = c.execute("DELETE FROM layout_library WHERE id = ? AND owner = ?", (layout_id, owner))
+        return cur.rowcount > 0
 
 
-def layout_counts() -> dict[str, int]:
+def layout_counts(owner: str = "local") -> dict[str, int]:
     with _conn() as c:
         rows = c.execute(
-            "SELECT use_case, COUNT(*) AS n FROM layout_library GROUP BY use_case"
+            "SELECT use_case, COUNT(*) AS n FROM layout_library WHERE owner = ? GROUP BY use_case",
+            (owner,),
         ).fetchall()
     return {r["use_case"]: r["n"] for r in rows}
 

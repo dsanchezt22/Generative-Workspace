@@ -351,8 +351,11 @@ def _parse_modules(raw: str) -> list[ModuleConfig]:
 def generate_modules(
     prompt: str,
     existing_modules: list[ModuleConfig] | None = None,
+    owner: str = "local",
 ) -> list[ModuleConfig]:
-    """Decompose a request into the set of tools it needs (1-6 modules)."""
+    """Decompose a request into the set of tools it needs (1-6 modules).
+
+    The cache is scoped to `owner` (R-903): a prompt is never reused across owners."""
     if llm.is_stub_mode():
         from src.stub_templates import pick_system
 
@@ -361,7 +364,7 @@ def generate_modules(
 
     # Cache: an (almost) identical past prompt is reused for free; a near match
     # becomes the generation seed (so the library grows with real usage).
-    mode, cached = semantic_cache.lookup("system", prompt)
+    mode, cached = semantic_cache.lookup("system", prompt, owner=owner)
     if mode == "hit" and cached:
         try:
             return [ModuleConfig.model_validate(c) for c in cached]
@@ -377,7 +380,9 @@ def generate_modules(
     # R-403: only a definitely-non-degraded call may seed the cache — an unknown
     # provenance (last is None) is not safe to treat as "not degraded".
     if last is not None and not last.degraded:
-        semantic_cache.store("system", prompt, [m.model_dump(mode="json") for m in result])
+        semantic_cache.store(
+            "system", prompt, [m.model_dump(mode="json") for m in result], owner=owner
+        )
     return result
 
 
