@@ -47,6 +47,53 @@ def test_generate_from_file_stub_mode_unextractable_file_refuses_honestly(client
     assert not any(m["text"].startswith("Created ") for m in convo if m["role"] == "assistant")
 
 
+def test_generate_from_file_stub_provider_txt_without_live_model_refuses(client):
+    """FIX 1 (R-211): in stub mode an extractable .txt DOES reach the text model —
+    but llm.generate returns generic keyword templates with provider='stub', which
+    is NOT a real read of the document. The grounded path must refuse honestly (422)
+    instead of 200-ing as a fake success. Nothing persisted, no 'Created …' turn."""
+    resp = client.post(
+        "/api/modules/generate_from_file",
+        files={"file": ("notes.txt", b"Budget line: rent $1200", "text/plain")},
+        data={"prompt": "track my rent"},
+    )
+    assert resp.status_code == 422, resp.text
+    detail = resp.json()["detail"]
+    assert "refusal" in detail
+    assert "current model configuration" in detail["refusal"]
+    assert client.get("/api/modules").json() == []
+    convo = client.get("/api/conversations").json()
+    assert not any(m["text"].startswith("Created ") for m in convo if m["role"] == "assistant")
+
+
+def test_generate_from_file_grounded_surfaces_cascade_degraded(client, monkeypatch):
+    """FIX 2 (R-403): when the grounded generation's model call cascade-degraded,
+    the response must surface degraded=true — mirroring the /generate handler —
+    not silently hide it."""
+    monkeypatch.setattr(
+        llm,
+        "generate",
+        fake_generate(
+            json.dumps(
+                [
+                    {
+                        "title": "Grounded",
+                        "components": [{"id": "a", "type": "text_input", "label": "A"}],
+                    }
+                ]
+            ),
+            degraded=True,
+        ),
+    )
+    resp = client.post(
+        "/api/modules/generate_from_file",
+        files={"file": ("notes.txt", b"Some grounded content", "text/plain")},
+        data={"prompt": "make a tool"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["degraded"] is True
+
+
 def test_generate_from_file_stub_provider_txt_grounds_via_extraction(client, monkeypatch):
     """R-211: the stub provider has no native way to read ANY file — but an
     extractable file (.txt here) now grounds via server-side text extraction

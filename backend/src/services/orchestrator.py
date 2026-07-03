@@ -32,6 +32,11 @@ _RETRY_NOTE = (
 
 _MODULE_SCHEMA = ModuleConfig.model_json_schema()
 
+_UNREADABLE_FILE_REFUSAL = (
+    "This file can't be read with the current model configuration — "
+    "configure a live model, or paste the document's text into the prompt."
+)
+
 
 def _retry_count() -> int:
     """Smaller/local models occasionally slip on strict JSON; one cheap retry
@@ -425,9 +430,17 @@ def _generate_modules_grounded(
         _seeded_system(prompt, existing_modules)
         + f"\n\nDOCUMENT CONTENT (extracted from {label}):\n{extracted_text}"
     )
-    return _generate_validated(
+    result = _generate_validated(
         user_message, DECOMPOSE_SYSTEM_PROMPT, _parse_modules, expect_array=True
     )
+    # R-211 honesty: _generate_validated ran the TEXT model, but in stub mode (or a
+    # cascade that fell all the way to stub) that returns generic keyword templates
+    # with no knowledge of the document. Surfacing them as success would claim we
+    # read a file we never actually read — refuse honestly instead.
+    last = llm.last_call.get()
+    if last is None or last.provider == "stub":
+        raise RefusalError(_UNREADABLE_FILE_REFUSAL)
+    return result
 
 
 def generate_modules_from_file(
@@ -463,10 +476,7 @@ def generate_modules_from_file(
         msg = user_message if attempt == 0 else user_message + _RETRY_NOTE
         raw = llm.generate_from_file(msg, DECOMPOSE_SYSTEM_PROMPT, data, mime)
         if not raw or raw.strip() in ("{}", ""):
-            raise RefusalError(
-                "This file can't be read with the current model configuration — "
-                "configure a live model, or paste the document's text into the prompt."
-            )
+            raise RefusalError(_UNREADABLE_FILE_REFUSAL)
         try:
             return _parse_modules(raw)
         except _InvalidOutput as e:

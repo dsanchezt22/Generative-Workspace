@@ -177,7 +177,8 @@ def generate_from_file(
     _log(sid, "user", f"📎 {file.filename}: {instruction}", page_id=stored[0].page_id)
     for s in stored:
         _log(sid, "assistant", f"Created {s.config.title}", page_id=s.page_id, module_id=s.id)
-    return GenerateResponse(module=stored[0], modules=stored)
+    deg = llm.last_call.get()
+    return GenerateResponse(module=stored[0], modules=stored, degraded=bool(deg and deg.degraded))
 
 
 @router.post("/onboarding/seed", response_model=list[StoredModule])
