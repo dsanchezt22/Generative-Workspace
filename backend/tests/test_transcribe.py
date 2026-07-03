@@ -468,6 +468,22 @@ def test_rate_limiter_is_independent_per_key():
     assert not limiter.allow("a", now=1.0)
 
 
+def test_rate_limiter_evicts_idle_keys():
+    """A key whose window has fully expired must not leave an empty list behind
+    in the internal map — per-owner rows would otherwise accumulate forever.
+    The invariant: the map never holds an empty list for any key."""
+    from src.routes.transcribe import _RateLimiter
+
+    limiter = _RateLimiter(max_calls=1, window_secs=10)
+    assert limiter.allow("a", now=0.0)
+    assert "a" in limiter._hits
+    # Window fully expires; the next call for "a" trims its stale hit to empty
+    # and evicts the entry before re-adding, so no empty list ever lingers.
+    assert limiter.allow("a", now=100.0)
+    assert limiter._hits["a"] == [100.0]  # exactly one fresh hit, no stale residue
+    assert all(hits for hits in limiter._hits.values())  # never an empty list
+
+
 def test_transcribe_21st_call_in_window_is_429(client, monkeypatch):
     _configure_stt(monkeypatch)
     monkeypatch.setattr(llm, "transcribe", lambda data, mime, filename: "ok")

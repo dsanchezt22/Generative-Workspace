@@ -46,9 +46,15 @@ class _RateLimiter:
         cutoff = now - self._window_secs
         while hits and hits[0] < cutoff:
             hits.pop(0)
+        if not hits:
+            # An idle key whose window has fully expired: drop its (now empty)
+            # entry so per-owner rows don't accumulate forever. Re-added below
+            # if this call is allowed.
+            del self._hits[key]
         if len(hits) >= self._max_calls:
             return False
         hits.append(now)
+        self._hits[key] = hits
         return True
 
 

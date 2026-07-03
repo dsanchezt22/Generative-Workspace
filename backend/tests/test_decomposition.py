@@ -266,6 +266,35 @@ def test_cap_composed_prompt_also_truncates_module_context_when_conversation_alo
     assert context not in result  # and module-context also had to be trimmed
 
 
+def test_cap_composed_prompt_keeps_all_protected_content_when_it_alone_exceeds_cap():
+    """Safety-critical branch: when the PROTECTED content (head + exchange +
+    tail) alone already exceeds _MAX_PROMPT_CHARS, it is STILL never truncated —
+    the raw user prompt and every exchange answer survive in full — and the
+    lower-priority blocks (conversation, module-context) are dropped to zero.
+    The invariant is "never drop protected content", even at the cost of
+    overshooting the cap."""
+    user_prompt = "UP-START " + ("u" * 15000) + " UP-END"
+    head = f"User request: {user_prompt}\n\n"
+    exchange_block = "\n\nConversation so far:\nQ: Which city?\nA: TOKYO-ANSWER-SENTINEL"
+    tail = "\n\nReturn the adapted ModuleConfig JSON array."
+    context = "\n\nExisting modules on canvas:\n- Module: field_a, field_b"
+    convo_block = "\n\nRecent conversation:\nuser: some earlier chatter"
+    result = orchestrator._cap_composed_prompt(head, context, convo_block, exchange_block, tail)
+    # Protected content is fully intact even though the total exceeds the cap.
+    assert user_prompt in result
+    assert "TOKYO-ANSWER-SENTINEL" in result
+    assert result.startswith(head)
+    assert result.endswith(tail)
+    assert exchange_block in result
+    # The lower-priority blocks were dropped entirely to fit.
+    assert convo_block not in result
+    assert context not in result
+    assert result == head + exchange_block + tail
+    # And the composed length is exactly the protected content — nothing else.
+    assert len(result) == len(head) + len(exchange_block) + len(tail)
+    assert len(result) > orchestrator._MAX_PROMPT_CHARS  # overshoots, by design
+
+
 def test_seeded_system_wires_the_cap_end_to_end():
     """Integration: _seeded_system itself enforces the cap via its own
     (private) helpers _module_context/_conversation_block — patched here to
