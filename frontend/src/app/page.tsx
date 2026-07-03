@@ -14,6 +14,7 @@ import { AppearanceMenu } from "@/components/AppearanceMenu";
 import { EmptyState } from "@/components/EmptyState";
 import { CommandPalette, type Action } from "@/components/CommandPalette";
 import { ShortcutsModal } from "@/components/ShortcutsModal";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { IntroSplash } from "@/components/IntroSplash";
 import { InviteGate } from "@/components/InviteGate";
 import { Icon } from "@/components/Icon";
@@ -96,6 +97,9 @@ export default function Home() {
   const [archived, setArchived] = useState<StoredModule[]>([]);
   const [snapshotsOpen, setSnapshotsOpen] = useState(false);
   const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
+  // R-1102: page delete is the most destructive action (cascades every module
+  // on the page) — always confirmed, stating the module count.
+  const [pageDeleteConfirm, setPageDeleteConfirm] = useState<Page | null>(null);
   const [cmdOpen, setCmdOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [allModules, setAllModules] = useState<StoredModule[]>([]);
@@ -409,18 +413,35 @@ export default function Home() {
     }
   }, []);
 
-  const handleDeletePage = useCallback(async (id: string) => {
+  // R-1102: Sidebar only requests the delete; this opens the confirm dialog
+  // stating the module count. The actual delete happens in handleConfirmDeletePage.
+  const handleRequestDeletePage = useCallback((page: Page) => {
+    setPageDeleteConfirm(page);
+  }, []);
+
+  const handleCancelDeletePage = useCallback(() => setPageDeleteConfirm(null), []);
+
+  const handleConfirmDeletePage = useCallback(async () => {
+    const page = pageDeleteConfirm;
+    if (!page) return;
+    setPageDeleteConfirm(null);
+    // Cascading delete: the server drops every module on this page (FK
+    // cascade) — forget any pending saves too, so a debounced PATCH can't
+    // fire against a module that's about to vanish.
+    const idsOnPage = modules.filter((m) => m.page_id === page.id).map((m) => m.id);
+    idsOnPage.forEach((id) => saver.forget(id));
     try {
-      await api.deletePage(id);
+      await api.deletePage(page.id);
     } catch {
       return; // last page (409) or not found
     }
+    setModules((prev) => prev.filter((m) => m.page_id !== page.id));
     setPages((prev) => {
-      const remaining = prev.filter((p) => p.id !== id);
-      setActivePageId((cur) => (cur === id ? remaining[remaining.length - 1]?.id ?? null : cur));
+      const remaining = prev.filter((p) => p.id !== page.id);
+      setActivePageId((cur) => (cur === page.id ? remaining[remaining.length - 1]?.id ?? null : cur));
       return remaining;
     });
-  }, []);
+  }, [pageDeleteConfirm, modules, saver]);
 
   // Conversation handlers
   const handleReusePrompt = useCallback((text: string) => {
@@ -605,7 +626,7 @@ export default function Home() {
         onCreate={handleCreatePage}
         onRename={handleRenamePage}
         onSetIcon={handleSetPageIcon}
-        onDelete={handleDeletePage}
+        onDelete={handleRequestDeletePage}
         onReorder={handleReorderPages}
         onOpenArchived={openArchived}
         onOpenSnapshots={openSnapshots}
@@ -739,7 +760,7 @@ export default function Home() {
         onModuleExpand={handleExpand}
         onModuleChange={handleModuleChange}
         onModuleCommit={commitModule}
-        onModuleDelete={handleDeleteModule}
+        onModuleArchive={handleArchiveModule}
         onModuleUndo={handleUndoModule}
         onModuleSelectForRefine={handleSelectForRefine}
         focusRequest={focusReq}
@@ -797,7 +818,7 @@ export default function Home() {
           onRefine={(id) => { handleSelectForRefine(id); setDetailId(null); }}
           onSelect={setSelectedId}
           onEdit={(id) => { setSelectedId(id); setInspectorId(id); }}
-          onDelete={(id) => { handleDeleteModule(id); setDetailId(null); }}
+          onArchive={(id) => { handleArchiveModule(id); setDetailId(null); }}
         />
       )}
 
@@ -844,6 +865,16 @@ export default function Home() {
         onGoToModule={handleGoToModule}
       />
       <ShortcutsModal open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
+      <ConfirmDialog
+        open={pageDeleteConfirm !== null}
+        title={pageDeleteConfirm
+          ? `Delete "${pageDeleteConfirm.name}" and its ${modules.filter((m) => m.page_id === pageDeleteConfirm.id).length} module${modules.filter((m) => m.page_id === pageDeleteConfirm.id).length === 1 ? "" : "s"}?`
+          : ""}
+        body="This cannot be undone."
+        confirmLabel="Delete"
+        onConfirm={handleConfirmDeletePage}
+        onCancel={handleCancelDeletePage}
+      />
       {introOpen && <IntroSplash onDone={dismissIntro} />}
     </div>
   );

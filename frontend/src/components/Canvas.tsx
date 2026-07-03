@@ -10,7 +10,8 @@ interface Props {
   onModuleChange: (updated: StoredModule) => void;
   // Persist a settled change through the single saver (optimistic + PATCH).
   onModuleCommit: (id: string, config: ModuleConfig, delay?: number) => void;
-  onModuleDelete: (id: string) => void;
+  // R-1102: the card's ✕ archives (undoable), not a hard delete.
+  onModuleArchive: (id: string) => void;
   onModuleUndo: (id: string) => void;
   onModuleSelectForRefine: (id: string) => void;
   selectedId?: string | null;
@@ -68,7 +69,7 @@ export function Canvas({
   modules,
   onModuleChange,
   onModuleCommit,
-  onModuleDelete,
+  onModuleArchive,
   onModuleUndo,
   onModuleSelectForRefine,
   selectedId,
@@ -376,7 +377,7 @@ export function Canvas({
               crossModuleValues={crossModuleValues(modules, m)}
               selected={m.id === selectedId}
               onCommit={onModuleCommit}
-              onDelete={onModuleDelete}
+              onArchive={onModuleArchive}
               onUndo={onModuleUndo}
               onSelectForRefine={onModuleSelectForRefine}
               onSelect={onModuleSelect}

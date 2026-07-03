@@ -52,7 +52,8 @@ interface Props {
   // through the single saver via onCommit.
   onChange?: (updated: StoredModule) => void;
   onCommit?: (id: string, config: ModuleConfig, delay?: number) => void;
-  onDelete: (id: string) => void;
+  // R-1102: the card's ✕ is undoable (archive), not a hard delete.
+  onArchive: (id: string) => void;
   onUndo: (id: string) => void;
   onSelectForRefine: (id: string) => void;
   onSelect: (id: string) => void;
@@ -67,7 +68,7 @@ interface Props {
 
 export function Module({
   module, crossModuleValues, selected,
-  onChange, onCommit, onDelete, onUndo, onSelectForRefine, onSelect, onEdit, onDragStart, onResizeStart,
+  onChange, onCommit, onArchive, onUndo, onSelectForRefine, onSelect, onEdit, onDragStart, onResizeStart,
   onExpand, variant = "canvas", index = 0, onMeasure,
 }: Props) {
   const isCanvas = variant === "canvas";
@@ -352,8 +353,8 @@ export function Module({
             )}
             <button type="button" onClick={() => (onEdit ?? onSelect)(module.id)} className={iconBtn}
               aria-label="Edit module" title="Edit in inspector"><Icon name="pen" size={14} /></button>
-            <button type="button" onClick={() => onDelete(module.id)} className={`${iconBtn} hover:text-[var(--danger)]`}
-              aria-label="Delete module"><Icon name="x" size={14} /></button>
+            <button type="button" onClick={() => onArchive(module.id)} className={iconBtn}
+              aria-label="Archive" title="Archive (restore from Archived)"><Icon name="archive" size={14} /></button>
           </>
         )}
       </div>

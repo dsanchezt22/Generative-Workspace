@@ -15,10 +15,11 @@ interface Props {
   onRefine: (id: string) => void;
   onSelect: (id: string) => void;
   onEdit: (id: string) => void;
-  onDelete: (id: string) => void;
+  // R-1102: the card's ✕ archives (undoable), not a hard delete.
+  onArchive: (id: string) => void;
 }
 
-export function DetailView({ module, crossModuleValues, inspectorOpen, onClose, onCommit, onUndo, onRefine, onSelect, onEdit, onDelete }: Props) {
+export function DetailView({ module, crossModuleValues, inspectorOpen, onClose, onCommit, onUndo, onRefine, onSelect, onEdit, onArchive }: Props) {
   const theme = resolveAccent(module.config.accent, module.config.title);
   const icon = resolveIconName(module.config.icon, module.config.title);
   return (
@@ -42,7 +43,7 @@ export function DetailView({ module, crossModuleValues, inspectorOpen, onClose, 
             crossModuleValues={crossModuleValues}
             selected={false}
             onCommit={onCommit}
-            onDelete={onDelete}
+            onArchive={onArchive}
             onUndo={onUndo}
             onSelectForRefine={onRefine}
             onSelect={onSelect}

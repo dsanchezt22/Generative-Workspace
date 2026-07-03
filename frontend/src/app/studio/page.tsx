@@ -243,7 +243,7 @@ export default function StudioPage() {
                     crossModuleValues={{}}
                     selected={false}
                     onChange={noop}
-                    onDelete={noop}
+                    onArchive={noop}
                     onUndo={noop}
                     onSelectForRefine={noop}
                     onSelect={noop}

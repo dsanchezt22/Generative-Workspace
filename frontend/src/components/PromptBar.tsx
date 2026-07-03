@@ -222,7 +222,7 @@ export function PromptBar({ onModule, activePageId, refineTarget, onRefineModule
                   crossModuleValues={{}}
                   selected={false}
                   onChange={(m) => updatePreview(i, m)}
-                  onDelete={noop} onUndo={noop} onSelectForRefine={noop} onSelect={noop}
+                  onArchive={noop} onUndo={noop} onSelectForRefine={noop} onSelect={noop}
                   onDragStart={noop} onResizeStart={noop}
                 />
                 <div className="flex items-center gap-2 mt-1 px-1">
