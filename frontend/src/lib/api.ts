@@ -159,6 +159,18 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify({ config, rev }),
     }),
+  // R-1101: a fetch clone of patchModule with `keepalive: true`, so an in-flight
+  // save survives the document being torn down (a normal fetch is cancelled on
+  // unload). Fire-and-forget — no response is awaited during beforeunload.
+  patchModuleKeepalive: (id: string, config: ModuleConfig, rev?: number) => {
+    void fetch(`${BASE}/api/modules/${id}`, {
+      method: "PATCH",
+      credentials: "include",
+      keepalive: true,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ config, rev }),
+    });
+  },
   deleteModule: (id: string) =>
     request<void>(`/api/modules/${id}`, { method: "DELETE" }),
   duplicateModule: (id: string) =>

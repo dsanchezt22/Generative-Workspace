@@ -132,6 +132,15 @@ function ClaimInner() {
         >
           Switch to {previewName}
         </button>
+        {/* R-902: a quiet way out — keep the current workspace instead of switching. */}
+        <button
+          type="button"
+          onClick={() => router.replace("/")}
+          className="mt-3 block mx-auto text-xs text-[var(--muted)] hover:text-[var(--foreground)] transition animate-rise"
+          style={{ animationDelay: "0.35s" }}
+        >
+          Stay as {currentName}
+        </button>
       </Shell>
     );
   }

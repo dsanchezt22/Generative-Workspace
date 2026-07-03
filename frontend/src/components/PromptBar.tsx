@@ -330,7 +330,18 @@ export function PromptBar({ onModule, activePageId, refineTarget, onRefineModule
 
         {error && (
           <div className="px-4 pb-3 -mt-1">
-            <div className="text-xs text-[var(--danger)]">{error}</div>
+            {/* R-1305: the degraded/offline-fallback notice is informational, not
+                a failure — it carries the save-pill's neutral "warning" treatment
+                (muted text, a small static marker), never the terracotta --danger
+                error channel that real refusals/errors use. */}
+            {error === DEGRADED_NOTICE ? (
+              <div className="flex items-center gap-1.5 text-xs text-[var(--muted)]">
+                <span aria-hidden className="w-1.5 h-1.5 rounded-full bg-[var(--muted)]" />
+                <span>{error}</span>
+              </div>
+            ) : (
+              <div className="text-xs text-[var(--danger)]">{error}</div>
+            )}
           </div>
         )}
       </div>

@@ -240,6 +240,16 @@ export interface StoredModule {
   rev: number;
 }
 
+// A functional commit: the next config is derived from the CURRENT one inside
+// the parent's state update, so same-tick edits chain off fresh state rather
+// than a stale props snapshot (R-602 same-tick hardening).
+export type ModuleConfigUpdater = (prev: ModuleConfig) => ModuleConfig;
+export type CommitModule = (
+  id: string,
+  config: ModuleConfig | ModuleConfigUpdater,
+  delay?: number,
+) => void;
+
 export interface Page {
   id: string;
   session_id: string;

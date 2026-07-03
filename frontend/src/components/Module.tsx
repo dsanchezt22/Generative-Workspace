@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import type { Component, ModuleConfig, StoredModule } from "@/lib/types";
+import type { CommitModule, Component, ModuleConfig, StoredModule } from "@/lib/types";
 import { runAssembly } from "@/lib/assembly";
 import { deriveSummary } from "@/lib/summary";
 import { resolveAccent, resolveIconName } from "@/lib/theme";
@@ -51,7 +51,7 @@ interface Props {
   // Preview variant bubbles edits in-memory to its host; canvas/detail persist
   // through the single saver via onCommit.
   onChange?: (updated: StoredModule) => void;
-  onCommit?: (id: string, config: ModuleConfig, delay?: number) => void;
+  onCommit?: CommitModule;
   // R-1102: the card's ✕ is undoable (archive), not a hard delete.
   onArchive: (id: string) => void;
   onUndo: (id: string) => void;
@@ -108,20 +108,26 @@ export function Module({
 
   const setField = useCallback(
     (id: string, value: unknown) => {
-      const base = module.config.state ?? {};
-      let next: Record<string, unknown> = { ...base, [id]: value };
-      // Automations: "when this field … then increment another" (visible + undoable).
-      for (const r of module.config.automations ?? []) {
-        if (r.when_id !== id || r.then !== "increment" || !r.then_id) continue;
-        const fired = (r.when === "checked" && value === true) || r.when === "changes";
-        if (fired) next = { ...next, [r.then_id]: (Number(next[r.then_id]) || 0) + (r.then_value ?? 1) };
-      }
-      const nextConfig: ModuleConfig = { ...module.config, state: next };
+      // Apply the field write (+ any "increment" automation it fires) to a
+      // config. Canvas/detail pass this as an UPDATER so the merge runs against
+      // the freshest config inside the parent's state update — two same-tick
+      // writes then chain instead of both reading one stale props snapshot,
+      // which is the latent stale-closure class flagged in the Stage-1 review (R-602).
+      const apply = (cfg: ModuleConfig): ModuleConfig => {
+        const base = cfg.state ?? {};
+        let next: Record<string, unknown> = { ...base, [id]: value };
+        for (const r of cfg.automations ?? []) {
+          if (r.when_id !== id || r.then !== "increment" || !r.then_id) continue;
+          const fired = (r.when === "checked" && value === true) || r.when === "changes";
+          if (fired) next = { ...next, [r.then_id]: (Number(next[r.then_id]) || 0) + (r.then_value ?? 1) };
+        }
+        return { ...cfg, state: next };
+      };
       // Previews aren't persisted — bubble the edited config to the host in memory.
       // Canvas/detail commit through the single saver (optimistic parent update
       // now, PATCH debounced after).
-      if (preview) onChange?.({ ...module, config: nextConfig });
-      else onCommit?.(module.id, nextConfig);
+      if (preview) onChange?.({ ...module, config: apply(module.config) });
+      else onCommit?.(module.id, apply);
     },
     [module, preview, onChange, onCommit],
   );

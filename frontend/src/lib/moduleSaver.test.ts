@@ -119,4 +119,45 @@ describe("moduleSaver (R-602: one writer per module, no lost updates)", () => {
     expect(patch.mock.calls[1][2]).toBe(0); // back to getRev, no stale memory
     vi.useRealTimers();
   });
+
+  it("a 404 forgets the module and surfaces it via onMissing — no retry loop", async () => {
+    // The module was deleted elsewhere (another tab / server GC). There is
+    // nothing to save to, so the saver must drop it and tell the caller once —
+    // never spin the failure retry loop against a URL that will always 404.
+    vi.useFakeTimers();
+    const patch = vi
+      .fn<(id: string, c: ModuleConfig, rev?: number) => Promise<StoredModule>>()
+      .mockRejectedValue(new ApiError(404, "not found"));
+    const onMissing = vi.fn();
+    const onError = vi.fn();
+    const s = createModuleSaver({ patch, onMissing, onError });
+    s.commit("m1", cfg("gone"));
+    await vi.runAllTimersAsync();
+    expect(patch).toHaveBeenCalledTimes(1); // no retry loop
+    expect(onMissing).toHaveBeenCalledTimes(1);
+    expect(onMissing).toHaveBeenCalledWith("m1");
+    expect(onError).not.toHaveBeenCalled(); // a 404 is not an error to retry
+    expect(s.status()).toBe("idle"); // dropped, not stuck in "error"
+    vi.useRealTimers();
+  });
+
+  it("flushAllKeepalive sends pending configs through patchKeepalive, skipping already-saved ids", async () => {
+    // beforeunload: the normal debounced PATCH would be cancelled as the tab
+    // dies, so pending edits are re-fired through a keepalive fetch. Ids with
+    // nothing pending must be skipped (no redundant write).
+    vi.useFakeTimers();
+    const patch = vi.fn(async (id: string, c: ModuleConfig) => saved(id, c));
+    const patchKeepalive =
+      vi.fn<(id: string, c: ModuleConfig, rev?: number) => void>();
+    const s = createModuleSaver({ patch, patchKeepalive });
+    s.commit("done", cfg("x"));
+    await vi.runAllTimersAsync(); // persisted → nothing pending for "done"
+    s.commit("m1", cfg("a"));
+    s.commit("m2", cfg("b")); // still pending (debounce hasn't elapsed)
+    s.flushAllKeepalive();
+    expect(patchKeepalive).toHaveBeenCalledTimes(2); // "done" skipped
+    expect(patchKeepalive.mock.calls.map((c) => c[0]).sort()).toEqual(["m1", "m2"]);
+    expect(patchKeepalive.mock.calls.find((c) => c[0] === "m1")?.[1].title).toBe("a");
+    vi.useRealTimers();
+  });
 });

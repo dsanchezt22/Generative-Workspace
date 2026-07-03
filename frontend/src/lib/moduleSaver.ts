@@ -12,6 +12,12 @@ interface Deps {
   // already dropped the pending edit for `id` — the caller must show the
   // returned module so the user sees the newer version before re-editing.
   onConflict?: (current: StoredModule) => void;
+  // R-602 backlog: fires when a PATCH 404s — the module was deleted elsewhere.
+  // The saver has already forgotten it; the caller must drop it from the UI.
+  onMissing?: (id: string) => void;
+  // R-1101: best-effort persistence that survives a page unload (a fetch with
+  // `keepalive: true`). Used only by flushAllKeepalive; fire-and-forget.
+  patchKeepalive?: (id: string, config: ModuleConfig, rev?: number) => void;
   debounceMs?: number;
 }
 
@@ -19,6 +25,9 @@ export interface ModuleSaver {
   commit(id: string, config: ModuleConfig, delay?: number): void;
   flush(id: string): Promise<void>;
   flushAll(): Promise<void>;
+  // R-1101: synchronously re-fire every pending edit through patchKeepalive so
+  // it outlives an unloading tab (a normal debounced PATCH would be cancelled).
+  flushAllKeepalive(): void;
   status(): SaveStatus;
   subscribe(fn: () => void): () => void;
   forget(id: string): void; // module deleted — drop pending work
@@ -65,6 +74,17 @@ export function createModuleSaver(deps: Deps): ModuleSaver {
         retryDelay.delete(id);
         knownRevs.set(id, err.conflict.rev); // learn the winner's rev for the next edit
         deps.onConflict?.(err.conflict);
+      } else if (err instanceof ApiError && err.status === 404) {
+        // The module was deleted elsewhere (another tab, or server GC). There's
+        // no row to save to — forget every trace of it and tell the caller to
+        // drop it from the UI. Never retry: the URL will 404 forever.
+        const t = timers.get(id);
+        if (t) { clearTimeout(t); timers.delete(id); }
+        pending.delete(id);
+        errored.delete(id);
+        retryDelay.delete(id);
+        knownRevs.delete(id);
+        deps.onMissing?.(id);
       } else {
         // keep the newest config: an edit made during the failed save wins
         if (!pending.has(id)) pending.set(id, config);
@@ -100,6 +120,15 @@ export function createModuleSaver(deps: Deps): ModuleSaver {
     },
     async flushAll() {
       await Promise.all([...new Set([...pending.keys(), ...timers.keys()])].map((id) => this.flush(id)));
+    },
+    flushAllKeepalive() {
+      if (!deps.patchKeepalive) return;
+      // Only pending (unsaved) edits need re-firing; an id with nothing pending
+      // is either already persisted or in-flight — re-sending would be a
+      // redundant write. knownRevs wins over getRev for the same reason flush does.
+      for (const [id, config] of pending) {
+        deps.patchKeepalive(id, config, knownRevs.get(id) ?? deps.getRev?.(id));
+      }
     },
     status() {
       if (errored.size) return "error";

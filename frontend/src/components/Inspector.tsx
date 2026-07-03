@@ -35,6 +35,12 @@ function convertType(c: Component, type: ComponentType): Component {
 
 export function Inspector({ module, onCommit, onClose, onRefine, onDuplicate, onArchive }: Props) {
   const [draft, setDraft] = useState<Draft>(() => fromModule(module));
+  // Always-fresh handle on `draft` so `update` can compute the next draft
+  // WITHOUT doing so inside the setDraft functional updater — that kept the
+  // side-effecting persist() out of the reducer, where StrictMode's double
+  // invoke would otherwise fire it twice (7d).
+  const draftRef = useRef(draft);
+  useEffect(() => { draftRef.current = draft; }, [draft]);
   const [dragId, setDragId] = useState<string | null>(null);
   // Field ids whose type changed — their stored value is from the old type and
   // is dropped on the next save so the new renderer starts from a clean default.
@@ -87,11 +93,11 @@ export function Inspector({ module, onCommit, onClose, onRefine, onDuplicate, on
 
   const update = useCallback(
     (mutate: (d: Draft) => Draft, immediate = false) => {
-      setDraft((prev) => {
-        const next = mutate(prev);
-        persist(next, immediate ? 0 : 400);
-        return next;
-      });
+      // Compute next from the fresh ref, set it, THEN persist — persist stays
+      // outside the setDraft updater so it can't double-fire under StrictMode.
+      const next = mutate(draftRef.current);
+      setDraft(next);
+      persist(next, immediate ? 0 : 400);
     },
     [persist],
   );

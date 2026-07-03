@@ -1,6 +1,6 @@
 "use client";
 
-import type { ModuleConfig, StoredModule } from "@/lib/types";
+import type { CommitModule, StoredModule } from "@/lib/types";
 import { Module } from "./Module";
 import { Icon } from "./Icon";
 import { resolveAccent, resolveIconName } from "@/lib/theme";
@@ -10,7 +10,7 @@ interface Props {
   crossModuleValues: Record<string, number>;
   inspectorOpen: boolean;
   onClose: () => void;
-  onCommit: (id: string, config: ModuleConfig, delay?: number) => void;
+  onCommit: CommitModule;
   onUndo: (id: string) => void;
   onRefine: (id: string) => void;
   onSelect: (id: string) => void;

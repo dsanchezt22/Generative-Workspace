@@ -22,7 +22,7 @@ import { api, ApiError } from "@/lib/api";
 import { createModuleSaver, type SaveStatus } from "@/lib/moduleSaver";
 import { useAppearance } from "@/lib/appearance";
 import { resolveIconName } from "@/lib/theme";
-import type { Message, ModuleConfig, Page, Snapshot, StoredModule } from "@/lib/types";
+import type { CommitModule, Message, Page, Snapshot, StoredModule } from "@/lib/types";
 
 function HeaderInsights({
   activePageId,
@@ -115,13 +115,14 @@ export default function Home() {
   const [identityName, setIdentityName] = useState<string | null>(null);
   const pendingFocusRef = useRef<string | null>(null);
   const { theme, setTheme } = useAppearance();
-  // R-602 (cross-tab half): a toast surfaced when a stale write loses a rev
-  // race — the module was reloaded to the version another tab saved.
+  // R-602 (cross-tab half): a low-drama toast surface reused for cross-tab
+  // events — a stale write losing a rev race, a module deleted elsewhere (404),
+  // or an unreadable snapshot. Not an error banner; nothing was lost silently.
   const [conflictNotice, setConflictNotice] = useState<string | null>(null);
   const conflictTimerRef = useRef<number | null>(null);
-  const flashConflict = useCallback(() => {
-    setConflictNotice("This module changed in another tab — showing the latest version.");
-    // Reset the dismiss timer per flash: a second conflict within 4s must get
+  const flashNotice = useCallback((message: string) => {
+    setConflictNotice(message);
+    // Reset the dismiss timer per flash: a second notice within 4s must get
     // its own full display window, not be cut short by the first one's timer.
     if (conflictTimerRef.current !== null) window.clearTimeout(conflictTimerRef.current);
     conflictTimerRef.current = window.setTimeout(() => setConflictNotice(null), 4000);
@@ -143,6 +144,8 @@ export default function Home() {
     () =>
       createModuleSaver({
         patch: (id, c, rev) => api.patchModule(id, c, rev),
+        // R-1101: best-effort flush that survives a page unload (keepalive fetch).
+        patchKeepalive: (id, c, rev) => api.patchModuleKeepalive(id, c, rev),
         getRev: (id) => modulesRef.current.find((m) => m.id === id)?.rev,
         // Reconcile server metadata only — never overwrite config, which may
         // already hold a newer local edit (overwriting would revert a keystroke).
@@ -156,31 +159,57 @@ export default function Home() {
         // surface it visibly rather than silently discarding the edit.
         onConflict: (current) => {
           setModules((ms) => ms.map((x) => (x.id === current.id ? current : x)));
-          flashConflict();
+          flashNotice("This module changed in another tab — showing the latest version.");
+        },
+        // R-602 backlog: a PATCH 404'd — the module was deleted elsewhere. The
+        // saver has already forgotten it; drop it from the canvas and say so
+        // instead of retrying a write that can never land.
+        onMissing: (id) => {
+          setModules((ms) => ms.filter((x) => x.id !== id));
+          flashNotice("That module no longer exists — it was removed elsewhere.");
         },
       }),
-    [flashConflict],
+    [flashNotice],
   );
   const [saveStatus, setSaveStatus] = useState<SaveStatus>("idle");
   useEffect(() => {
     setSaveStatus(saver.status());
     return saver.subscribe(() => setSaveStatus(saver.status()));
   }, [saver]);
-  // Don't lose an in-flight edit if the tab closes mid-save: flush + warn.
+  // Don't lose an in-flight edit if the tab closes mid-save. A normal fetch is
+  // cancelled the instant the document tears down, so flushAll() alone would
+  // drop the very edit it means to save — flushAllKeepalive re-fires each
+  // pending config through a keepalive fetch that outlives the page, and we
+  // still raise the "unsaved changes" prompt as a belt-and-braces warning.
   useEffect(() => {
     const onBeforeUnload = (e: BeforeUnloadEvent) => {
       if (saver.status() !== "idle") {
-        void saver.flushAll();
+        saver.flushAllKeepalive();
         e.preventDefault();
+        e.returnValue = ""; // legacy browsers require this to show the prompt
       }
     };
     window.addEventListener("beforeunload", onBeforeUnload);
     return () => window.removeEventListener("beforeunload", onBeforeUnload);
   }, [saver]);
-  const commitModule = useCallback(
-    (id: string, config: ModuleConfig, delay?: number) => {
-      setModules((ms) => ms.map((m) => (m.id === id ? { ...m, config } : m)));
-      saver.commit(id, config, delay);
+  const commitModule = useCallback<CommitModule>(
+    (id, configOrUpdater, delay) => {
+      // The saver needs the COMPUTED config, but React's setModules updater runs
+      // async — its result can't be read back synchronously here. Derive it from
+      // the always-fresh modulesRef instead, and keep that ref in lock-step so a
+      // second commit in the SAME tick chains off this result rather than a
+      // stale props snapshot (the same-tick stale-closure class, R-602).
+      const current = modulesRef.current.find((m) => m.id === id)?.config;
+      const next =
+        typeof configOrUpdater === "function"
+          ? current
+            ? configOrUpdater(current)
+            : undefined // updater form for a module no longer in state — nothing to do
+          : configOrUpdater;
+      if (next === undefined) return;
+      modulesRef.current = modulesRef.current.map((m) => (m.id === id ? { ...m, config: next } : m));
+      setModules((ms) => ms.map((m) => (m.id === id ? { ...m, config: next } : m)));
+      saver.commit(id, next, delay);
     },
     [saver],
   );
@@ -534,8 +563,17 @@ export default function Home() {
       const list = await api.listModules(activePageId);
       setModules(list);
       setSelectedId(null);
-    } catch (err) { console.error("Failed to restore snapshot", err); }
-  }, [activePageId]);
+    } catch (err) {
+      // 2a-4 backlog: a 409 means the stored snapshot is corrupt and the server
+      // restored nothing — surface it on the shared notice instead of failing
+      // silently in the console.
+      if (err instanceof ApiError && err.status === 409) {
+        flashNotice("This snapshot is unreadable — nothing was restored.");
+      } else {
+        console.error("Failed to restore snapshot", err);
+      }
+    }
+  }, [activePageId, flashNotice]);
 
   const handleDeleteSnapshot = useCallback(async (id: string) => {
     setSnapshots((prev) => prev.filter((s) => s.id !== id));

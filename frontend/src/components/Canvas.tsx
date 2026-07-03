@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { ModuleConfig, StoredModule } from "@/lib/types";
+import type { CommitModule, StoredModule } from "@/lib/types";
 import { Module } from "./Module";
 
 interface Props {
@@ -9,7 +9,7 @@ interface Props {
   // Live, in-memory update during a drag/resize gesture (no network).
   onModuleChange: (updated: StoredModule) => void;
   // Persist a settled change through the single saver (optimistic + PATCH).
-  onModuleCommit: (id: string, config: ModuleConfig, delay?: number) => void;
+  onModuleCommit: CommitModule;
   // R-1102: the card's ✕ archives (undoable), not a hard delete.
   onModuleArchive: (id: string) => void;
   onModuleUndo: (id: string) => void;
