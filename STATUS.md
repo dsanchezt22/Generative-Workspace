@@ -4,7 +4,7 @@ _An AI-orchestrated personal operating system: describe what you want to organiz
 
 **Last updated:** 2026-07-03
 **Repo:** https://github.com/dsanchezt22/Generative-Workspace
-**Branch state:** Stage 2a complete at `b80d9c3` on `stage2a/reliability` (15 commits ahead of `main`), pending final whole-branch review and merge decision.
+**Branch state:** Stage 2b complete at `ab6e67c` on `stage2b/inputs`, stacked on `stage2a/reliability` (still unmerged, pending the user's call). Both stages are ahead of `main`; final whole-branch review and merge decision remain open.
 
 ---
 
@@ -46,27 +46,41 @@ Landed the two security decisions from the Stage 1 final review plus the triaged
 - **R-602/R-1101 backlog:** saver hardening — 404 responses are treated as "forgotten" (no retry loop), `beforeunload` does a best-effort keepalive flush of pending edits, module commits use functional updates (no same-tick stale-closure class), the degraded-generation notice moved off the error-red channel.
 - Small-backlog batch: studio layout rows quarantine on parse failure instead of breaking the list; `requirements.txt` (runtime) split from `requirements-dev.txt` (test tooling) so the Docker image doesn't bundle pytest.
 
-## Current gates (this run, 2026-07-03, HEAD `b80d9c3`)
+## Stage 2b — input surfaces (shipped)
+
+Ships the brief's must-have input story — entry-as-interview, voice rambling, sketch-to-module, and the prescriptive idea-generation package:
+
+- **R-101/R-104/R-105 — entry-as-interview front door:** `IntroSplash`'s decorative overlay replaced with a true pre-workspace entry (rotating "Tell me what's on your mind" headline, a large mic affordance as the primary control, a text field as the visible secondary), shown on a first-visit-empty-workspace session or via EmptyState re-entry; dissolves to canvas on submit, Escape/Skip dismisses, keyboard-reachable (`role="dialog"`, focus starts on the text field).
+- **R-201-204 — voice rambling:** new pluggable `POST /api/transcribe` (`TRUS_STT_*` env, OpenAI-compatible `/v1/audio/transcriptions`; unset → honest 422) + a PromptBar mic rework — press-to-start/stop recording, transcript appends into the input (never overwrites), Web Speech interim text as live garnish only, mic-denial degrades to typing without breaking the flow.
+- **R-221-223 — sketch overlay → snap:** canvas toolbar Sketch toggle (world-coordinate stroke overlay: pen/eraser/clear), "Snap to modules" rasterizes the sketch and routes it through the existing file-upload vision path with a sketch-tuned hint; overlay clears on success or cancel (ephemeral, R-223).
+- **R-102/R-103/R-301 — proposal plans + multi-turn interview:** proposals now carry a one-paragraph `plan` (rendered above the preview stack); the clarifying-question exchange moved server-side (`GenerateRequest.exchange`, hard-capped at 4 answered questions) — fixes the earlier answer-drop bug where PromptBar string-concatenated only the latest answer, and interview-specialized results no longer seed the shared prompt cache.
+- **R-302 — conversation context:** the owner's last ~10 messages on the current page feed generation context (not the grounded-file path, and never when there's no page scope); the semantic-cache key stays the raw prompt, so an identical re-prompt still hits.
+- **R-104 — per-owner suggestions:** `GET /api/suggestions` — usage-seeded chips drawn from this owner's `gen_cache`/`messages`, R-903-scoped (cross-owner isolation is test-pinned, and reconfirmed in this task's own smoke run below).
+- Stage-2a triaged backlog closed alongside: CORS origin-parsing single-sourced into `routes/deps.py`, one `_gemini_model()` helper replacing three copies, `nosemgrep` comments scoped to rule ids, SSRF guard now also checks `is_global` (CGNAT) and refuses redirects, a route-level prod test for `/api/llm/status`.
+
+New env: `TRUS_STT_BASE_URL` / `TRUS_STT_MODEL` / `TRUS_STT_API_KEY` (all optional — absent means voice transcription is an honest 422, never a silent failure). Documented in `.env.example`, the conftest isolation list, and `deploy/README.md`'s env table.
+
+## Current gates (this run, 2026-07-03, HEAD `ab6e67c`)
 
 | Gate | Result |
 |---|---|
-| `python -m pytest -q` (repo root, coverage gate on) | **359 passed, 2 skipped**, 94.22% branch coverage (gate: 80%) |
-| `mypy backend/src` | clean, 27 source files |
+| `python -m pytest -q` (repo root, coverage gate on) | **440 passed, 2 skipped**, 94.27% branch coverage (gate: 80%) |
+| `mypy backend/src` | clean, 29 source files |
 | `ruff check backend/src` | all checks passed |
-| `ruff format --check backend/src` | 27 files already formatted |
-| `cd frontend && npm test` | 1 test file, **11 passed** |
+| `ruff format --check backend/src` | 29 files already formatted |
+| `cd frontend && npm test` | 5 test files, **49 passed** |
 | `npx tsc --noEmit` | clean |
 | `npm run build` | clean production build (4 static routes) |
 
-API-level smoke against a fresh local instance (claim flow, preview→insert, PATCH stale-rev 409 shape, atomic id-preserving snapshot restore, `.txt` grounded upload, `.bin` honest refusal, gated ops summary with per-user `last-seen`) — all passed; transcript in `.superpowers/sdd/stage2a-task-9-report.md`.
+API-level smoke against a fresh local instance on a spare port (claim flow for two users, `/api/transcribe` unset-config 422 + non-audio-mime 422, `/api/suggestions` empty→populated→cross-owner-isolated, a 2-turn interview exchange on `/api/modules/preview`, `/api/modules/generate_from_file` with a `hint` field on an image and a `.txt` — both honestly refuse in pure stub mode, per the already-pinned `test_generate_from_file_stub_provider_txt_without_live_model_refuses`, gated `/api/ops/summary` with `users[]` present) — all passed; transcript in `.superpowers/sdd/stage2b-task-9-report.md`.
 
 ## Docs
 
 - `docs/MVP-SPEC.md` — the requirements contract (R-IDs cited in commits).
 - `docs/MVP-GAP-AUDIT.md` — the audit that drove Stage 1's structural findings.
-- `docs/superpowers/plans/` — the Stage 1 and Stage 2a implementation plans, task-by-task.
+- `docs/superpowers/plans/` — the Stage 1, Stage 2a, and Stage 2b implementation plans, task-by-task.
 - `deploy/README.md` — hosting (Fly + Vercel), env contract, invite provisioning, post-deploy smoke test.
 
 ## Next
 
-**Stage 2b: entry-as-interview, voice, sketch** (R-100, R-200 input surfaces, R-301–305) — builds on a now-finished reliability story. Plan to be written against the post-2a codebase.
+**Stage 3 (differentiators):** spatial nesting (R-500), live data (R-700), profile (R-800).
