@@ -121,7 +121,9 @@ def generate_module(
                 owner=sid,
                 exchange_context=exchange_context,
                 # R-102 hard cap: 4 answered questions → a 5th is never relayed.
-                allow_question=not body.exchange or len(body.exchange) < 4,
+                # "Just build it" (build_now) is a HARD skip — force the cap now
+                # so the model can never re-question at any step.
+                allow_question=(not body.exchange or len(body.exchange) < 4) and not body.build_now,
                 recent_messages=recent,
             )
     except ClarifyingQuestion as e:
@@ -167,7 +169,9 @@ def preview_modules(
                 owner=sid,
                 exchange_context=exchange_context,
                 # R-102 hard cap: 4 answered questions → a 5th is never relayed.
-                allow_question=not body.exchange or len(body.exchange) < 4,
+                # "Just build it" (build_now) is a HARD skip — force the cap now
+                # so the model can never re-question at any step.
+                allow_question=(not body.exchange or len(body.exchange) < 4) and not body.build_now,
                 recent_messages=recent,
             )
     except ClarifyingQuestion as e:

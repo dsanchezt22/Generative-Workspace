@@ -481,6 +481,14 @@ def generate_modules(
     # Cache: an (almost) identical past prompt is reused for free; a near match
     # becomes the generation seed (so the library grows with real usage).
     mode, cached = semantic_cache.lookup("system", prompt, owner=owner)
+    # R-102 (lookup-side chain fix): when there ARE interview answers, never
+    # short-circuit on a plain cache hit. A same-owner entry created mid-chain
+    # (a parallel tab/device) keys on the raw `prompt`, which does NOT carry the
+    # answers — returning it would silently discard the interview. Downgrade the
+    # hit to a seed: keep the skeleton benefit, but the model MUST run so the
+    # answers are honored.
+    if mode == "hit" and exchange_context is not None:
+        mode = "seed"
     if mode == "hit" and cached:
         try:
             return [ModuleConfig.model_validate(c) for c in cached]

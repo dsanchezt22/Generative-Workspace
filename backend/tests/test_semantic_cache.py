@@ -294,3 +294,58 @@ def test_cache_hit_ignores_differing_conversation_history(monkeypatch):
     )
     assert [m.title for m in r2] == ["Cached Tool"]
     assert calls["n"] == 1  # model NOT called again — served from cache despite differing history
+
+
+def test_chain_generation_never_served_a_stale_cache_hit(monkeypatch):
+    """FIX (review 2b lookup-side): a same-owner PLAIN cache entry created
+    mid-chain (a parallel tab/device) must NOT short-circuit the chain-final
+    generation — returning the plain cached modules would silently discard the
+    interview answers. When exchange_context is present, a 'hit' is downgraded to
+    a seed: the model STILL runs (honoring the answers), and the cached skeleton
+    only seeds it."""
+    from src.services import orchestrator
+
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.setenv("TRUS_LLM_PROVIDER", "openai")
+    monkeypatch.setenv("TRUS_LLM_BASE_URL", "http://h/v1")
+    monkeypatch.setenv("TRUS_LLM_MODEL", "m")
+    for k in _VARS:
+        monkeypatch.delenv(k, raising=False)
+
+    calls = {"n": 0}
+    captured = {}
+
+    def fake_generate(prompt, system=None, *, schema=None, expect_array=False):
+        calls["n"] += 1
+        captured["prompt"] = prompt
+        text = json.dumps(
+            [
+                {
+                    "title": "Fresh From Model",
+                    "components": [{"id": "a", "type": "text_input", "label": "A"}],
+                }
+            ]
+        )
+        result = gen_result(text, provider="openai", model="m")
+        llm.last_call.set(result)
+        return result
+
+    monkeypatch.setattr(orchestrator.llm, "generate", fake_generate)
+
+    prompt = "a very specific unique chain lookup prompt"
+    # A same-owner PLAIN cache entry already exists (a parallel tab beat us to it).
+    sc.store(
+        "system",
+        prompt,
+        [
+            {
+                "title": "Stale Cached",
+                "components": [{"id": "z", "type": "text_input", "label": "Z"}],
+            }
+        ],
+    )
+    # Chain-final generation WITH interview answers must NOT be served that hit.
+    result = orchestrator.generate_modules(prompt, exchange_context="Q: which city?\nA: Tokyo")
+    assert calls["n"] == 1  # the model WAS called (never short-circuited on the hit)
+    assert [m.title for m in result] == ["Fresh From Model"]  # fresh, not the stale cache
+    assert "Tokyo" in captured["prompt"]  # the exchange answers reached the model

@@ -824,3 +824,59 @@ def test_generate_llm_error_detail_is_sanitized(client):
         resp = client.post("/api/modules/generate", json={"prompt": "track my workouts"})
     assert resp.status_code == 503
     assert "192.0.2.7" not in resp.json()["detail"]
+
+
+# --- FIX 3 (R-102 "Just build it" hard skip): build_now forces allow_question=False ---
+
+
+def test_preview_build_now_forces_a_hard_build_no_question(client):
+    """FIX 3: build_now=True on a model that WOULD ask a question must never
+    relay the question — the route drops allow_question, the orchestrator retries
+    once with the strengthened build-now note, and (when that yields modules) the
+    hard build succeeds. No exchange is needed to force the skip."""
+    with patch(
+        "src.services.orchestrator.llm.generate",
+        side_effect=[_gr('{"question": "Which city?"}'), _gr(VALID_RAW)],
+    ) as mock_gen:
+        resp = client.post(
+            "/api/modules/preview",
+            json={"prompt": "plan my trip", "build_now": True},
+        )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body.get("question") is None  # never relayed
+    assert body["previews"], body
+    assert mock_gen.call_count == 2  # first (questioned) + strengthened build-now retry
+
+
+def test_generate_build_now_refuses_honestly_never_a_question(client):
+    """FIX 3: build_now=True + a model that STILL insists on questioning → the
+    route returns an honest 422 refusal, never a question. Proven through
+    /modules/generate with NO exchange (build_now alone hard-caps)."""
+    with patch(
+        "src.services.orchestrator.llm.generate",
+        return_value=_gr('{"question": "Really, which city?"}'),
+    ) as mock_gen:
+        resp = client.post(
+            "/api/modules/generate",
+            json={"prompt": "plan my trip", "build_now": True},
+        )
+    assert resp.status_code == 422, resp.text
+    assert "refusal" in resp.json()["detail"]
+    assert "question" not in resp.json()["detail"]
+    assert mock_gen.call_count == 2  # first attempt + one strengthened retry
+
+
+def test_preview_without_build_now_still_relays_a_question(client):
+    """Negative control: without build_now (and no exchange), a first question is
+    relayed normally — build_now is the ONLY thing forcing the hard skip here."""
+    with patch(
+        "src.services.orchestrator.llm.generate",
+        return_value=_gr('{"question": "Which city?"}'),
+    ):
+        resp = client.post(
+            "/api/modules/preview",
+            json={"prompt": "plan my trip"},
+        )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["question"] == "Which city?"

@@ -392,6 +392,10 @@ class GenerateRequest(BaseModel):
     # R-102: prior Q/A pairs in this clarifying interview, oldest first. Capped
     # at 6 turns (the route enforces the actual build-now cap at 4 answered).
     exchange: list[ExchangeTurn] | None = Field(default=None, max_length=6)
+    # R-102 "Just build it": a HARD skip. When true the route forces
+    # allow_question=False so the model never re-questions — it builds its best
+    # interpretation now (or refuses honestly), never relaying another question.
+    build_now: bool = False
 
 
 class RefineRequest(BaseModel):

@@ -141,15 +141,17 @@ export const api = {
   // Empty for a brand-new owner — the caller falls back to static chips.
   suggestions: (limit?: number) =>
     request<{ prompt: string }[]>(`/api/suggestions${limit ? `?limit=${limit}` : ""}`),
-  generateModule: (prompt: string, pageId?: string, exchange?: ExchangeTurn[]) =>
+  // R-102 "Just build it": `buildNow` sends build_now:true so the backend forces
+  // a HARD build (allow_question=False) — the skip is never re-questioned.
+  generateModule: (prompt: string, pageId?: string, exchange?: ExchangeTurn[], buildNow?: boolean) =>
     request<GenerateResponse>(`/api/modules/generate${pageId ? `?page_id=${pageId}` : ""}`, {
       method: "POST",
-      body: JSON.stringify({ prompt, exchange }),
+      body: JSON.stringify({ prompt, exchange, build_now: buildNow }),
     }),
-  previewModules: (prompt: string, pageId?: string, exchange?: ExchangeTurn[]) =>
+  previewModules: (prompt: string, pageId?: string, exchange?: ExchangeTurn[], buildNow?: boolean) =>
     request<GenerateResponse>(`/api/modules/preview${pageId ? `?page_id=${pageId}` : ""}`, {
       method: "POST",
-      body: JSON.stringify({ prompt, exchange }),
+      body: JSON.stringify({ prompt, exchange, build_now: buildNow }),
     }),
   insertModules: (configs: ModuleConfig[], prompt?: string, pageId?: string) =>
     request<StoredModule[]>(`/api/modules${pageId ? `?page_id=${pageId}` : ""}`, {

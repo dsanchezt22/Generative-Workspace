@@ -102,14 +102,16 @@ export function PromptBar({ onModule, activePageId, refineTarget, onRefineModule
 
   // Send the exchange so far, with `answerText` filling in the LAST (pending)
   // turn — every earlier answer is preserved (the R-102 answer-drop fix).
-  // `exchange` must be non-null when this is called.
-  const resolveExchange = async (answerText: string) => {
+  // `exchange` must be non-null when this is called. `buildNow` (the "Just build
+  // it" skip) sends build_now:true so the backend hard-caps and never returns
+  // another question — the skip is a HARD build by construction.
+  const resolveExchange = async (answerText: string, buildNow = false) => {
     const { original, turns } = exchange as Exchange;
     const turnsToSend = [
       ...turns.slice(0, -1),
       { ...turns[turns.length - 1], answer: answerText },
     ];
-    const result = await api.previewModules(original, activePageId, turnsToSend);
+    const result = await api.previewModules(original, activePageId, turnsToSend, buildNow);
     if (result.question) {
       // Another question — push a new turn (route caps this at 4 answered).
       setExchange({ original, turns: [...turnsToSend, { question: result.question, answer: "" }] });
@@ -227,7 +229,7 @@ export function PromptBar({ onModule, activePageId, refineTarget, onRefineModule
     setLoading(true);
     setError(null);
     try {
-      await resolveExchange(SKIP_ANSWER);
+      await resolveExchange(SKIP_ANSWER, true); // build_now → a HARD build, never re-questioned
     } catch (err) {
       if (err instanceof ApiError && err.refusal) setError(err.refusal);
       else if (err instanceof ApiError && err.question) setError(err.question);
