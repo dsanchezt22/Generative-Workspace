@@ -63,6 +63,47 @@ class TestCookieSettings:
         assert _cookie_settings(True) == ("none", True)
 
 
+class TestLlmStatusPayload:
+    """R-1201: /api/llm/status must not leak internal topology (base_url) or
+    operational internals (cache stats) in prod. Dev keeps both — it's the
+    documented local-setup verification tool. Tested at the function level
+    (same pattern as the guards above): the payload builder reads TRUS_ENV
+    per call, so no app reimport is needed."""
+
+    def test_dev_payload_keeps_base_url_and_cache(self, tmp_path, monkeypatch):
+        from src.main import _llm_status_payload
+
+        monkeypatch.setenv("TRUS_DB_PATH", str(tmp_path / "t.db"))
+        monkeypatch.setenv("TRUS_ENV", "dev")
+        monkeypatch.setenv("TRUS_LLM_PROVIDER", "openai")
+        monkeypatch.setenv("TRUS_LLM_BASE_URL", "http://localhost:11434/v1")
+        monkeypatch.setenv("TRUS_LLM_MODEL", "qwen")
+        payload = _llm_status_payload()
+        assert payload["provider"] == "openai"
+        assert payload["base_url"] == "http://localhost:11434/v1"
+        assert "cache" in payload
+        assert "vision" in payload
+
+    def test_prod_payload_omits_base_url_and_cache(self, tmp_path, monkeypatch):
+        from src.main import _llm_status_payload
+
+        monkeypatch.setenv("TRUS_DB_PATH", str(tmp_path / "t.db"))
+        monkeypatch.setenv("TRUS_ENV", "prod")
+        monkeypatch.setenv("TRUS_LLM_PROVIDER", "openai")
+        monkeypatch.setenv("TRUS_LLM_BASE_URL", "http://internal-llm:8000/v1")
+        monkeypatch.setenv("TRUS_LLM_MODEL", "qwen")
+        monkeypatch.setenv("TRUS_VISION_MODEL", "qwen-vl")
+        payload = _llm_status_payload()
+        assert "base_url" not in payload
+        assert "cache" not in payload
+        # Provider/model/vision availability are harmless and stay …
+        assert payload["provider"] == "openai"
+        assert payload["model"] == "qwen"
+        assert payload["vision"]["available"] is True
+        # … but vision's nested base_url is the same topology leak, and goes too.
+        assert "base_url" not in payload["vision"]
+
+
 def test_prod_refuses_default_session_secret_on_reload(monkeypatch):
     """Integration: the guard actually runs at module import/reload time, not
     just when called directly."""

@@ -199,7 +199,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
         ("embedding", "TEXT"),
     ):
         if col not in lcols:
-            conn.execute(f"ALTER TABLE layout_library ADD COLUMN {col} {decl}")
+            conn.execute(f"ALTER TABLE layout_library ADD COLUMN {col} {decl}")  # nosemgrep
     # Identity (Task 6): link a browser session to a claimed user, and give the
     # shared stores a per-owner key. owner backfills to 'local' so pre-identity
     # rows stay reachable under the library's default owner.
@@ -359,7 +359,7 @@ def _page_from_row(r, session_id: str) -> Page:
 def ensure_default_page(session_id: str) -> Page:
     """Return the first page for a session, creating it if none exist."""
     with _conn() as c:
-        row = c.execute(
+        row = c.execute(  # nosemgrep
             f"SELECT {_PAGE_COLS} FROM pages WHERE session_id = ? ORDER BY position LIMIT 1",
             (session_id,),
         ).fetchone()
@@ -378,7 +378,7 @@ def ensure_default_page(session_id: str) -> Page:
 
 def list_pages(session_id: str) -> list[Page]:
     with _conn() as c:
-        rows = c.execute(
+        rows = c.execute(  # nosemgrep
             f"SELECT {_PAGE_COLS} FROM pages WHERE session_id = ? ORDER BY position",
             (session_id,),
         ).fetchall()
@@ -432,18 +432,20 @@ def update_page(
         return get_page(session_id, page_id)
     params += [page_id, session_id]
     with _conn() as c:
-        cur = c.execute(
+        cur = c.execute(  # nosemgrep
             f"UPDATE pages SET {', '.join(sets)} WHERE id = ? AND session_id = ?", params
         )
         if cur.rowcount == 0:
             return None
-        row = c.execute(f"SELECT {_PAGE_COLS} FROM pages WHERE id = ?", (page_id,)).fetchone()
+        row = c.execute(  # nosemgrep
+            f"SELECT {_PAGE_COLS} FROM pages WHERE id = ?", (page_id,)
+        ).fetchone()
     return _page_from_row(row, session_id)
 
 
 def get_page(session_id: str, page_id: str) -> Page | None:
     with _conn() as c:
-        row = c.execute(
+        row = c.execute(  # nosemgrep
             f"SELECT {_PAGE_COLS} FROM pages WHERE id = ? AND session_id = ?", (page_id, session_id)
         ).fetchone()
     return _page_from_row(row, session_id) if row else None
@@ -524,7 +526,7 @@ _MOD_COLS = "id, page_id, config_json, created_at, updated_at, archived, rev"
 
 def get_module(session_id: str, module_id: str) -> StoredModule | None:
     with _conn() as c:
-        row = c.execute(
+        row = c.execute(  # nosemgrep
             f"SELECT {_MOD_COLS} FROM modules WHERE id = ? AND session_id = ?",
             (module_id, session_id),
         ).fetchone()
@@ -534,12 +536,12 @@ def get_module(session_id: str, module_id: str) -> StoredModule | None:
 def list_modules(session_id: str, page_id: str | None = None) -> list[StoredModule]:
     with _conn() as c:
         if page_id:
-            rows = c.execute(
+            rows = c.execute(  # nosemgrep
                 f"SELECT {_MOD_COLS} FROM modules WHERE session_id = ? AND page_id = ? AND archived = 0 ORDER BY created_at",
                 (session_id, page_id),
             ).fetchall()
         else:
-            rows = c.execute(
+            rows = c.execute(  # nosemgrep
                 f"SELECT {_MOD_COLS} FROM modules WHERE session_id = ? AND archived = 0 ORDER BY created_at",
                 (session_id,),
             ).fetchall()
@@ -548,7 +550,7 @@ def list_modules(session_id: str, page_id: str | None = None) -> list[StoredModu
 
 def list_archived(session_id: str) -> list[StoredModule]:
     with _conn() as c:
-        rows = c.execute(
+        rows = c.execute(  # nosemgrep
             f"SELECT {_MOD_COLS} FROM modules WHERE session_id = ? AND archived = 1 ORDER BY updated_at DESC",
             (session_id,),
         ).fetchall()
@@ -563,7 +565,9 @@ def set_archived(session_id: str, module_id: str, archived: bool) -> StoredModul
         )
         if cur.rowcount == 0:
             return None
-        row = c.execute(f"SELECT {_MOD_COLS} FROM modules WHERE id = ?", (module_id,)).fetchone()
+        row = c.execute(  # nosemgrep
+            f"SELECT {_MOD_COLS} FROM modules WHERE id = ?", (module_id,)
+        ).fetchone()
     return _stored_from_row(row)
 
 
@@ -613,7 +617,7 @@ def update_module(
                 (config_json, now, module_id, session_id, expected_rev),
             )
         if cur.rowcount == 0:
-            row = c.execute(
+            row = c.execute(  # nosemgrep
                 f"SELECT {_MOD_COLS} FROM modules WHERE id = ? AND session_id = ?",
                 (module_id, session_id),
             ).fetchone()
@@ -624,7 +628,9 @@ def update_module(
                 raise RevConflict(current)
             return None
         _record_version(c, module_id, session_id, config_json, now)
-        row = c.execute(f"SELECT {_MOD_COLS} FROM modules WHERE id = ?", (module_id,)).fetchone()
+        row = c.execute(  # nosemgrep
+            f"SELECT {_MOD_COLS} FROM modules WHERE id = ?", (module_id,)
+        ).fetchone()
     return _stored_from_row(row)
 
 
@@ -928,7 +934,9 @@ def undo_module(session_id: str, module_id: str) -> StoredModule | None:
         )
         # Return the true post-write row (never hand-construct a StoredModule
         # here — a hand-built one silently carried the Pydantic rev default).
-        row = c.execute(f"SELECT {_MOD_COLS} FROM modules WHERE id = ?", (module_id,)).fetchone()
+        row = c.execute(  # nosemgrep
+            f"SELECT {_MOD_COLS} FROM modules WHERE id = ?", (module_id,)
+        ).fetchone()
     return _stored_from_row(row)
 
 
@@ -1008,7 +1016,7 @@ def layout_add(
             vals.append(value)
     placeholders = ", ".join("?" for _ in cols)
     with _conn() as c:
-        c.execute(
+        c.execute(  # nosemgrep
             f"INSERT INTO layout_library ({', '.join(cols)}) VALUES ({placeholders})",
             tuple(vals),
         )
@@ -1023,7 +1031,7 @@ def layout_list(use_case: str | None = None, owner: str = "local") -> list[sqlit
                 "ORDER BY created_at DESC",
                 (use_case, owner),
             ).fetchall()
-        return c.execute(
+        return c.execute(  # nosemgrep
             f"SELECT {_LAYOUT_COLS} FROM layout_library WHERE owner = ? ORDER BY created_at DESC",
             (owner,),
         ).fetchall()
@@ -1031,7 +1039,7 @@ def layout_list(use_case: str | None = None, owner: str = "local") -> list[sqlit
 
 def layout_get(layout_id: str, owner: str = "local") -> sqlite3.Row | None:
     with _conn() as c:
-        row = c.execute(
+        row = c.execute(  # nosemgrep
             f"SELECT {_LAYOUT_COLS} FROM layout_library WHERE id = ? AND owner = ?",
             (layout_id, owner),
         ).fetchone()
@@ -1115,3 +1123,35 @@ def daily_active(days: int = 14) -> list[dict]:
             (cutoff,),
         ).fetchall()
     return [{"day": r["day"], "owners": r["owners"]} for r in rows]
+
+
+def last_seen_by_user(days: int = 30) -> list[dict]:
+    """Per-claimed-user activity (R-1201: "which of the 50 used it yesterday").
+
+    gen_events.owner is the effective owner id for the request that logged it
+    (see routes/deps._owner_id) — a user id once claimed, else the anonymous
+    session id. INNER JOINing against users means an anonymous sid (which has
+    no matching users row) is silently excluded: this view only ever shows
+    activity attributable to a named person, by construction of the JOIN.
+    """
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    cutoff_7d = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT u.id AS user_id, u.name AS name, MAX(g.created_at) AS last_seen,"
+            " COUNT(CASE WHEN g.created_at >= ? THEN 1 END) AS generations_7d"
+            " FROM gen_events g JOIN users u ON g.owner = u.id"
+            " WHERE g.created_at >= ?"
+            " GROUP BY u.id, u.name"
+            " ORDER BY last_seen DESC",
+            (cutoff_7d, cutoff),
+        ).fetchall()
+    return [
+        {
+            "user_id": r["user_id"],
+            "name": r["name"],
+            "last_seen": r["last_seen"],
+            "generations_7d": r["generations_7d"],
+        }
+        for r in rows
+    ]

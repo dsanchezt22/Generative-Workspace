@@ -175,7 +175,12 @@ def _gemini_generate(prompt: str, system: str | None) -> str:
     return text
 
 
-def _gemini_generate_file(user_message: str, system: str | None, data: bytes, mime: str) -> str:
+def _gemini_generate_file_raw(
+    user_message: str, system: str | None, data: bytes, mime: str
+) -> tuple[str, object]:
+    """Same call as `_gemini_generate_file`, but also returns the raw SDK
+    response object so `generate_from_file` can read `usage_metadata` for
+    telemetry (R-1201/R-1202) without re-issuing the request."""
     from google.genai import types
 
     model = os.environ.get("GEMINI_MODEL", DEFAULT_MODEL)
@@ -190,7 +195,26 @@ def _gemini_generate_file(user_message: str, system: str | None, data: bytes, mi
     text: str | None = response.text
     if not text:
         raise LLMError("The model returned an empty response.")
+    return text, response
+
+
+def _gemini_generate_file(user_message: str, system: str | None, data: bytes, mime: str) -> str:
+    text, _response = _gemini_generate_file_raw(user_message, system, data, mime)
     return text
+
+
+def _gemini_usage(response: object) -> tuple[int | None, int | None]:
+    """Best-effort (tokens_in, tokens_out) from a Gemini response's
+    `usage_metadata`. The google-genai SDK's response shape isn't guaranteed
+    across versions (and test doubles may omit it entirely), so every
+    attribute access here is optional rather than assumed."""
+    meta = getattr(response, "usage_metadata", None)
+    if meta is None:
+        return None, None
+    return (
+        getattr(meta, "prompt_token_count", None),
+        getattr(meta, "candidates_token_count", None),
+    )
 
 
 # ----------------------------------------------- openai-compatible -----------
@@ -231,7 +255,8 @@ def _openai_chat(
         req.add_header("Authorization", f"Bearer {api_key}")
 
     try:
-        with urllib.request.urlopen(req, timeout=_timeout()) as resp:
+        # base is operator-configured (TRUS_LLM_BASE_URL), never end-user input.
+        with urllib.request.urlopen(req, timeout=_timeout()) as resp:  # nosemgrep
             payload = json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
         detail = e.read().decode("utf-8", "ignore")[:400] if hasattr(e, "read") else ""
@@ -315,8 +340,15 @@ def generate(
 def generate_from_file(user_message: str, system: str | None, data: bytes, mime: str) -> str:
     """Multimodal generation. Gemini handles any file; the openai provider handles
     images (data URL); unsupported inputs return "{}" so callers can refuse honestly
-    instead of silently degrading to a template."""
-    # Clear stale provenance: a raising path must not leave a prior call's result live.
+    instead of silently degrading to a template.
+
+    On success, sets `last_call` to a real GenResult (provider/model per the same
+    per-branch resolution `generate()` uses, tokens where the payload offers them)
+    so file-path generations carry provenance too (R-1201/R-1202). This path never
+    cascades, so degraded is always False. The "{}" sentinel returns are refusals,
+    not successes — they leave last_call at None."""
+    # Clear stale provenance: a raising path (and the "{}" sentinel paths below)
+    # must not leave a prior call's result live.
     last_call.set(None)
     provider = _resolve_provider()
     if provider == "stub":
@@ -336,10 +368,30 @@ def generate_from_file(user_message: str, system: str | None, data: bytes, mime:
                     ],
                 }
             )
-            text, _usage = _openai_chat(messages, expect_array=True)
+            text, usage = _openai_chat(messages, expect_array=True)
+            last_call.set(
+                GenResult(
+                    text,
+                    "openai",
+                    os.environ.get("TRUS_LLM_MODEL", ""),
+                    tokens_in=usage.get("prompt_tokens"),
+                    tokens_out=usage.get("completion_tokens"),
+                )
+            )
             return text
         return "{}"  # non-image documents aren't portable across openai-compat servers
-    return _gemini_generate_file(user_message, system, data, mime)
+    text, response = _gemini_generate_file_raw(user_message, system, data, mime)
+    tokens_in, tokens_out = _gemini_usage(response)
+    last_call.set(
+        GenResult(
+            text,
+            "gemini",
+            os.environ.get("GEMINI_MODEL", DEFAULT_MODEL),
+            tokens_in=tokens_in,
+            tokens_out=tokens_out,
+        )
+    )
+    return text
 
 
 # ------------------------------------------------- vision (image → text) -----
@@ -407,7 +459,8 @@ def vision_describe(system: str | None, user_text: str, data: bytes, mime: str) 
     if api_key:
         req.add_header("Authorization", f"Bearer {api_key}")
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        # base is operator-configured (TRUS_VISION_BASE_URL/TRUS_LLM_BASE_URL), never end-user input.
+        with urllib.request.urlopen(req, timeout=timeout) as resp:  # nosemgrep
             payload = json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
         detail = e.read().decode("utf-8", "ignore")[:400] if hasattr(e, "read") else ""

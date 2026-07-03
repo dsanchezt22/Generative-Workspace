@@ -3,6 +3,7 @@
 import io
 import json
 import urllib.error
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -484,7 +485,9 @@ def test_gemini_provider_labels_the_gemini_model(monkeypatch):
 def test_generate_from_file_stub_returns_empty_object(monkeypatch):
     _clear(monkeypatch)
     monkeypatch.setenv("TRUS_LLM_PROVIDER", "stub")
+    llm.last_call.set(llm.GenResult("stale", "stub", "stub"))
     assert llm.generate_from_file("msg", None, b"data", "image/png") == "{}"
+    assert llm.last_call.get() is None  # "{}" is a refusal sentinel, not a success
 
 
 def test_generate_from_file_openai_image_posts_data_url(monkeypatch):
@@ -512,15 +515,86 @@ def test_generate_from_file_openai_non_image_returns_empty_object(monkeypatch):
     monkeypatch.setenv("TRUS_LLM_PROVIDER", "openai")
     monkeypatch.setenv("TRUS_LLM_BASE_URL", "http://h/v1")
     monkeypatch.setenv("TRUS_LLM_MODEL", "m")
+    llm.last_call.set(llm.GenResult("stale", "stub", "stub"))
     assert llm.generate_from_file("msg", None, b"data", "application/pdf") == "{}"
+    assert llm.last_call.get() is None  # "{}" is a refusal sentinel, not a success
 
 
 def test_generate_from_file_gemini_calls_gemini_generate_file(monkeypatch):
     _clear(monkeypatch)
     monkeypatch.setenv("TRUS_LLM_PROVIDER", "gemini")
-    monkeypatch.setattr(llm, "_gemini_generate_file", lambda *a, **k: "gemini-file-text")
+    monkeypatch.setattr(
+        llm, "_gemini_generate_file_raw", lambda *a, **k: ("gemini-file-text", SimpleNamespace())
+    )
     out = llm.generate_from_file("msg", "sys", b"data", "application/pdf")
     assert out == "gemini-file-text"
+
+
+# ---------------------------------------------------------------------------
+# R-1201/R-1202: generate_from_file sets last_call to a real GenResult on
+# success — provider/model per generate()'s branch resolution, tokens where the
+# payload offers them. The "{}" sentinel paths above are refusals, not
+# successes, and are asserted to leave last_call None.
+# ---------------------------------------------------------------------------
+
+
+def test_generate_from_file_gemini_success_sets_last_call_with_tokens(monkeypatch):
+    _clear(monkeypatch)
+    monkeypatch.setenv("TRUS_LLM_PROVIDER", "gemini")
+    monkeypatch.setenv("GEMINI_MODEL", "gemini-2.5-pro")
+    response = SimpleNamespace(
+        text='{"ok":true}',
+        usage_metadata=SimpleNamespace(prompt_token_count=120, candidates_token_count=45),
+    )
+    monkeypatch.setattr(llm, "_gemini_generate_file_raw", lambda *a, **k: ('{"ok":true}', response))
+    out = llm.generate_from_file("msg", "sys", b"data", "application/pdf")
+    assert out == '{"ok":true}'
+    last = llm.last_call.get()
+    assert last is not None
+    assert last.provider == "gemini"
+    assert last.model == "gemini-2.5-pro"
+    assert last.degraded is False
+    assert last.tokens_in == 120
+    assert last.tokens_out == 45
+
+
+def test_generate_from_file_gemini_success_without_usage_metadata_leaves_tokens_none(monkeypatch):
+    """Defensive: not every SDK response (or test double) sets usage_metadata."""
+    _clear(monkeypatch)
+    monkeypatch.setenv("TRUS_LLM_PROVIDER", "gemini")
+    response = SimpleNamespace(text='{"ok":true}')  # no usage_metadata attribute at all
+    monkeypatch.setattr(llm, "_gemini_generate_file_raw", lambda *a, **k: ('{"ok":true}', response))
+    llm.generate_from_file("msg", "sys", b"data", "application/pdf")
+    last = llm.last_call.get()
+    assert last is not None
+    assert last.tokens_in is None
+    assert last.tokens_out is None
+
+
+def test_generate_from_file_openai_image_success_sets_last_call_with_tokens(monkeypatch):
+    _clear(monkeypatch)
+    monkeypatch.setenv("TRUS_LLM_PROVIDER", "openai")
+    monkeypatch.setenv("TRUS_LLM_BASE_URL", "http://h/v1")
+    monkeypatch.setenv("TRUS_LLM_MODEL", "vision-model")
+
+    def fake_urlopen(req, timeout=None):
+        return _FakeResp(
+            {
+                "choices": [{"message": {"content": '[{"title":"FromImage"}]'}}],
+                "usage": {"prompt_tokens": 50, "completion_tokens": 20},
+            }
+        )
+
+    monkeypatch.setattr(llm.urllib.request, "urlopen", fake_urlopen)
+    out = llm.generate_from_file("describe this", "SYS", b"\x89PNG", "image/png")
+    assert "FromImage" in out
+    last = llm.last_call.get()
+    assert last is not None
+    assert last.provider == "openai"
+    assert last.model == "vision-model"
+    assert last.degraded is False
+    assert last.tokens_in == 50
+    assert last.tokens_out == 20
 
 
 # ---------------------------------------------------------------------------

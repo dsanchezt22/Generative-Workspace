@@ -97,22 +97,42 @@ async def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
-@app.get("/api/llm/status")
-async def llm_status() -> dict:
-    """Which model backend is active (provider/model/base_url) — no secrets.
-    Lets you confirm a local/open-source model is wired before generating, and
-    shows how big the self-growing template cache is."""
+def _llm_status_payload() -> dict:
+    """Payload for /api/llm/status, read fresh per call so it's testable without
+    an app reimport. In prod (TRUS_ENV=prod) the internal endpoint topology
+    (base_url) and cache internals are omitted — the endpoint is unauthenticated,
+    and neither belongs on the public surface (R-1201). Provider/model/vision
+    availability are harmless and stay. Dev keeps everything: this endpoint is
+    the local-setup verification tool the README documents."""
     info = llm.provider_info()
     info["vision"] = llm.vision_info()
+    if os.environ.get("TRUS_ENV", "dev") == "prod":
+        info.pop("base_url", None)
+        info["vision"].pop("base_url", None)  # same topology leak, one level down
+        return info
     with suppress(Exception):  # pragma: no cover - diagnostics must not error
         info["cache"] = db.cache_stats()
     return info
 
 
+@app.get("/api/llm/status")
+async def llm_status() -> dict:
+    """Which model backend is active (provider/model/base_url) — no secrets.
+    Lets you confirm a local/open-source model is wired before generating, and
+    shows how big the self-growing template cache is. Prod trims it (see
+    _llm_status_payload)."""
+    return _llm_status_payload()
+
+
 @app.get("/api/ops/summary")
 def ops_summary(token: str = Query(default="")) -> dict:
-    """Gated operator surface (R-1201/R-1203): generation volume/outcomes + DAU."""
+    """Gated operator surface (R-1201/R-1203): generation volume/outcomes + DAU +
+    per-user last-seen ("which of the 50 used it yesterday")."""
     expected = os.environ.get("TRUS_OPS_TOKEN", "")
     if not expected or token != expected:
         raise HTTPException(status_code=401, detail="ops token required")
-    return {"generations": db.gen_stats(days=7), "daily_active": db.daily_active(days=14)}
+    return {
+        "generations": db.gen_stats(days=7),
+        "daily_active": db.daily_active(days=14),
+        "users": db.last_seen_by_user(30),
+    }
