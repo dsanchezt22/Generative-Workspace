@@ -533,16 +533,21 @@ def get_module(session_id: str, module_id: str) -> StoredModule | None:
     return _stored_from_row(row) if row else None
 
 
-def list_modules(session_id: str, page_id: str | None = None) -> list[StoredModule]:
+def list_modules(
+    session_id: str, page_id: str | None = None, include_archived: bool = False
+) -> list[StoredModule]:
+    # include_archived is off by default (unchanged behavior); the page-delete
+    # confirm passes it True so it can count archived rows the FK cascade also drops.
+    archived_clause = "" if include_archived else " AND archived = 0"
     with _conn() as c:
         if page_id:
             rows = c.execute(  # nosemgrep
-                f"SELECT {_MOD_COLS} FROM modules WHERE session_id = ? AND page_id = ? AND archived = 0 ORDER BY created_at",
+                f"SELECT {_MOD_COLS} FROM modules WHERE session_id = ? AND page_id = ?{archived_clause} ORDER BY created_at",
                 (session_id, page_id),
             ).fetchall()
         else:
             rows = c.execute(  # nosemgrep
-                f"SELECT {_MOD_COLS} FROM modules WHERE session_id = ? AND archived = 0 ORDER BY created_at",
+                f"SELECT {_MOD_COLS} FROM modules WHERE session_id = ?{archived_clause} ORDER BY created_at",
                 (session_id,),
             ).fetchall()
     return [m for m in (_stored_from_row(r) for r in rows) if m is not None]

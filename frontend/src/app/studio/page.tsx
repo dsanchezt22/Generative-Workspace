@@ -239,7 +239,7 @@ export default function StudioPage() {
                   </div>
                   <Module
                     variant="preview"
-                    module={{ id: ly.id ?? `studio-${i}`, config: ly.config, created_at: NOW, updated_at: NOW, rev: 0 }}
+                    module={{ id: ly.id ?? `studio-${i}`, config: ly.config, created_at: NOW, updated_at: NOW, archived: false, rev: 0 }}
                     crossModuleValues={{}}
                     selected={false}
                     onChange={noop}

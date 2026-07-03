@@ -117,8 +117,13 @@ export const api = {
     }),
   deletePage: (id: string) =>
     request<void>(`/api/pages/${id}`, { method: "DELETE" }),
-  listModules: (pageId?: string) =>
-    request<StoredModule[]>(`/api/modules${pageId ? `?page_id=${pageId}` : ""}`),
+  listModules: (pageId?: string, includeArchived?: boolean) => {
+    const params = new URLSearchParams();
+    if (pageId) params.set("page_id", pageId);
+    if (includeArchived) params.set("include_archived", "1");
+    const qs = params.toString();
+    return request<StoredModule[]>(`/api/modules${qs ? `?${qs}` : ""}`);
+  },
   seedStarter: (pageId?: string) =>
     request<StoredModule[]>(`/api/onboarding/seed${pageId ? `?page_id=${pageId}` : ""}`, {
       method: "POST",

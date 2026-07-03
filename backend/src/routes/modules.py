@@ -229,9 +229,10 @@ async def seed_onboarding(
 async def list_modules(
     request: Request,
     page_id: str | None = Query(default=None),
+    include_archived: bool = Query(default=False),
 ) -> list[StoredModule]:
     sid = _owner_id(request)
-    return db.list_modules(sid, page_id=page_id)
+    return db.list_modules(sid, page_id=page_id, include_archived=include_archived)
 
 
 @router.patch("/modules/{module_id}", response_model=StoredModule)

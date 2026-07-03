@@ -101,7 +101,7 @@ export default function Home() {
   // on the page) — always confirmed, stating the module count. Holds the page
   // plus its real module ids: `modules` state only covers the ACTIVE page,
   // but any sidebar row can be deleted, so the ids are fetched per-page.
-  const [pageDeleteConfirm, setPageDeleteConfirm] = useState<{ page: Page; moduleIds: string[] } | null>(null);
+  const [pageDeleteConfirm, setPageDeleteConfirm] = useState<{ page: Page; moduleIds: string[]; archivedCount: number } | null>(null);
   const [cmdOpen, setCmdOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [allModules, setAllModules] = useState<StoredModule[]>([]);
@@ -444,14 +444,20 @@ export default function Home() {
   // "0 modules" and skip the forget-sweep for any non-active page.
   const handleRequestDeletePage = useCallback(async (page: Page) => {
     let moduleIds: string[];
+    let archivedCount = 0;
     try {
-      moduleIds = (await api.listModules(page.id)).map((m) => m.id);
+      // R-1102: the FK cascade drops ARCHIVED modules on this page too, so count
+      // them honestly (include_archived) — the confirm must not undercount, and the
+      // forget-sweep must clear pending state for archived ids as well.
+      const all = await api.listModules(page.id, true);
+      moduleIds = all.map((m) => m.id);
+      archivedCount = all.filter((m) => m.archived).length;
     } catch {
       // Fetch failed — fall back to what we know locally (exact for the
       // active page, best-effort otherwise) rather than blocking the delete.
       moduleIds = modulesRef.current.filter((m) => m.page_id === page.id).map((m) => m.id);
     }
-    setPageDeleteConfirm({ page, moduleIds });
+    setPageDeleteConfirm({ page, moduleIds, archivedCount });
   }, []);
 
   const handleCancelDeletePage = useCallback(() => setPageDeleteConfirm(null), []);
@@ -910,7 +916,7 @@ export default function Home() {
       <ConfirmDialog
         open={pageDeleteConfirm !== null}
         title={pageDeleteConfirm
-          ? `Delete "${pageDeleteConfirm.page.name}" and its ${pageDeleteConfirm.moduleIds.length} module${pageDeleteConfirm.moduleIds.length === 1 ? "" : "s"}?`
+          ? `Delete "${pageDeleteConfirm.page.name}" and its ${pageDeleteConfirm.moduleIds.length} module${pageDeleteConfirm.moduleIds.length === 1 ? "" : "s"}${pageDeleteConfirm.archivedCount > 0 ? " (including archived)" : ""}?`
           : ""}
         body="This cannot be undone."
         confirmLabel="Delete"
