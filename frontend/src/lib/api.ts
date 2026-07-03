@@ -65,6 +65,18 @@ export class ApiError extends Error {
     }
     return null;
   }
+  // R-602: a stale PATCH (rev mismatch) arrives as 409 { conflict: <current
+  // StoredModule> } — the loser reloads visibly instead of clobbering it.
+  get conflict(): StoredModule | null {
+    if (
+      this.detail &&
+      typeof this.detail === "object" &&
+      "conflict" in (this.detail as Record<string, unknown>)
+    ) {
+      return (this.detail as { conflict: StoredModule }).conflict;
+    }
+    return null;
+  }
 }
 
 export interface GenerateResponse {
@@ -142,10 +154,10 @@ export const api = {
     }
     return (await res.json()) as GenerateResponse;
   },
-  patchModule: (id: string, config: ModuleConfig) =>
+  patchModule: (id: string, config: ModuleConfig, rev?: number) =>
     request<StoredModule>(`/api/modules/${id}`, {
       method: "PATCH",
-      body: JSON.stringify({ config }),
+      body: JSON.stringify({ config, rev }),
     }),
   deleteModule: (id: string) =>
     request<void>(`/api/modules/${id}`, { method: "DELETE" }),

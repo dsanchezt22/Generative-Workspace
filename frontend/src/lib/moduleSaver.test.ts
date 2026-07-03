@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
+import { ApiError } from "./api";
 import { createModuleSaver } from "./moduleSaver";
-import type { ModuleConfig } from "./types";
+import type { ModuleConfig, StoredModule } from "./types";
 
 const cfg = (title: string) => ({ title, icon: "activity", components: [] }) as unknown as ModuleConfig;
 const saved = (id: string, config: ModuleConfig) =>
@@ -49,6 +50,23 @@ describe("moduleSaver (R-602: one writer per module, no lost updates)", () => {
     await vi.runAllTimersAsync();
     expect(s.status()).toBe("idle");        // retried and succeeded
     expect(patch).toHaveBeenCalledTimes(2);
+    vi.useRealTimers();
+  });
+
+  it("a 409 rev conflict calls onConflict once and drops the pending edit — no retry loop", async () => {
+    vi.useFakeTimers();
+    const current = saved("m1", cfg("Tab A's latest")) as StoredModule;
+    const patch = vi
+      .fn<(id: string, c: ModuleConfig, rev?: number) => Promise<StoredModule>>()
+      .mockRejectedValue(new ApiError(409, { conflict: current }));
+    const onConflict = vi.fn();
+    const s = createModuleSaver({ patch, onConflict });
+    s.commit("m1", cfg("Tab B stale edit"));
+    await vi.runAllTimersAsync();
+    expect(patch).toHaveBeenCalledTimes(1); // no retry loop
+    expect(onConflict).toHaveBeenCalledTimes(1);
+    expect(onConflict).toHaveBeenCalledWith(current);
+    expect(s.status()).toBe("idle"); // conflict resolved, not stuck in "error"
     vi.useRealTimers();
   });
 });

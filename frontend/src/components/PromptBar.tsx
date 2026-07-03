@@ -218,7 +218,7 @@ export function PromptBar({ onModule, activePageId, refineTarget, onRefineModule
               <div key={i} className="animate-pop">
                 <Module
                   variant="preview"
-                  module={{ id: `preview-${i}`, config: cfg, created_at: NOW, updated_at: NOW }}
+                  module={{ id: `preview-${i}`, config: cfg, created_at: NOW, updated_at: NOW, rev: 0 }}
                   crossModuleValues={{}}
                   selected={false}
                   onChange={(m) => updatePreview(i, m)}

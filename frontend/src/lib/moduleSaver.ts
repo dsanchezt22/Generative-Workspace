@@ -1,11 +1,17 @@
+import { ApiError } from "./api";
 import type { ModuleConfig, StoredModule } from "./types";
 
 export type SaveStatus = "idle" | "saving" | "error";
 
 interface Deps {
-  patch: (id: string, config: ModuleConfig) => Promise<StoredModule>;
+  patch: (id: string, config: ModuleConfig, rev?: number) => Promise<StoredModule>;
+  getRev?: (id: string) => number | undefined;
   onSaved?: (m: StoredModule) => void;
   onError?: (id: string, err: unknown) => void;
+  // R-602: fires when a stale write loses a rev race (409). The saver has
+  // already dropped the pending edit for `id` — the caller must show the
+  // returned module so the user sees the newer version before re-editing.
+  onConflict?: (current: StoredModule) => void;
   debounceMs?: number;
 }
 
@@ -36,18 +42,31 @@ export function createModuleSaver(deps: Deps): ModuleSaver {
     inFlight.add(id);
     notify();
     try {
-      const saved = await deps.patch(id, config);
+      const saved = await deps.patch(id, config, deps.getRev?.(id));
       errored.delete(id);
       retryDelay.delete(id);
       deps.onSaved?.(saved);
     } catch (err) {
-      // keep the newest config: an edit made during the failed save wins
-      if (!pending.has(id)) pending.set(id, config);
-      errored.add(id);
-      deps.onError?.(id, err);
-      const delay = Math.min(retryDelay.get(id) ?? 1000, 30_000);
-      retryDelay.set(id, delay * 2);
-      schedule(id, delay);
+      if (err instanceof ApiError && err.status === 409 && err.conflict) {
+        // R-602: another tab won the race. Drop the pending edit (including
+        // any newer one made while this stale PATCH was in flight) and any
+        // scheduled retry — the user must see the latest version before
+        // re-editing, never a silent overwrite or an endless retry loop.
+        const t = timers.get(id);
+        if (t) { clearTimeout(t); timers.delete(id); }
+        pending.delete(id);
+        errored.delete(id);
+        retryDelay.delete(id);
+        deps.onConflict?.(err.conflict);
+      } else {
+        // keep the newest config: an edit made during the failed save wins
+        if (!pending.has(id)) pending.set(id, config);
+        errored.add(id);
+        deps.onError?.(id, err);
+        const delay = Math.min(retryDelay.get(id) ?? 1000, 30_000);
+        retryDelay.set(id, delay * 2);
+        schedule(id, delay);
+      }
     } finally {
       inFlight.delete(id);
       notify();

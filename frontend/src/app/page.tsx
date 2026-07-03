@@ -109,6 +109,20 @@ export default function Home() {
   const [identityName, setIdentityName] = useState<string | null>(null);
   const pendingFocusRef = useRef<string | null>(null);
   const { theme, setTheme } = useAppearance();
+  // R-602 (cross-tab half): a toast surfaced when a stale write loses a rev
+  // race — the module was reloaded to the version another tab saved.
+  const [conflictNotice, setConflictNotice] = useState<string | null>(null);
+  const flashConflict = useCallback(() => {
+    setConflictNotice("This module changed in another tab — showing the latest version.");
+    window.setTimeout(() => setConflictNotice(null), 4000);
+  }, []);
+
+  // Always-fresh handle on `modules` for the saver's `getRev` (the saver is
+  // created once via useMemo below, so it can't close over state directly).
+  const modulesRef = useRef<StoredModule[]>(modules);
+  useEffect(() => {
+    modulesRef.current = modules;
+  }, [modules]);
 
   // R-601/R-602: a single writer owns all module persistence. `commitModule`
   // updates the parent modules array synchronously (optimistic — a metric bound
@@ -118,14 +132,24 @@ export default function Home() {
   const saver = useMemo(
     () =>
       createModuleSaver({
-        patch: (id, c) => api.patchModule(id, c),
+        patch: (id, c, rev) => api.patchModule(id, c, rev),
+        getRev: (id) => modulesRef.current.find((m) => m.id === id)?.rev,
         // Reconcile server metadata only — never overwrite config, which may
         // already hold a newer local edit (overwriting would revert a keystroke).
         onSaved: (m) =>
-          setModules((ms) => ms.map((x) => (x.id === m.id ? { ...x, updated_at: m.updated_at } : x))),
+          setModules((ms) =>
+            ms.map((x) => (x.id === m.id ? { ...x, updated_at: m.updated_at, rev: m.rev } : x)),
+          ),
         onError: (id, err) => console.error("Failed to save module", id, err),
+        // R-602: a stale PATCH lost the rev race — replace with the current
+        // module (the pending edit was already dropped by the saver) and
+        // surface it visibly rather than silently discarding the edit.
+        onConflict: (current) => {
+          setModules((ms) => ms.map((x) => (x.id === current.id ? current : x)));
+          flashConflict();
+        },
       }),
-    [],
+    [flashConflict],
   );
   const [saveStatus, setSaveStatus] = useState<SaveStatus>("idle");
   useEffect(() => {
@@ -278,7 +302,11 @@ export default function Home() {
           },
         },
       };
-      void api.patchModule(placed.id, placed.config).catch(() => {});
+      // Route through the single writer (R-601/R-602) instead of a one-shot
+      // PATCH: `prev` already carries the placed layout into `modules` here,
+      // so only the saver's debounced persist (delay 0 — placement should
+      // land immediately) is needed, not the full commitModule/setModules path.
+      saver.commit(placed.id, placed.config, 0);
       return [...prev, placed];
     });
     reloadConvo(activePageId);
@@ -286,7 +314,7 @@ export default function Home() {
     // Frame the freshly-generated tool(s) — auto zoom/pan to fit. Deferred so the
     // content-sized card has mounted and reported its real height first.
     window.setTimeout(() => setFitReq((n) => n + 1), 160);
-  }, [activePageId, reloadConvo]);
+  }, [activePageId, reloadConvo, saver]);
 
   const handleModuleChange = useCallback((updated: StoredModule) => {
     setModules((prev) => prev.map((m) => (m.id === updated.id ? updated : m)));
@@ -682,6 +710,19 @@ export default function Home() {
               <span>Saving…</span>
             </>
           )}
+        </div>
+      )}
+
+      {/* R-602 conflict toast: a stale write lost a rev race against another
+          tab. Same surface/style as the Studio toast — a neutral, low-drama
+          notice, not an error banner (nothing was lost, just superseded). */}
+      {conflictNotice && (
+        <div
+          role="status"
+          aria-live="polite"
+          className="fixed bottom-5 left-1/2 -translate-x-1/2 z-30 rounded-xl border border-[var(--border)] bg-[var(--surface)] px-4 py-2 text-sm shadow-lg animate-pop"
+        >
+          {conflictNotice}
         </div>
       )}
 

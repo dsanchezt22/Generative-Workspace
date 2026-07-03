@@ -237,6 +237,7 @@ export interface StoredModule {
   created_at: string;
   updated_at: string;
   page_id?: string | null;
+  rev: number;
 }
 
 export interface Page {
