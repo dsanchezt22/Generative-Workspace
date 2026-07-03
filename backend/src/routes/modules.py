@@ -1,5 +1,6 @@
 import contextlib
 import logging
+import time
 from typing import Literal
 
 from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile
@@ -67,6 +68,41 @@ def _log(
         db.add_message(sid, role, text, page_id=page_id, module_id=module_id)
 
 
+@contextlib.contextmanager
+def _track(sid: str, kind: str):
+    """Times the wrapped orchestrator call and records a gen_event (R-1202).
+    Re-raises everything untouched; recording itself is best-effort and never
+    fails the request."""
+    t0 = time.monotonic()
+    outcome = "ok"
+    try:
+        yield
+    except ClarifyingQuestion:
+        outcome = "question"
+        raise
+    except RefusalError:
+        outcome = "refusal"
+        raise
+    except LLMError:
+        outcome = "error"
+        raise
+    finally:
+        last = llm.last_call.get()
+        if outcome == "ok" and last is not None and last.degraded:
+            outcome = "degraded"
+        with contextlib.suppress(Exception):
+            db.add_gen_event(
+                sid,
+                kind,
+                outcome,
+                last.provider if last else None,
+                last.model if last else None,
+                int((time.monotonic() - t0) * 1000),
+                last.tokens_in if last else None,
+                last.tokens_out if last else None,
+            )
+
+
 @router.post("/modules/generate", response_model=GenerateResponse)
 def generate_module(
     body: GenerateRequest,
@@ -79,7 +115,8 @@ def generate_module(
     sid = _session_id(request)
     existing = [m.config for m in db.list_modules(sid)]
     try:
-        configs = orchestrator.generate_modules(prompt, existing_modules=existing)
+        with _track(sid, "generate"):
+            configs = orchestrator.generate_modules(prompt, existing_modules=existing)
     except ClarifyingQuestion as e:
         return GenerateResponse(question=e.question)
     except RefusalError as e:
@@ -107,7 +144,8 @@ def preview_modules(
     sid = _session_id(request)
     existing = [m.config for m in db.list_modules(sid)]
     try:
-        configs = orchestrator.generate_modules(prompt, existing_modules=existing)
+        with _track(sid, "preview"):
+            configs = orchestrator.generate_modules(prompt, existing_modules=existing)
     except ClarifyingQuestion as e:
         return GenerateResponse(question=e.question)
     except RefusalError as e:
@@ -153,9 +191,10 @@ def generate_from_file(
     instruction = prompt.strip() or f"Build the tools I need from {file.filename}."
     existing = [m.config for m in db.list_modules(sid)]
     try:
-        configs = orchestrator.generate_modules_from_file(
-            instruction, data, mime, existing_modules=existing
-        )
+        with _track(sid, "file"):
+            configs = orchestrator.generate_modules_from_file(
+                instruction, data, mime, existing_modules=existing
+            )
     except ClarifyingQuestion as e:
         return GenerateResponse(question=e.question)
     except RefusalError as e:
@@ -281,9 +320,10 @@ def refine_module(module_id: str, body: RefineRequest, request: Request) -> Stor
         raise HTTPException(status_code=404, detail="Module not found")
     other_modules = [m.config for m in db.list_modules(sid) if m.id != module_id]
     try:
-        new_config = orchestrator.refine_module(
-            existing.config, prompt, existing_modules=other_modules
-        )
+        with _track(sid, "refine"):
+            new_config = orchestrator.refine_module(
+                existing.config, prompt, existing_modules=other_modules
+            )
     except ClarifyingQuestion as e:
         raise HTTPException(status_code=422, detail={"question": e.question}) from e
     except RefusalError as e:
@@ -357,7 +397,8 @@ def workspace_insights(
         raise HTTPException(status_code=422, detail="No modules on canvas to synthesize.")
     existing_configs = [m.config for m in modules]
     try:
-        config = orchestrator.synthesize_workspace(existing_configs)
+        with _track(sid, "insights"):
+            config = orchestrator.synthesize_workspace(existing_configs)
     except ClarifyingQuestion as e:
         raise HTTPException(status_code=422, detail={"question": e.question}) from e
     except RefusalError as e:

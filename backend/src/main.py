@@ -1,12 +1,18 @@
+import logging
 import os
 from contextlib import asynccontextmanager, suppress
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 
 from src import db, llm
 from src.routes import conversations, modules, pages, studio
+
+logging.basicConfig(
+    level=os.environ.get("TRUS_LOG_LEVEL", "INFO"),
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+)
 
 
 @asynccontextmanager
@@ -34,6 +40,17 @@ app.add_middleware(
     allow_credentials=True,
 )
 
+
+@app.middleware("http")
+async def log_unhandled(request, call_next):
+    """Every unhandled exception reaches the operator log, not just the client (R-1203)."""
+    try:
+        return await call_next(request)
+    except Exception:
+        logging.getLogger("trus.unhandled").exception("%s %s", request.method, request.url.path)
+        raise
+
+
 app.include_router(modules.router, prefix="/api")
 app.include_router(pages.router, prefix="/api")
 app.include_router(conversations.router, prefix="/api")
@@ -57,3 +74,12 @@ async def llm_status() -> dict:
     with suppress(Exception):  # pragma: no cover - diagnostics must not error
         info["cache"] = db.cache_stats()
     return info
+
+
+@app.get("/api/ops/summary")
+def ops_summary(token: str = Query(default="")) -> dict:
+    """Gated operator surface (R-1201/R-1203): generation volume/outcomes + DAU."""
+    expected = os.environ.get("TRUS_OPS_TOKEN", "")
+    if not expected or token != expected:
+        raise HTTPException(status_code=401, detail="ops token required")
+    return {"generations": db.gen_stats(days=7), "daily_active": db.daily_active(days=14)}

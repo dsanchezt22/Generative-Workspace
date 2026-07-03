@@ -72,6 +72,9 @@ def _isolate_llm_env(monkeypatch):
         "TRUS_EMBED_BASE_URL",
         "TRUS_EMBED_MODEL",
         "TRUS_EMBED_API_KEY",
+        # Ops-summary gate token — a developer's local .env must not leak a real
+        # token into tests that assert 401-without-token behavior.
+        "TRUS_OPS_TOKEN",
     ):
         monkeypatch.delenv(k, raising=False)
 

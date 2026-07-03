@@ -10,7 +10,7 @@ import threading
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Literal, cast
 
@@ -108,6 +108,21 @@ CREATE TABLE IF NOT EXISTS layout_library (
     created_at   TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_layout_use_case ON layout_library(use_case, created_at);
+-- Per-generation telemetry (R-1201/R-1202): one row per LLM-backed handler call.
+-- owner is the session id for now; Task 6 swaps it to user id transparently.
+CREATE TABLE IF NOT EXISTS gen_events (
+    id          TEXT PRIMARY KEY,
+    owner       TEXT NOT NULL,
+    kind        TEXT NOT NULL,      -- generate | preview | file | refine | insights
+    outcome     TEXT NOT NULL,      -- ok | degraded | question | refusal | error
+    provider    TEXT,
+    model       TEXT,
+    latency_ms  INTEGER,
+    tokens_in   INTEGER,
+    tokens_out  INTEGER,
+    created_at  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_gen_events_owner_day ON gen_events (owner, created_at);
 """
 
 # Tracks which db file has had its schema ensured this process, so we re-run the
@@ -827,3 +842,67 @@ def layout_counts() -> dict[str, int]:
             "SELECT use_case, COUNT(*) AS n FROM layout_library GROUP BY use_case"
         ).fetchall()
     return {r["use_case"]: r["n"] for r in rows}
+
+
+# ── Generation telemetry (R-1201/R-1202) ─────────────────────────────────────
+
+
+def add_gen_event(
+    owner: str,
+    kind: str,
+    outcome: str,
+    provider: str | None,
+    model: str | None,
+    latency_ms: int,
+    tokens_in: int | None,
+    tokens_out: int | None,
+) -> None:
+    with _conn() as c:
+        c.execute(
+            "INSERT INTO gen_events (id, owner, kind, outcome, provider, model,"
+            " latency_ms, tokens_in, tokens_out, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                str(uuid.uuid4()),
+                owner,
+                kind,
+                outcome,
+                provider,
+                model,
+                latency_ms,
+                tokens_in,
+                tokens_out,
+                _now(),
+            ),
+        )
+
+
+def gen_stats(days: int = 7) -> dict:
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT outcome, COUNT(*) n, SUM(COALESCE(tokens_in,0)) tin,"
+            " SUM(COALESCE(tokens_out,0)) tout, AVG(latency_ms) lat"
+            " FROM gen_events WHERE created_at >= ? GROUP BY outcome",
+            (cutoff,),
+        ).fetchall()
+    return {
+        "total": sum(r["n"] for r in rows),
+        "by_outcome": {r["outcome"]: r["n"] for r in rows},
+        "tokens_in": sum(r["tin"] or 0 for r in rows),
+        "tokens_out": sum(r["tout"] or 0 for r in rows),
+        "avg_latency_ms": round(
+            sum((r["lat"] or 0) * r["n"] for r in rows) / max(1, sum(r["n"] for r in rows))
+        ),
+    }
+
+
+def daily_active(days: int = 14) -> list[dict]:
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT substr(created_at, 1, 10) day, COUNT(DISTINCT owner) owners"
+            " FROM gen_events WHERE created_at >= ? GROUP BY day ORDER BY day DESC",
+            (cutoff,),
+        ).fetchall()
+    return [{"day": r["day"], "owners": r["owners"]} for r in rows]
