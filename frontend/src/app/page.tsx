@@ -112,9 +112,13 @@ export default function Home() {
   // R-602 (cross-tab half): a toast surfaced when a stale write loses a rev
   // race — the module was reloaded to the version another tab saved.
   const [conflictNotice, setConflictNotice] = useState<string | null>(null);
+  const conflictTimerRef = useRef<number | null>(null);
   const flashConflict = useCallback(() => {
     setConflictNotice("This module changed in another tab — showing the latest version.");
-    window.setTimeout(() => setConflictNotice(null), 4000);
+    // Reset the dismiss timer per flash: a second conflict within 4s must get
+    // its own full display window, not be cut short by the first one's timer.
+    if (conflictTimerRef.current !== null) window.clearTimeout(conflictTimerRef.current);
+    conflictTimerRef.current = window.setTimeout(() => setConflictNotice(null), 4000);
   }, []);
 
   // Always-fresh handle on `modules` for the saver's `getRev` (the saver is

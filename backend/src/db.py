@@ -840,21 +840,17 @@ def undo_module(session_id: str, module_id: str) -> StoredModule | None:
         if previous is None or previous_config is None:
             return None
         c.execute("DELETE FROM module_versions WHERE seq = ?", (current["seq"],))
+        # rev bumps like any other write (R-602): a tab holding the pre-undo rev
+        # must conflict-detect, and the tab that undid must get the true new rev.
         c.execute(
-            "UPDATE modules SET config_json = ?, updated_at = ? WHERE id = ? AND session_id = ?",
+            "UPDATE modules SET config_json = ?, updated_at = ?, rev = rev + 1"
+            " WHERE id = ? AND session_id = ?",
             (previous["config_json"], now, module_id, session_id),
         )
-        row = c.execute(
-            "SELECT created_at, page_id, archived FROM modules WHERE id = ?", (module_id,)
-        ).fetchone()
-    return StoredModule(
-        id=module_id,
-        config=previous_config,
-        created_at=row["created_at"],
-        updated_at=now,
-        page_id=row["page_id"],
-        archived=bool(row["archived"]),
-    )
+        # Return the true post-write row (never hand-construct a StoredModule
+        # here — a hand-built one silently carried the Pydantic rev default).
+        row = c.execute(f"SELECT {_MOD_COLS} FROM modules WHERE id = ?", (module_id,)).fetchone()
+    return _stored_from_row(row)
 
 
 # ── Generation cache / template library ──────────────────────────────────────
