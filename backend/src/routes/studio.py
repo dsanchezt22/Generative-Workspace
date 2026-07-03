@@ -11,7 +11,7 @@ from fastapi import APIRouter, File, Form, HTTPException, Query, Request, Upload
 from pydantic import BaseModel
 
 from src import db, llm, semantic_cache
-from src.routes.deps import _owner_id
+from src.routes.deps import _llm_error_detail, _owner_id
 from src.schema import LLMError, ModuleConfig, RefusalError
 from src.services import studio
 
@@ -172,7 +172,7 @@ def import_layout(
     except RefusalError as e:
         raise HTTPException(status_code=422, detail={"refusal": e.reason}) from e
     except LLMError as e:
-        raise HTTPException(status_code=503, detail=str(e)) from e
+        raise HTTPException(status_code=503, detail=_llm_error_detail(e)) from e
     lid = db.layout_add(
         key, ly["label"], ly.get("inspired_by"), json.dumps(ly["config"]), owner=owner
     )
@@ -206,7 +206,7 @@ def capture_layout(
     except RefusalError as e:
         raise HTTPException(status_code=422, detail={"refusal": e.reason}) from e
     except LLMError as e:
-        raise HTTPException(status_code=503, detail=str(e)) from e
+        raise HTTPException(status_code=503, detail=_llm_error_detail(e)) from e
 
     # R-403: the TRANSFORM stage's llm.generate() call can cascade-degrade even
     # though capability coverage still scores "high" — record that on the

@@ -80,6 +80,73 @@ def test_stub_mode_refine_is_honest_not_silent(monkeypatch):
         orchestrator.refine_module(config, "add a notes field")
 
 
+_DEGRADED_STUB_RAW = json.dumps(
+    {
+        "title": "Generic Template",
+        "icon": "sparkles",
+        "components": [{"id": "note", "type": "text_input", "label": "Note"}],
+    }
+)
+
+
+def test_refine_degraded_cascade_fails_honestly_not_silently(client, monkeypatch):
+    """R-1104/R-403: with TRUS_LLM_PROVIDER=openai and the endpoint down, cascade-on
+    degrades the refine call to a generic stub template instead of raising. The route
+    must NOT persist that fake success — the stored module must be untouched, no new
+    version row created, and the client must see an honest 503."""
+    monkeypatch.setenv("TRUS_LLM_PROVIDER", "openai")
+    created = client.post(
+        "/api/modules",
+        json={
+            "configs": [
+                {
+                    "title": "Original",
+                    "icon": "activity",
+                    "components": [{"id": "n", "type": "number_input", "label": "N"}],
+                }
+            ]
+        },
+    ).json()
+    module_id = created[0]["id"]
+    original_config = created[0]["config"]
+    history_before = client.get(f"/api/modules/{module_id}/history").json()
+
+    monkeypatch.setattr(llm, "generate", fake_generate(_DEGRADED_STUB_RAW, degraded=True))
+    resp = client.post(f"/api/modules/{module_id}/refine", json={"prompt": "add a field"})
+
+    assert resp.status_code == 503
+    after = next(m for m in client.get("/api/modules").json() if m["id"] == module_id)
+    assert after["config"] == original_config  # NOT replaced with the stub template
+    history_after = client.get(f"/api/modules/{module_id}/history").json()
+    assert history_after == history_before  # no new version row from the aborted refine
+
+
+def test_insights_degraded_cascade_fails_honestly_not_silently(client, monkeypatch):
+    """R-1104/R-403: same class of bug on POST /api/workspace/insights — a
+    cascade-degraded synthesis must not silently insert a generic stub module."""
+    monkeypatch.setenv("TRUS_LLM_PROVIDER", "openai")
+    client.post(
+        "/api/modules",
+        json={
+            "configs": [
+                {
+                    "title": "Workouts",
+                    "icon": "activity",
+                    "components": [{"id": "n", "type": "number_input", "label": "N"}],
+                }
+            ]
+        },
+    )
+    before = client.get("/api/modules").json()
+
+    monkeypatch.setattr(llm, "generate", fake_generate(_DEGRADED_STUB_RAW, degraded=True))
+    resp = client.post("/api/workspace/insights")
+
+    assert resp.status_code == 503
+    after = client.get("/api/modules").json()
+    assert len(after) == len(before)  # nothing was inserted
+
+
 def test_refine_route_returns_422_not_500_on_clarifying_question(client, monkeypatch):
     """R-304 AC: build/ask/refuse each surfaced distinctly — no crash paths."""
     from src.schema import ClarifyingQuestion

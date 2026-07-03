@@ -1,10 +1,34 @@
 """Shared route dependencies."""
 
+import logging
 import os
 
 from fastapi import HTTPException, Request
 
 from src import db
+from src.schema import LLMError
+
+_logger = logging.getLogger(__name__)
+
+
+def _llm_error_detail(e: LLMError) -> str:
+    """Map an internal LLMError to a small set of safe, honest client messages.
+
+    LLMError messages can embed the internal endpoint URL and up to 400 chars of an
+    upstream response body (see llm.py), so the raw text is logged server-side and
+    NEVER returned to the client. Status stays 503 at the call sites (R-1104)."""
+    raw = str(e)
+    _logger.warning("LLM error (returned to client as sanitized 503): %s", raw)
+    low = raw.lower()
+    if any(s in low for s in ("could not reach", "unreachable", "timed out", "timeout")):
+        return "The AI model endpoint is unreachable right now. Please try again in a moment."
+    if any(s in low for s in ("offline", "set trus_llm_base_url", "template mode", "stub")):
+        return "No live AI model is configured. Configure a model to use AI generation."
+    if any(
+        s in low for s in ("empty response", "unexpected", "non-json", "returned http", "invalid")
+    ):
+        return "The AI model returned an unusable response. Please try again."
+    return "AI generation is temporarily unavailable. Please try again in a moment."
 
 
 def _owner_id(request: Request) -> str:

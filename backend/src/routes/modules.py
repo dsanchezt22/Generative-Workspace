@@ -1,12 +1,11 @@
 import contextlib
-import logging
 import time
 from typing import Literal
 
 from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile
 
 from src import db, llm
-from src.routes.deps import _owner_id
+from src.routes.deps import _llm_error_detail, _owner_id
 from src.schema import (
     ClarifyingQuestion,
     CreateSnapshotRequest,
@@ -26,28 +25,6 @@ from src.services import orchestrator
 from src.stub_templates import pick_template
 
 router = APIRouter()
-
-_logger = logging.getLogger(__name__)
-
-
-def _llm_error_detail(e: LLMError) -> str:
-    """Map an internal LLMError to a small set of safe, honest client messages.
-
-    LLMError messages can embed the internal endpoint URL and up to 400 chars of an
-    upstream response body (see llm.py), so the raw text is logged server-side and
-    NEVER returned to the client. Status stays 503 at the call sites (R-1104)."""
-    raw = str(e)
-    _logger.warning("LLM error (returned to client as sanitized 503): %s", raw)
-    low = raw.lower()
-    if any(s in low for s in ("could not reach", "unreachable", "timed out", "timeout")):
-        return "The AI model endpoint is unreachable right now. Please try again in a moment."
-    if any(s in low for s in ("offline", "set trus_llm_base_url", "template mode", "stub")):
-        return "No live AI model is configured. Configure a model to use AI generation."
-    if any(
-        s in low for s in ("empty response", "unexpected", "non-json", "returned http", "invalid")
-    ):
-        return "The AI model returned an unusable response. Please try again."
-    return "AI generation is temporarily unavailable. Please try again in a moment."
 
 
 def _log(
@@ -323,6 +300,13 @@ def refine_module(module_id: str, body: RefineRequest, request: Request) -> Stor
             new_config = orchestrator.refine_module(
                 existing.config, prompt, existing_modules=other_modules
             )
+        last = llm.last_call.get()
+        if last is not None and last.degraded:
+            # R-1104/R-403: a cascade-degraded call still parses into a valid (but
+            # generic, ungrounded) ModuleConfig — never persist that as a fake
+            # success. The gen_event above already recorded outcome=degraded;
+            # this just stops the route from acting on it.
+            raise LLMError("The AI model is unavailable — refine was not applied.")
     except ClarifyingQuestion as e:
         raise HTTPException(status_code=422, detail={"question": e.question}) from e
     except RefusalError as e:
@@ -398,6 +382,11 @@ def workspace_insights(
     try:
         with _track(sid, "insights"):
             config = orchestrator.synthesize_workspace(existing_configs)
+        last = llm.last_call.get()
+        if last is not None and last.degraded:
+            # R-1104/R-403: mirror the refine guard above — a cascade-degraded
+            # synthesis must not be inserted as a fake-success dashboard module.
+            raise LLMError("The AI model is unavailable — insights were not generated.")
     except ClarifyingQuestion as e:
         raise HTTPException(status_code=422, detail={"question": e.question}) from e
     except RefusalError as e:

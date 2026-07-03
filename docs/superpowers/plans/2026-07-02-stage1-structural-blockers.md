@@ -1645,10 +1645,10 @@ Then: REQUIRED SUB-SKILL `superpowers:requesting-code-review` on the whole branc
 ## Stage-Exit Checklist (maps to spec ACs — spec §0: stage exits only when these pass)
 
 - [ ] **R-1103 AC:** 3 concurrent long generations; unrelated save/load/health each <1s P95 (`test_event_loop.py` + manual with stub sleep).
-- [ ] **R-403 AC:** provider forced down → visibly-labeled fallback or honest failure; nothing degraded in any cache (`test_honesty.py`).
+- [ ] **R-403 AC:** provider forced down → visibly-labeled fallback or honest failure; nothing degraded in any cache (`test_honesty.py`). Scope: generate/preview/capture verified by test_honesty.py; refine/insights closed in the final-review fix round.
 - [ ] **R-304 AC:** build/ask/refuse all surfaced distinctly; refine/insights no longer 500 on questions.
 - [ ] **R-1105 AC:** corrupted row degrades only itself (`test_tolerant_reads.py`).
-- [ ] **R-1201 AC:** "who used it yesterday" answerable from `/api/ops/summary`.
+- [ ] **R-1201 AC:** which-users answerable from gen_events+users data; `/api/ops/summary` shows per-day counts.
 - [ ] **R-1202:** every generation records outcome/latency/tokens per owner.
 - [ ] **R-1203 (logged partial):** backend errors reach the operator log ✓; the FRONTEND error path (error boundary + client-error report) is deliberately deferred to Stage 2 where it lands with the R-1101 reliability pass — this checklist line is the logged reason (spec §0 SHOULD-skip rule).
 - [ ] **R-901 AC:** unauthenticated + forged-secret requests: no spend, no reads, no writes (`test_identity.py`, `test_prod_config.py`).

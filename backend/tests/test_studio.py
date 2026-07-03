@@ -432,6 +432,25 @@ def test_capture_route_surfaces_llm_error_as_503(client, monkeypatch):
     assert r.status_code == 503
 
 
+def test_capture_llm_error_detail_is_sanitized(client, monkeypatch):
+    """F5-equivalent for the studio capture path: the raw LLMError text can embed
+    the internal endpoint URL — the client must only ever see the sanitized,
+    mapped message (never the leaked "http://..." endpoint)."""
+    from src.schema import LLMError
+
+    leak = "Could not reach the LLM endpoint at http://10.1.2.3:11434/v1: refused"
+    monkeypatch.setattr(
+        "src.services.studio.capture_layout",
+        lambda *a, **k: (_ for _ in ()).throw(LLMError(leak)),
+    )
+    r = client.post(
+        "/api/studio/use-cases/calorie/capture", files={"file": ("ui.png", _PNG, "image/png")}
+    )
+    assert r.status_code == 503
+    detail = r.json()["detail"]
+    assert "http" not in detail
+
+
 def test_promote_unknown_layout_404(client):
     assert client.post("/api/studio/layouts/does-not-exist/promote").status_code == 404
 
