@@ -378,8 +378,20 @@ class CreateSnapshotRequest(BaseModel):
     label: str | None = None
 
 
+class ExchangeTurn(BaseModel):
+    """One question/answer pair from a multi-turn clarifying interview (R-102).
+    The route folds the accumulated exchange into the text the MODEL sees, so a
+    second (or third, or fourth) question never loses earlier answers."""
+
+    question: str = Field(max_length=500)
+    answer: str = Field(max_length=500)
+
+
 class GenerateRequest(BaseModel):
     prompt: str
+    # R-102: prior Q/A pairs in this clarifying interview, oldest first. Capped
+    # at 6 turns (the route enforces the actual build-now cap at 4 answered).
+    exchange: list[ExchangeTurn] | None = Field(default=None, max_length=6)
 
 
 class RefineRequest(BaseModel):
@@ -392,6 +404,10 @@ class GenerateResponse(BaseModel):
     previews: list[ModuleConfig] | None = None  # proposed (not yet persisted) tools
     question: str | None = None  # set when the orchestrator needs clarification
     degraded: bool = False  # true when the result came from a cascade fallback
+    # R-103/R-301: a one-paragraph rationale for what was built and why — set
+    # only on a fresh (non-stub, non-cached) model response; None otherwise so
+    # the app never fabricates a rationale it didn't actually generate.
+    plan: str | None = None
 
 
 class InsertModulesRequest(BaseModel):

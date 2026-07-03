@@ -6,9 +6,11 @@ that the frontend renders with its trusted component library.
 
 from __future__ import annotations
 
+import contextvars
 import json
 import os
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import TypeVar
 
 from pydantic import ValidationError
@@ -18,6 +20,16 @@ from src.schema import ClarifyingQuestion, LLMError, ModuleConfig, RefusalError
 from src.services import extract
 
 _T = TypeVar("_T")
+
+# R-103/R-301: the plan paragraph parsed alongside the last generate_modules()
+# decomposition. A side channel (mirrors llm.last_call) so generate_modules()
+# keeps returning list[ModuleConfig] — every existing call site is untouched —
+# while the route can still surface the plan on GenerateResponse. Only
+# generate_modules() (the generate/preview entry point) sets this; the file
+# upload path does not read it.
+last_plan: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "orchestrator_last_plan", default=None
+)
 
 
 class _InvalidOutput(Exception):
@@ -276,12 +288,17 @@ a single card. You never write UI code; you return ModuleConfig JSON.
 
 {_COMPONENT_DOCS}
 
-Output JSON ONLY: an ARRAY of 1-6 ModuleConfig objects. Each object has this shape:
+Output JSON ONLY: an OBJECT with this shape:
 {{
-  "title": "...", "components": [ {{ "id","type","label",... }} ], "state": {{ }},
-  "layout": {{ "x":0,"y":0,"width":360,"height":320 }},
-  "icon": "<one icon name: activity|leaf|dollar|check|book|repeat|smile|calendar|plane|music|cap|briefcase|droplet|moon|film|cart|star|target|list|grid|chart|camera|heart|home|folder|bell|paw|sparkles>", "accent": "<amber|emerald|sky|rose|violet|coral|teal|gold>",
-  "columns": 1, "summary_component_id": "<id?>"
+  "plan": "<one short paragraph: what you will build and why it fits the request>",
+  "modules": [ <1-6 ModuleConfig objects>, each shaped:
+    {{
+      "title": "...", "components": [ {{ "id","type","label",... }} ], "state": {{ }},
+      "layout": {{ "x":0,"y":0,"width":360,"height":320 }},
+      "icon": "<one icon name: activity|leaf|dollar|check|book|repeat|smile|calendar|plane|music|cap|briefcase|droplet|moon|film|cart|star|target|list|grid|chart|camera|heart|home|folder|bell|paw|sparkles>", "accent": "<amber|emerald|sky|rose|violet|coral|teal|gold>",
+      "columns": 1, "summary_component_id": "<id?>"
+    }}
+  ]
 }}
 
 HOW MANY TOOLS:
@@ -298,10 +315,12 @@ Rules:
 3. snake_case unique ids within each module. Prefill "state" with any concrete values mentioned.
 4. ADAPT to the specifics of the request — never return generic rebranded clones.
 5. If existing modules are listed, you may add cross-module metric/progress_bar bindings.
-6. If the request is too vague AND one short question would unlock it, output exactly:
-   {{ "question": "<one short question>" }}
+6. Ask AT MOST ONE clarifying question, and ONLY when the request is genuinely ambiguous —
+   you cannot pick sensible fields, units, or ranges without the answer, and no reasonable
+   default exists. When you do, output exactly (nothing else — no "plan", no "modules"):
+   {{ "question": "<one short, specific question>" }}
 7. If illicit or impossible, output exactly: {{ "refusal": "<one-sentence reason>" }}
-8. Output ONLY the JSON array (or the single refusal/question object). No prose.
+8. Do not narrate. Output ONLY the JSON object above (or the single refusal/question object).
 """
 
 
@@ -309,6 +328,7 @@ def _seeded_system(
     prompt: str,
     existing_modules: list[ModuleConfig] | None = None,
     seed_override: list | None = None,
+    exchange_context: str | None = None,
 ) -> str:
     from src.stub_templates import pick_system
 
@@ -317,28 +337,54 @@ def _seeded_system(
     # cache has nothing close.
     seed = json.dumps(seed_override if seed_override is not None else pick_system(prompt))
     context = _module_context(existing_modules or [])
+    # R-102: the folded interview Q/A (built by the route from GenerateRequest.exchange)
+    # reaches the model here so a multi-turn clarifying chain sees ALL prior answers —
+    # never the semantic-cache key (see generate_modules — that stays the raw `prompt`).
+    exchange_block = (
+        f"\n\nConversation so far (answers already given — do not ask about these again):\n"
+        f"{exchange_context}"
+        if exchange_context
+        else ""
+    )
     return (
         f"User request: {prompt}\n\n"
         f"Example starting system (adapt freely — change the number of tools, fields, components, "
         f"labels, icons, accents, and prefill state to match the request; do not return it as-is):\n{seed}"
-        f"{context}\n\n"
+        f"{context}"
+        f"{exchange_block}\n\n"
         f"Return the adapted ModuleConfig JSON array."
     )
 
 
-def _parse_modules(raw: str) -> list[ModuleConfig]:
+@dataclass
+class _Decomposition:
+    """Parsed result of a DECOMPOSE_SYSTEM_PROMPT response: the modules to build
+    plus the optional plan paragraph the model gave for them (R-103/R-301)."""
+
+    plan: str | None
+    modules: list[ModuleConfig]
+
+
+def _parse_modules(raw: str) -> _Decomposition:
     cleaned = _strip_codefence(raw)
     try:
         data = json.loads(cleaned)
     except json.JSONDecodeError as e:
         raise _InvalidOutput(f"non-JSON output: {e.msg}") from e
+    plan: str | None = None
     if isinstance(data, dict):
         if "refusal" in data:
             raise RefusalError(str(data["refusal"]))
         if "question" in data and len(data) == 1:
             raise ClarifyingQuestion(str(data["question"]))
-        # tolerate {"modules": [...]}; otherwise treat a lone object as a one-item list
-        data = data["modules"] if isinstance(data.get("modules"), list) else [data]
+        if isinstance(data.get("modules"), list):
+            # {"plan": str, "modules": [...]} (new) or {"modules": [...]} (already tolerated)
+            plan_val = data.get("plan")
+            if isinstance(plan_val, str) and plan_val.strip():
+                plan = plan_val.strip()
+            data = data["modules"]
+        else:
+            data = [data]  # a lone module object (back-compat)
     if not isinstance(data, list):
         raise _InvalidOutput("did not return a list of modules.")
     out: list[ModuleConfig] = []
@@ -351,17 +397,25 @@ def _parse_modules(raw: str) -> list[ModuleConfig]:
             continue
     if not out:
         raise _InvalidOutput("produced no valid modules.")
-    return out
+    return _Decomposition(plan=plan, modules=out)
 
 
 def generate_modules(
     prompt: str,
     existing_modules: list[ModuleConfig] | None = None,
     owner: str = "local",
+    exchange_context: str | None = None,
 ) -> list[ModuleConfig]:
     """Decompose a request into the set of tools it needs (1-6 modules).
 
-    The cache is scoped to `owner` (R-903): a prompt is never reused across owners."""
+    The cache is scoped to `owner` (R-903): a prompt is never reused across owners.
+    `exchange_context` (R-102's folded interview Q/A, built by the route) reaches
+    the MODEL via `_seeded_system` but never the semantic-cache key below — the
+    key is always the raw `prompt`, so identical original prompts still share a
+    cache entry regardless of how their interview played out. The parsed plan
+    (R-103/R-301) is surfaced via `last_plan`, not the return value, so every
+    existing caller of this function is unaffected."""
+    last_plan.set(None)
     if llm.is_stub_mode():
         from src.stub_templates import pick_system
 
@@ -376,12 +430,19 @@ def generate_modules(
             return [ModuleConfig.model_validate(c) for c in cached]
         except ValidationError:
             pass  # stale/incompatible cache entry → fall through and regenerate
-    result = _generate_validated(
-        _seeded_system(prompt, existing_modules, seed_override=cached if mode == "seed" else None),
+    parsed = _generate_validated(
+        _seeded_system(
+            prompt,
+            existing_modules,
+            seed_override=cached if mode == "seed" else None,
+            exchange_context=exchange_context,
+        ),
         DECOMPOSE_SYSTEM_PROMPT,
         _parse_modules,
         expect_array=True,
     )
+    last_plan.set(parsed.plan)
+    result = parsed.modules
     last = llm.last_call.get()
     # R-403: only a definitely-non-degraded call may seed the cache — an unknown
     # provenance (last is None) is not safe to treat as "not degraded".
@@ -430,7 +491,7 @@ def _generate_modules_grounded(
         _seeded_system(prompt, existing_modules)
         + f"\n\nDOCUMENT CONTENT (extracted from {label}):\n{extracted_text}"
     )
-    result = _generate_validated(
+    parsed = _generate_validated(
         user_message, DECOMPOSE_SYSTEM_PROMPT, _parse_modules, expect_array=True
     )
     # R-211 honesty: _generate_validated ran the TEXT model, but in stub mode (or a
@@ -440,7 +501,7 @@ def _generate_modules_grounded(
     last = llm.last_call.get()
     if last is None or last.provider == "stub":
         raise RefusalError(_UNREADABLE_FILE_REFUSAL)
-    return result
+    return parsed.modules
 
 
 def generate_modules_from_file(
@@ -478,7 +539,7 @@ def generate_modules_from_file(
         if not raw or raw.strip() in ("{}", ""):
             raise RefusalError(_UNREADABLE_FILE_REFUSAL)
         try:
-            return _parse_modules(raw)
+            return _parse_modules(raw).modules
         except _InvalidOutput as e:
             last = e
     raise RefusalError(f"The model could not produce a valid result ({last}).")

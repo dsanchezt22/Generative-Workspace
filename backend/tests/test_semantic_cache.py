@@ -203,3 +203,47 @@ def test_generate_modules_cache_hit_skips_model(monkeypatch):
     r2 = orchestrator.generate_modules(prompt)  # exact match → from cache
     assert [m.title for m in r2] == ["Cached Tool"]
     assert calls["n"] == 1  # model NOT called again
+
+
+def test_exchange_context_never_enters_the_semantic_cache_key(monkeypatch):
+    """R-102/R-301 cache-key decision: the folded interview Q/A (`exchange_context`)
+    reaches the MODEL (via _seeded_system) but must never affect the semantic-cache
+    key — that stays the raw `prompt`. Proof: the SAME prompt with a DIFFERENT
+    exchange_context on the second call still hits cache (model not called again) —
+    if exchange_context were part of the key, this would be a miss instead."""
+    from src.services import orchestrator
+
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.setenv("TRUS_LLM_PROVIDER", "openai")
+    monkeypatch.setenv("TRUS_LLM_BASE_URL", "http://h/v1")
+    monkeypatch.setenv("TRUS_LLM_MODEL", "m")
+    for k in _VARS:
+        monkeypatch.delenv(k, raising=False)
+
+    calls = {"n": 0}
+
+    def fake_generate(prompt, system=None, *, schema=None, expect_array=False):
+        calls["n"] += 1
+        text = json.dumps(
+            [
+                {
+                    "title": "Cached Tool",
+                    "components": [{"id": "a", "type": "text_input", "label": "A"}],
+                }
+            ]
+        )
+        result = gen_result(text, provider="openai", model="m")
+        llm.last_call.set(result)
+        return result
+
+    monkeypatch.setattr(orchestrator.llm, "generate", fake_generate)
+
+    prompt = "a very specific unique exchange caching prompt"
+    orchestrator.generate_modules(prompt, exchange_context="Q: which city?\nA: Tokyo")
+    assert calls["n"] == 1
+
+    r2 = orchestrator.generate_modules(
+        prompt, exchange_context="Q: totally different question?\nA: totally different answer"
+    )
+    assert [m.title for m in r2] == ["Cached Tool"]
+    assert calls["n"] == 1  # still cached — exchange_context never touched the key

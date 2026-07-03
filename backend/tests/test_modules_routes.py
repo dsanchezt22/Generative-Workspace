@@ -315,6 +315,124 @@ def test_generate_with_combined_prompt_produces_module(client):
 
 
 # ---------------------------------------------------------------------------
+# R-102/R-103/R-301: multi-turn interview chain + proposal plan.
+# ---------------------------------------------------------------------------
+
+
+def test_preview_two_question_chain_carries_both_answers(client):
+    """R-102 answer-drop fix: a second question in the same chain must not lose
+    the first answer — the route folds the FULL exchange into what the model sees."""
+    with patch("src.services.orchestrator.llm.generate", return_value=_gr(VALID_RAW)) as mock_gen:
+        resp = client.post(
+            "/api/modules/preview",
+            json={
+                "prompt": "plan my trip",
+                "exchange": [
+                    {"question": "Which city?", "answer": "Tokyo"},
+                    {"question": "How many days?", "answer": "5"},
+                ],
+            },
+        )
+    assert resp.status_code == 200, resp.text
+    received_prompt = mock_gen.call_args[0][0]
+    assert "Tokyo" in received_prompt
+    assert "5" in received_prompt
+
+
+def test_generate_two_question_chain_carries_both_answers(client):
+    """Same fix, exercised through /modules/generate (not just /preview)."""
+    with patch("src.services.orchestrator.llm.generate", return_value=_gr(VALID_RAW)) as mock_gen:
+        resp = client.post(
+            "/api/modules/generate",
+            json={
+                "prompt": "plan my trip",
+                "exchange": [
+                    {"question": "Which city?", "answer": "Tokyo"},
+                    {"question": "How many days?", "answer": "5"},
+                ],
+            },
+        )
+    assert resp.status_code == 200, resp.text
+    received_prompt = mock_gen.call_args[0][0]
+    assert "Tokyo" in received_prompt
+    assert "5" in received_prompt
+
+
+def test_preview_four_answered_exchange_triggers_build_now_note(client):
+    """R-102 cap: once 4 questions have been answered, the ROUTE (not just the
+    system prompt) instructs the model to stop asking and build."""
+    exchange = [{"question": f"Q{i}?", "answer": f"A{i}"} for i in range(1, 5)]
+    with patch("src.services.orchestrator.llm.generate", return_value=_gr(VALID_RAW)) as mock_gen:
+        resp = client.post(
+            "/api/modules/preview",
+            json={"prompt": "plan my trip", "exchange": exchange},
+        )
+    assert resp.status_code == 200, resp.text
+    received_prompt = mock_gen.call_args[0][0]
+    assert "do NOT ask another" in received_prompt
+
+
+def test_preview_three_answered_exchange_does_not_trigger_build_now_note(client):
+    """Negative control: the cap note only appears once 4 questions are answered."""
+    exchange = [{"question": f"Q{i}?", "answer": f"A{i}"} for i in range(1, 4)]
+    with patch("src.services.orchestrator.llm.generate", return_value=_gr(VALID_RAW)) as mock_gen:
+        resp = client.post(
+            "/api/modules/preview",
+            json={"prompt": "plan my trip", "exchange": exchange},
+        )
+    assert resp.status_code == 200, resp.text
+    received_prompt = mock_gen.call_args[0][0]
+    assert "do NOT ask another" not in received_prompt
+
+
+_PLAN_RAW = json.dumps(
+    {
+        "plan": "A focused workout tracker with reps and exercise name.",
+        "modules": [json.loads(VALID_RAW)],
+    }
+)
+
+
+def test_preview_response_includes_plan(client):
+    with patch("src.services.orchestrator.llm.generate", return_value=_gr(_PLAN_RAW)):
+        resp = client.post("/api/modules/preview", json={"prompt": "track my workouts"})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["plan"] == "A focused workout tracker with reps and exercise name."
+
+
+def test_generate_response_includes_plan(client):
+    with patch("src.services.orchestrator.llm.generate", return_value=_gr(_PLAN_RAW)):
+        resp = client.post("/api/modules/generate", json={"prompt": "track my workouts"})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["plan"] == "A focused workout tracker with reps and exercise name."
+
+
+def test_preview_response_plan_absent_when_model_omits_it(client):
+    """Old bare-array/object shapes (no "plan" key) leave plan None — no fabricated
+    rationale."""
+    with patch("src.services.orchestrator.llm.generate", return_value=_gr(VALID_RAW)):
+        resp = client.post("/api/modules/preview", json={"prompt": "track my workouts"})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["plan"] is None
+
+
+def test_preview_rejects_exchange_over_six_turns(client):
+    exchange = [{"question": f"Q{i}", "answer": f"A{i}"} for i in range(7)]
+    resp = client.post(
+        "/api/modules/preview", json={"prompt": "plan my trip", "exchange": exchange}
+    )
+    assert resp.status_code == 422
+
+
+def test_preview_rejects_overlong_exchange_field(client):
+    exchange = [{"question": "Q" * 501, "answer": "short"}]
+    resp = client.post(
+        "/api/modules/preview", json={"prompt": "plan my trip", "exchange": exchange}
+    )
+    assert resp.status_code == 422
+
+
+# ---------------------------------------------------------------------------
 # Preview-then-accept: POST /modules/preview proposes without persisting;
 # POST /modules persists what the caller accepts.
 # ---------------------------------------------------------------------------

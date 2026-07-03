@@ -21,19 +21,38 @@ interface Props {
   focusSignal?: number;
 }
 
+interface ExchangeTurnState {
+  question: string;
+  answer: string;
+}
+
+// R-102: a multi-turn clarifying interview — the original prompt plus every
+// question/answer pair so far (oldest first). The LAST turn's answer is ""
+// until the user responds to it. Replaces the old originalPromptRef
+// string-concat, which dropped every answer but the most recent.
+interface Exchange {
+  original: string;
+  turns: ExchangeTurnState[];
+}
+
+const SKIP_ANSWER = "just build it — use your best judgment";
+
 export function PromptBar({ onModule, activePageId, refineTarget, onRefineModule, onClearRefine, seed, onSeedConsumed, focusSignal }: Props) {
   const [prompt, setPrompt] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // Clarifying question state: when the AI needs one more answer before generating.
-  const [pendingQuestion, setPendingQuestion] = useState<string | null>(null);
-  const originalPromptRef = useRef<string>("");
+  // Clarifying-interview state: when the AI needs one more answer before generating.
+  const [exchange, setExchange] = useState<Exchange | null>(null);
+  const pendingQuestion = exchange ? exchange.turns[exchange.turns.length - 1].question : null;
+  const questionNumber = exchange ? exchange.turns.length : 0;
   const inputRef = useRef<HTMLInputElement | null>(null);
 
   const isRefining = Boolean(refineTarget);
   const [recording, setRecording] = useState(false);
   const [file, setFile] = useState<File | null>(null);
   const [previews, setPreviews] = useState<ModuleConfig[]>([]);
+  // R-103/R-301: the model's one-paragraph rationale for the current preview stack.
+  const [plan, setPlan] = useState<string | null>(null);
   const lastPromptRef = useRef<string>("");
   const fileRef = useRef<HTMLInputElement | null>(null);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -81,9 +100,33 @@ export function PromptBar({ onModule, activePageId, refineTarget, onRefineModule
   }, [focusSignal]);
 
   const clearClarification = () => {
-    setPendingQuestion(null);
-    originalPromptRef.current = "";
+    setExchange(null);
     setPrompt("");
+  };
+
+  // Send the exchange so far, with `answerText` filling in the LAST (pending)
+  // turn — every earlier answer is preserved (the R-102 answer-drop fix).
+  // `exchange` must be non-null when this is called.
+  const resolveExchange = async (answerText: string) => {
+    const { original, turns } = exchange as Exchange;
+    const turnsToSend = [
+      ...turns.slice(0, -1),
+      { ...turns[turns.length - 1], answer: answerText },
+    ];
+    const result = await api.previewModules(original, activePageId, turnsToSend);
+    if (result.question) {
+      // Another question — push a new turn (route caps this at 4 answered).
+      setExchange({ original, turns: [...turnsToSend, { question: result.question, answer: "" }] });
+      setPrompt("");
+      setTimeout(() => inputRef.current?.focus(), 0);
+    } else if (result.previews?.length) {
+      setPreviews(result.previews);
+      setPlan(result.plan ?? null);
+      lastPromptRef.current = original;
+      setPrompt("");
+      setExchange(null);
+    }
+    if (result.degraded) setError(DEGRADED_NOTICE);
   };
 
   const submit = async (e?: React.FormEvent) => {
@@ -97,8 +140,13 @@ export function PromptBar({ onModule, activePageId, refineTarget, onRefineModule
         // Talk to the preview: refine the proposed tools before adding them.
         const combined = `${lastPromptRef.current} — ${v}`;
         const result = await api.previewModules(combined, activePageId);
-        if (result.question) setPendingQuestion(result.question);
-        else if (result.previews?.length) { setPreviews(result.previews); lastPromptRef.current = combined; }
+        if (result.question) {
+          setExchange({ original: combined, turns: [{ question: result.question, answer: "" }] });
+        } else if (result.previews?.length) {
+          setPreviews(result.previews);
+          setPlan(result.plan ?? null);
+          lastPromptRef.current = combined;
+        }
         if (result.degraded) setError(DEGRADED_NOTICE);
         setPrompt("");
       } else if (isRefining && refineTarget && onRefineModule) {
@@ -113,25 +161,22 @@ export function PromptBar({ onModule, activePageId, refineTarget, onRefineModule
         setPrompt("");
         setFile(null);
         clearClarification();
+      } else if (exchange) {
+        // Answering a pending question in an ongoing interview.
+        await resolveExchange(v);
       } else {
-        // If we're answering a clarifying question, combine original + answer.
-        const fullPrompt = pendingQuestion
-          ? `${originalPromptRef.current} — ${v}`
-          : v;
-        const result = await api.previewModules(fullPrompt, activePageId);
+        const result = await api.previewModules(v, activePageId);
         if (result.question) {
           // AI needs clarification — enter follow-up mode.
-          if (!pendingQuestion) originalPromptRef.current = v;
-          setPendingQuestion(result.question);
+          setExchange({ original: v, turns: [{ question: result.question, answer: "" }] });
           setPrompt("");
           setTimeout(() => inputRef.current?.focus(), 0);
         } else if (result.previews?.length) {
           // Show a preview stack to accept before anything lands on the canvas.
-          lastPromptRef.current = fullPrompt;
+          lastPromptRef.current = v;
           setPreviews(result.previews);
+          setPlan(result.plan ?? null);
           setPrompt("");
-          setPendingQuestion(null);
-          originalPromptRef.current = "";
         }
         if (result.degraded) setError(DEGRADED_NOTICE);
       }
@@ -151,6 +196,24 @@ export function PromptBar({ onModule, activePageId, refineTarget, onRefineModule
     }
   };
 
+  // R-102 skip: answer the pending question with a canned "use your best
+  // judgment" so the interview ends immediately, at any step.
+  const skipToBuild = async () => {
+    if (!exchange || loading) return;
+    setLoading(true);
+    setError(null);
+    try {
+      await resolveExchange(SKIP_ANSWER);
+    } catch (err) {
+      if (err instanceof ApiError && err.refusal) setError(err.refusal);
+      else if (err instanceof ApiError && err.question) setError(err.question);
+      else if (err instanceof Error) setError(err.message);
+      else setError("Something went wrong.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const addConfigs = async (configs: ModuleConfig[]) => {
     try {
       const stored = await api.insertModules(configs, lastPromptRef.current, activePageId);
@@ -159,10 +222,10 @@ export function PromptBar({ onModule, activePageId, refineTarget, onRefineModule
       setError(err instanceof Error ? err.message : "Couldn't add to canvas.");
     }
   };
-  const addAll = async () => { await addConfigs(previews); setPreviews([]); };
+  const addAll = async () => { await addConfigs(previews); setPreviews([]); setPlan(null); };
   const addOne = async (i: number) => { await addConfigs([previews[i]]); setPreviews((p) => p.filter((_, idx) => idx !== i)); };
   const dismissOne = (i: number) => setPreviews((p) => p.filter((_, idx) => idx !== i));
-  const dismissAll = () => setPreviews([]);
+  const dismissAll = () => { setPreviews([]); setPlan(null); };
   // Inline edits to a preview (typing into its fields) flow back into the config.
   const updatePreview = (i: number, m: StoredModule) => setPreviews((p) => p.map((c, idx) => (idx === i ? m.config : c)));
 
@@ -203,6 +266,11 @@ export function PromptBar({ onModule, activePageId, refineTarget, onRefineModule
 
         {previews.length > 0 && (
           <div className="flex flex-col gap-3 px-3 pt-3 pb-1 max-h-[60vh] overflow-y-auto">
+            {/* R-103/R-301: the plan is a muted single paragraph — no new visual
+                language, same treatment as the other secondary/hint text below. */}
+            {plan && (
+              <p className="px-1 text-xs text-[var(--muted)] leading-relaxed">{plan}</p>
+            )}
             <div className="flex items-center gap-2 px-1">
               <span className="text-[10px] uppercase tracking-wide text-[var(--muted)] font-mono">
                 {previews.length} tool{previews.length === 1 ? "" : "s"} proposed — preview &amp; edit
@@ -257,11 +325,19 @@ export function PromptBar({ onModule, activePageId, refineTarget, onRefineModule
         {pendingQuestion && !isRefining && (
           <div className="flex items-start gap-2 px-4 pt-2.5 pb-0">
             <span className="text-[10px] uppercase tracking-wide text-[var(--muted)] font-mono shrink-0 mt-0.5">
-              One question
+              Question {questionNumber} of 4
             </span>
             <span className="text-xs text-[var(--foreground)] flex-1">
               {pendingQuestion}
             </span>
+            <button
+              type="button"
+              onClick={skipToBuild}
+              disabled={loading}
+              className="text-[var(--accent)] hover:brightness-110 transition text-xs shrink-0 disabled:opacity-40"
+            >
+              Just build it
+            </button>
             <button
               type="button"
               onClick={clearClarification}

@@ -88,6 +88,74 @@ def test_generate_modules_question():
         orchestrator.generate_modules("plan a trip")
 
 
+# --- R-103/R-301: proposal plan alongside the decomposed modules ---
+
+
+def test_parse_modules_tolerates_modules_object_shape_no_plan():
+    """{"modules": [...]} with no "plan" key — already-tolerated shape, verified."""
+    obj = json.dumps(
+        {
+            "modules": [
+                {"title": "A", "components": [{"id": "x", "type": "text_input", "label": "X"}]}
+            ]
+        }
+    )
+    with _fake_llm(obj):
+        mods = orchestrator.generate_modules("plan a trip")
+    assert [m.title for m in mods] == ["A"]
+    assert orchestrator.last_plan.get() is None
+
+
+def test_generate_modules_extracts_plan_alongside_modules():
+    """{"plan": str, "modules": [...]} — the new shape — surfaces the plan via
+    orchestrator.last_plan without changing generate_modules' return type."""
+    obj = json.dumps(
+        {
+            "plan": "I'll build a focused itinerary tracker for your trip.",
+            "modules": [
+                {"title": "A", "components": [{"id": "x", "type": "text_input", "label": "X"}]}
+            ],
+        }
+    )
+    with _fake_llm(obj):
+        mods = orchestrator.generate_modules("plan a trip")
+    assert [m.title for m in mods] == ["A"]
+    assert orchestrator.last_plan.get() == "I'll build a focused itinerary tracker for your trip."
+
+
+def test_generate_modules_stub_mode_has_no_plan(monkeypatch):
+    """Stub mode never fabricates a rationale it didn't actually generate."""
+    monkeypatch.setenv("GEMINI_API_KEY", "stub-test")
+    orchestrator.generate_modules("organize my wedding")
+    assert orchestrator.last_plan.get() is None
+
+
+def test_generate_modules_bare_array_shape_has_no_plan():
+    """The old bare-array shape still works and never claims a plan."""
+    with _fake_llm(
+        json.dumps(
+            [{"title": "A", "components": [{"id": "x", "type": "text_input", "label": "X"}]}]
+        )
+    ):
+        orchestrator.generate_modules("plan a trip")
+    assert orchestrator.last_plan.get() is None
+
+
+# --- R-102: exchange_context reaches the model, never the cache key ---
+
+
+def test_exchange_context_reaches_the_model_message():
+    arr = json.dumps(
+        [{"title": "A", "components": [{"id": "x", "type": "text_input", "label": "X"}]}]
+    )
+    with _fake_llm(arr) as mock_gen:
+        orchestrator.generate_modules(
+            "plan my unique trip prompt", exchange_context="Q: Which city?\nA: Tokyo"
+        )
+    prompt_used = mock_gen.call_args[0][0]
+    assert "Tokyo" in prompt_used
+
+
 def test_new_component_types_validate():
     from src.schema import ModuleConfig
 

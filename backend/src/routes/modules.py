@@ -9,6 +9,7 @@ from src.routes.deps import _llm_error_detail, _owner_id, _require_trusted_origi
 from src.schema import (
     ClarifyingQuestion,
     CreateSnapshotRequest,
+    ExchangeTurn,
     GenerateRequest,
     GenerateResponse,
     InsertModulesRequest,
@@ -25,6 +26,27 @@ from src.services import orchestrator
 from src.stub_templates import pick_template
 
 router = APIRouter()
+
+# R-102: once 4 questions in a chain have been answered, the route (not just the
+# system prompt) forces the model to stop asking and build its best interpretation.
+_EXCHANGE_CAP_NOTE = (
+    "You have asked enough questions — do NOT ask another; build the best interpretation now."
+)
+
+
+def _fold_exchange(exchange: list[ExchangeTurn] | None) -> str | None:
+    """Fold a multi-turn clarifying interview into text the MODEL sees, so a
+    second/third/fourth question never loses earlier answers (previously
+    PromptBar string-concatenated only the latest answer). Returns None when
+    there's no exchange yet. This folded text is passed to the orchestrator as
+    `exchange_context` — kept separate from `prompt`, which stays the raw
+    original and is the only thing the semantic cache keys on."""
+    if not exchange:
+        return None
+    lines = [f"Q: {turn.question}\nA: {turn.answer}" for turn in exchange]
+    if len(exchange) >= 4:
+        lines.append(_EXCHANGE_CAP_NOTE)
+    return "\n\n".join(lines)
 
 
 def _log(
@@ -85,21 +107,27 @@ def generate_module(
         raise HTTPException(status_code=422, detail="Prompt cannot be empty")
     sid = _owner_id(request)
     existing = [m.config for m in db.list_modules(sid)]
+    exchange_context = _fold_exchange(body.exchange)
     try:
         with _track(sid, "generate"):
-            configs = orchestrator.generate_modules(prompt, existing_modules=existing, owner=sid)
+            configs = orchestrator.generate_modules(
+                prompt, existing_modules=existing, owner=sid, exchange_context=exchange_context
+            )
     except ClarifyingQuestion as e:
         return GenerateResponse(question=e.question)
     except RefusalError as e:
         raise HTTPException(status_code=422, detail={"refusal": e.reason}) from e
     except LLMError as e:
         raise HTTPException(status_code=503, detail=_llm_error_detail(e)) from None
+    plan = orchestrator.last_plan.get()
     stored = [db.insert_module(sid, c, page_id=page_id) for c in configs]
     _log(sid, "user", prompt, page_id=stored[0].page_id)
     for s in stored:
         _log(sid, "assistant", f"Created {s.config.title}", page_id=s.page_id, module_id=s.id)
     deg = llm.last_call.get()
-    return GenerateResponse(module=stored[0], modules=stored, degraded=bool(deg and deg.degraded))
+    return GenerateResponse(
+        module=stored[0], modules=stored, degraded=bool(deg and deg.degraded), plan=plan
+    )
 
 
 @router.post("/modules/preview", response_model=GenerateResponse)
@@ -114,17 +142,21 @@ def preview_modules(
         raise HTTPException(status_code=422, detail="Prompt cannot be empty")
     sid = _owner_id(request)
     existing = [m.config for m in db.list_modules(sid)]
+    exchange_context = _fold_exchange(body.exchange)
     try:
         with _track(sid, "preview"):
-            configs = orchestrator.generate_modules(prompt, existing_modules=existing, owner=sid)
+            configs = orchestrator.generate_modules(
+                prompt, existing_modules=existing, owner=sid, exchange_context=exchange_context
+            )
     except ClarifyingQuestion as e:
         return GenerateResponse(question=e.question)
     except RefusalError as e:
         raise HTTPException(status_code=422, detail={"refusal": e.reason}) from e
     except LLMError as e:
         raise HTTPException(status_code=503, detail=_llm_error_detail(e)) from None
+    plan = orchestrator.last_plan.get()
     deg = llm.last_call.get()
-    return GenerateResponse(previews=configs, degraded=bool(deg and deg.degraded))
+    return GenerateResponse(previews=configs, degraded=bool(deg and deg.degraded), plan=plan)
 
 
 @router.post("/modules", response_model=list[StoredModule], status_code=201)

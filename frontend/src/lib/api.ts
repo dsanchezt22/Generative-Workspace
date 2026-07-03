@@ -79,12 +79,21 @@ export class ApiError extends Error {
   }
 }
 
+// R-102: one question/answer pair from a multi-turn clarifying interview.
+export interface ExchangeTurn {
+  question: string;
+  answer: string;
+}
+
 export interface GenerateResponse {
   module?: StoredModule | null;
   modules?: StoredModule[] | null;
   previews?: ModuleConfig[] | null;
   question?: string | null;
   degraded?: boolean | null;
+  // R-103/R-301: a one-paragraph rationale for the proposal, set only on a
+  // fresh (non-stub, non-cached) model response.
+  plan?: string | null;
 }
 
 export const api = {
@@ -128,15 +137,15 @@ export const api = {
     request<StoredModule[]>(`/api/onboarding/seed${pageId ? `?page_id=${pageId}` : ""}`, {
       method: "POST",
     }),
-  generateModule: (prompt: string, pageId?: string) =>
+  generateModule: (prompt: string, pageId?: string, exchange?: ExchangeTurn[]) =>
     request<GenerateResponse>(`/api/modules/generate${pageId ? `?page_id=${pageId}` : ""}`, {
       method: "POST",
-      body: JSON.stringify({ prompt }),
+      body: JSON.stringify({ prompt, exchange }),
     }),
-  previewModules: (prompt: string, pageId?: string) =>
+  previewModules: (prompt: string, pageId?: string, exchange?: ExchangeTurn[]) =>
     request<GenerateResponse>(`/api/modules/preview${pageId ? `?page_id=${pageId}` : ""}`, {
       method: "POST",
-      body: JSON.stringify({ prompt }),
+      body: JSON.stringify({ prompt, exchange }),
     }),
   insertModules: (configs: ModuleConfig[], prompt?: string, pageId?: string) =>
     request<StoredModule[]>(`/api/modules${pageId ? `?page_id=${pageId}` : ""}`, {
