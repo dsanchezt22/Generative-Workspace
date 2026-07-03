@@ -400,21 +400,38 @@ def _parse_modules(raw: str) -> _Decomposition:
     return _Decomposition(plan=plan, modules=out)
 
 
+# R-102 hard cap ("never a fifth question"): appended to the user message when the
+# model questions past an exhausted budget — one last chance to comply before refusal.
+_BUILD_NOW_NOTE = (
+    "\n\nDo NOT ask another question. Return the modules object NOW — "
+    "build your best interpretation of everything above."
+)
+
+_QUESTION_CAP_REFUSAL = (
+    "Four answers in, the model still couldn't settle on a build — "
+    "try rephrasing the request with more detail."
+)
+
+
 def generate_modules(
     prompt: str,
     existing_modules: list[ModuleConfig] | None = None,
     owner: str = "local",
     exchange_context: str | None = None,
+    allow_question: bool = True,
 ) -> list[ModuleConfig]:
     """Decompose a request into the set of tools it needs (1-6 modules).
 
     The cache is scoped to `owner` (R-903): a prompt is never reused across owners.
     `exchange_context` (R-102's folded interview Q/A, built by the route) reaches
     the MODEL via `_seeded_system` but never the semantic-cache key below — the
-    key is always the raw `prompt`, so identical original prompts still share a
-    cache entry regardless of how their interview played out. The parsed plan
-    (R-103/R-301) is surfaced via `last_plan`, not the return value, so every
-    existing caller of this function is unaffected."""
+    key is always the raw `prompt`. Interview-specialized results are also never
+    STORED under that key (see the store guard below). When `allow_question` is
+    False (the route's 4-answered cap is exhausted), a ClarifyingQuestion from
+    the model is not relayed: retry once with a strengthened build-now note, and
+    refuse honestly if it still questions — the user never sees a fifth question.
+    The parsed plan (R-103/R-301) is surfaced via `last_plan`, not the return
+    value, so every existing caller of this function is unaffected."""
     last_plan.set(None)
     if llm.is_stub_mode():
         from src.stub_templates import pick_system
@@ -430,23 +447,39 @@ def generate_modules(
             return [ModuleConfig.model_validate(c) for c in cached]
         except ValidationError:
             pass  # stale/incompatible cache entry → fall through and regenerate
-    parsed = _generate_validated(
-        _seeded_system(
-            prompt,
-            existing_modules,
-            seed_override=cached if mode == "seed" else None,
-            exchange_context=exchange_context,
-        ),
-        DECOMPOSE_SYSTEM_PROMPT,
-        _parse_modules,
-        expect_array=True,
+    user_message = _seeded_system(
+        prompt,
+        existing_modules,
+        seed_override=cached if mode == "seed" else None,
+        exchange_context=exchange_context,
     )
+    try:
+        parsed = _generate_validated(
+            user_message, DECOMPOSE_SYSTEM_PROMPT, _parse_modules, expect_array=True
+        )
+    except ClarifyingQuestion:
+        if allow_question:
+            raise
+        # R-102 hard cap: the question budget is spent — never relay another.
+        try:
+            parsed = _generate_validated(
+                user_message + _BUILD_NOW_NOTE,
+                DECOMPOSE_SYSTEM_PROMPT,
+                _parse_modules,
+                expect_array=True,
+            )
+        except ClarifyingQuestion as e:
+            raise RefusalError(_QUESTION_CAP_REFUSAL) from e
     last_plan.set(parsed.plan)
     result = parsed.modules
     last = llm.last_call.get()
     # R-403: only a definitely-non-degraded call may seed the cache — an unknown
     # provenance (last is None) is not safe to treat as "not degraded".
-    if last is not None and not last.degraded:
+    # R-102 (review fix): interview-specialized results must not seed the shared
+    # prompt→template library — the key would be the raw prompt but the value is
+    # shaped by answers the key doesn't carry (key/value intent mismatch), so a
+    # later plain generation of the same prompt would be served the wrong tools.
+    if last is not None and not last.degraded and exchange_context is None:
         semantic_cache.store(
             "system", prompt, [m.model_dump(mode="json") for m in result], owner=owner
         )

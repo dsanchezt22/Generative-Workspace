@@ -385,6 +385,75 @@ def test_preview_three_answered_exchange_does_not_trigger_build_now_note(client)
     assert "do NOT ask another" not in received_prompt
 
 
+def test_preview_never_relays_a_fifth_question_hard_cap(client):
+    """FIX (review 2b-3, R-102 AC "never a fifth question"): with 4 answered
+    turns, a model that STILL insists on questioning is retried once with a
+    strengthened build-now note; if it still questions, the route returns an
+    honest 422 refusal — question #5 is never relayed to the user."""
+    exchange = [{"question": f"Q{i}?", "answer": f"A{i}"} for i in range(1, 5)]
+    with patch(
+        "src.services.orchestrator.llm.generate",
+        return_value=_gr('{"question": "And a fifth thing?"}'),
+    ) as mock_gen:
+        resp = client.post(
+            "/api/modules/preview",
+            json={"prompt": "plan my trip", "exchange": exchange},
+        )
+    assert resp.status_code == 422, resp.text
+    assert "refusal" in resp.json()["detail"]
+    assert mock_gen.call_count == 2  # first attempt + one strengthened retry
+
+
+def test_generate_never_relays_a_fifth_question_hard_cap(client):
+    """Same hard cap through /modules/generate."""
+    exchange = [{"question": f"Q{i}?", "answer": f"A{i}"} for i in range(1, 5)]
+    with patch(
+        "src.services.orchestrator.llm.generate",
+        return_value=_gr('{"question": "And a fifth thing?"}'),
+    ):
+        resp = client.post(
+            "/api/modules/generate",
+            json={"prompt": "plan my trip", "exchange": exchange},
+        )
+    assert resp.status_code == 422, resp.text
+    assert "refusal" in resp.json()["detail"]
+
+
+def test_preview_capped_chain_builds_on_strengthened_retry(client):
+    """Positive control for the hard cap: the model questions once past the cap,
+    then complies on the strengthened retry — the route returns previews (never
+    a fifth question), and the retry message carried the build-now directive."""
+    exchange = [{"question": f"Q{i}?", "answer": f"A{i}"} for i in range(1, 5)]
+    with patch(
+        "src.services.orchestrator.llm.generate",
+        side_effect=[_gr('{"question": "One more?"}'), _gr(VALID_RAW)],
+    ) as mock_gen:
+        resp = client.post(
+            "/api/modules/preview",
+            json={"prompt": "plan my trip", "exchange": exchange},
+        )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["previews"]
+    assert resp.json()["question"] is None
+    retry_prompt = mock_gen.call_args_list[1][0][0]
+    assert "Return the modules object NOW" in retry_prompt
+
+
+def test_preview_under_cap_still_relays_a_question(client):
+    """Negative control: below 4 answered turns the question channel is untouched."""
+    exchange = [{"question": "Q1?", "answer": "A1"}]
+    with patch(
+        "src.services.orchestrator.llm.generate",
+        return_value=_gr('{"question": "A second thing?"}'),
+    ):
+        resp = client.post(
+            "/api/modules/preview",
+            json={"prompt": "plan my trip", "exchange": exchange},
+        )
+    assert resp.status_code == 200
+    assert resp.json()["question"] == "A second thing?"
+
+
 _PLAN_RAW = json.dumps(
     {
         "plan": "A focused workout tracker with reps and exercise name.",

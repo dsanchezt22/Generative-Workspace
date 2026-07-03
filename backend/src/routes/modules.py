@@ -111,7 +111,12 @@ def generate_module(
     try:
         with _track(sid, "generate"):
             configs = orchestrator.generate_modules(
-                prompt, existing_modules=existing, owner=sid, exchange_context=exchange_context
+                prompt,
+                existing_modules=existing,
+                owner=sid,
+                exchange_context=exchange_context,
+                # R-102 hard cap: 4 answered questions → a 5th is never relayed.
+                allow_question=not body.exchange or len(body.exchange) < 4,
             )
     except ClarifyingQuestion as e:
         return GenerateResponse(question=e.question)
@@ -146,7 +151,12 @@ def preview_modules(
     try:
         with _track(sid, "preview"):
             configs = orchestrator.generate_modules(
-                prompt, existing_modules=existing, owner=sid, exchange_context=exchange_context
+                prompt,
+                existing_modules=existing,
+                owner=sid,
+                exchange_context=exchange_context,
+                # R-102 hard cap: 4 answered questions → a 5th is never relayed.
+                allow_question=not body.exchange or len(body.exchange) < 4,
             )
     except ClarifyingQuestion as e:
         return GenerateResponse(question=e.question)

@@ -44,7 +44,9 @@ export function PromptBar({ onModule, activePageId, refineTarget, onRefineModule
   // Clarifying-interview state: when the AI needs one more answer before generating.
   const [exchange, setExchange] = useState<Exchange | null>(null);
   const pendingQuestion = exchange ? exchange.turns[exchange.turns.length - 1].question : null;
-  const questionNumber = exchange ? exchange.turns.length : 0;
+  // Clamped to 4: the backend hard-caps the chain (never a fifth question), so
+  // the hint can never display a number beyond the "of 4" promise.
+  const questionNumber = exchange ? Math.min(exchange.turns.length, 4) : 0;
   const inputRef = useRef<HTMLInputElement | null>(null);
 
   const isRefining = Boolean(refineTarget);
@@ -181,6 +183,8 @@ export function PromptBar({ onModule, activePageId, refineTarget, onRefineModule
         if (result.degraded) setError(DEGRADED_NOTICE);
       }
     } catch (err) {
+      // Deliberate: a failed request mid-interview RETAINS the exchange state so
+      // the user can retry their answer without losing the whole Q/A chain.
       if (err instanceof ApiError && err.refusal) {
         setError(err.refusal);
       } else if (err instanceof ApiError && err.question) {

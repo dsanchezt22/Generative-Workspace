@@ -205,12 +205,14 @@ def test_generate_modules_cache_hit_skips_model(monkeypatch):
     assert calls["n"] == 1  # model NOT called again
 
 
-def test_exchange_context_never_enters_the_semantic_cache_key(monkeypatch):
-    """R-102/R-301 cache-key decision: the folded interview Q/A (`exchange_context`)
-    reaches the MODEL (via _seeded_system) but must never affect the semantic-cache
-    key — that stays the raw `prompt`. Proof: the SAME prompt with a DIFFERENT
-    exchange_context on the second call still hits cache (model not called again) —
-    if exchange_context were part of the key, this would be a miss instead."""
+def test_chain_generation_never_seeds_the_prompt_cache(monkeypatch):
+    """FIX (review 2b-3): an interview-specialized (chain-final) generation must
+    NOT be stored under the raw prompt key — the value is shaped by answers the
+    key doesn't carry (key/value intent mismatch), so a later PLAIN generation
+    of the same prompt would cache-HIT the specialized modules. With an
+    exchange_context: nothing is stored; a later plain generation of the same
+    prompt misses, generates fresh, and stores as usual."""
+    from src import db
     from src.services import orchestrator
 
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
@@ -227,7 +229,7 @@ def test_exchange_context_never_enters_the_semantic_cache_key(monkeypatch):
         text = json.dumps(
             [
                 {
-                    "title": "Cached Tool",
+                    "title": "Fresh Tool",
                     "components": [{"id": "a", "type": "text_input", "label": "A"}],
                 }
             ]
@@ -241,9 +243,9 @@ def test_exchange_context_never_enters_the_semantic_cache_key(monkeypatch):
     prompt = "a very specific unique exchange caching prompt"
     orchestrator.generate_modules(prompt, exchange_context="Q: which city?\nA: Tokyo")
     assert calls["n"] == 1
+    assert db.cache_stats()["entries"] == 0  # chain result stored NOTHING
 
-    r2 = orchestrator.generate_modules(
-        prompt, exchange_context="Q: totally different question?\nA: totally different answer"
-    )
-    assert [m.title for m in r2] == ["Cached Tool"]
-    assert calls["n"] == 1  # still cached — exchange_context never touched the key
+    r2 = orchestrator.generate_modules(prompt)  # plain — must miss and generate fresh
+    assert [m.title for m in r2] == ["Fresh Tool"]
+    assert calls["n"] == 2  # not served an interview-specialized result
+    assert db.cache_stats()["entries"] == 1  # the plain result stores as usual

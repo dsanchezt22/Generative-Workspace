@@ -15,7 +15,9 @@ def test_health_responds_while_generation_in_flight(monkeypatch, tmp_path):
 
     entered_handler = threading.Event()
 
-    def slow_generate(prompt, existing_modules=None, owner="local", exchange_context=None):
+    def slow_generate(
+        prompt, existing_modules=None, owner="local", exchange_context=None, allow_question=True
+    ):
         entered_handler.set()  # signal before the sleep, not a fixed head-start guess
         time.sleep(1.5)
         from src.schema import ModuleConfig
