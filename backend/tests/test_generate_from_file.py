@@ -327,10 +327,14 @@ def test_generate_from_file_grounded_path_excludes_recent_conversation(client, m
     """R-302: conversation context feeds the generate/preview paths only — the
     grounded (file) path must never receive it (document content already
     dominates there). Seed a distinctive prior turn via a normal generate call,
-    then confirm the grounded file-path prompt has no trace of it."""
+    then confirm the grounded file-path prompt has no trace of it. The file
+    route gets an EXPLICIT page_id (the page the seeded turn landed on), so
+    this can't pass trivially via the no-page-no-context rule (review 2b-4) —
+    only via the file path genuinely never fetching conversation context."""
     client.post(
         "/api/modules/generate", json={"prompt": "a distinctive prior request about llamas"}
     )
+    pid = client.get("/api/pages").json()[0]["id"]
 
     captured: dict = {}
     inner = fake_generate(
@@ -346,7 +350,7 @@ def test_generate_from_file_grounded_path_excludes_recent_conversation(client, m
     monkeypatch.setattr(llm, "generate", spy)
 
     resp = client.post(
-        "/api/modules/generate_from_file",
+        f"/api/modules/generate_from_file?page_id={pid}",
         files={"file": ("notes.txt", b"Some grounded document content here", "text/plain")},
         data={"prompt": "make a tool"},
     )

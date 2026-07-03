@@ -110,6 +110,8 @@ def generate_module(
     exchange_context = _fold_exchange(body.exchange)
     # R-302: the owner's recent conversation on this page feeds generation
     # context (not the grounded-file path — see generate_modules_from_file).
+    # page_id None (initial-load race window) → the helper returns [] — no page
+    # context = no conversation context, never a whole-session fallback.
     recent = db.recent_messages(sid, page_id, limit=10)
     try:
         with _track(sid, "generate"):
@@ -154,6 +156,8 @@ def preview_modules(
     exchange_context = _fold_exchange(body.exchange)
     # R-302: the owner's recent conversation on this page feeds generation
     # context (not the grounded-file path — see generate_modules_from_file).
+    # page_id None (initial-load race window) → the helper returns [] — no page
+    # context = no conversation context, never a whole-session fallback.
     recent = db.recent_messages(sid, page_id, limit=10)
     try:
         with _track(sid, "preview"):

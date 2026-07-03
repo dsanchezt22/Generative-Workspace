@@ -82,13 +82,15 @@ def test_recent_messages_scoped_by_page():
     assert [m["text"] for m in recent] == ["on page 1"]
 
 
-def test_recent_messages_no_page_id_is_session_wide():
+def test_recent_messages_no_page_id_returns_empty():
+    """Review fix (2b-4): no page context = no conversation context. page_id
+    None (the frontend's initial-load race window) must never fall back to
+    whole-session history — cross-page turns would leak into the generation."""
     db.init_db()
     sid = db.ensure_session(None)
     db.add_message(sid, "user", "on page 1", page_id="p1")
     db.add_message(sid, "user", "on page 2", page_id="p2")
-    recent = db.recent_messages(sid, None, limit=10)
-    assert len(recent) == 2
+    assert db.recent_messages(sid, None, limit=10) == []
 
 
 def test_recent_messages_cross_owner_isolation():

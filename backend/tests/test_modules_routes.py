@@ -506,16 +506,25 @@ def test_preview_rejects_overlong_exchange_field(client):
 # ---------------------------------------------------------------------------
 
 
+def _default_page_id(client) -> str:
+    """The session's default page id — where messages from a page_id-less
+    generate land (insert_module resolves None to the default page)."""
+    return client.get("/api/pages").json()[0]["id"]
+
+
 def test_generate_recent_conversation_reaches_the_model(client):
-    """A distinctive prior turn on this session must appear in the next call's
+    """A distinctive prior turn on this page must appear in the next call's
     model-visible prompt as bounded 'Recent conversation:' context."""
     with patch("src.services.orchestrator.llm.generate", return_value=_gr(VALID_RAW)):
         client.post(
             "/api/modules/generate",
             json={"prompt": "a wildly distinctive prior prompt about narwhals"},
         )
+    pid = _default_page_id(client)
     with patch("src.services.orchestrator.llm.generate", return_value=_gr(VALID_RAW)) as mock_gen:
-        client.post("/api/modules/generate", json={"prompt": "a new unrelated prompt"})
+        client.post(
+            f"/api/modules/generate?page_id={pid}", json={"prompt": "a new unrelated prompt"}
+        )
     second_prompt = mock_gen.call_args[0][0]
     assert "narwhals" in second_prompt
     assert "Recent conversation:" in second_prompt
@@ -528,10 +537,30 @@ def test_preview_recent_conversation_reaches_the_model(client):
             "/api/modules/generate",
             json={"prompt": "a wildly distinctive prior prompt about walruses"},
         )
+    pid = _default_page_id(client)
     with patch("src.services.orchestrator.llm.generate", return_value=_gr(VALID_RAW)) as mock_gen:
-        client.post("/api/modules/preview", json={"prompt": "a new unrelated prompt"})
+        client.post(
+            f"/api/modules/preview?page_id={pid}", json={"prompt": "a new unrelated prompt"}
+        )
     second_prompt = mock_gen.call_args[0][0]
     assert "walruses" in second_prompt
+
+
+def test_generate_without_page_id_gets_no_conversation_context(client):
+    """Review fix (2b-4): page_id=None is a real initial-load race window (the
+    frontend can fire before activePageId resolves) — the safe default is NO
+    conversation context, never a whole-session fallback that would leak
+    cross-page history into the generation."""
+    with patch("src.services.orchestrator.llm.generate", return_value=_gr(VALID_RAW)):
+        client.post(
+            "/api/modules/generate",
+            json={"prompt": "a wildly distinctive prior prompt about capybaras"},
+        )
+    with patch("src.services.orchestrator.llm.generate", return_value=_gr(VALID_RAW)) as mock_gen:
+        client.post("/api/modules/generate", json={"prompt": "a new unrelated prompt"})
+    second_prompt = mock_gen.call_args[0][0]
+    assert "Recent conversation:" not in second_prompt
+    assert "capybaras" not in second_prompt
 
 
 def test_recent_conversation_is_cross_owner_isolated(client, second_client):
@@ -542,9 +571,14 @@ def test_recent_conversation_is_cross_owner_isolated(client, second_client):
             "/api/modules/generate",
             json={"prompt": "owner B's distinctive secret prompt about pangolins"},
         )
+        client.post("/api/modules/generate", json={"prompt": "owner A's earlier prompt"})
+    pid = _default_page_id(client)
     with patch("src.services.orchestrator.llm.generate", return_value=_gr(VALID_RAW)) as mock_gen:
-        client.post("/api/modules/generate", json={"prompt": "owner A's prompt"})
+        client.post(f"/api/modules/generate?page_id={pid}", json={"prompt": "owner A's prompt"})
     prompt_used = mock_gen.call_args[0][0]
+    # Owner A's own history is present (the context path is exercised) …
+    assert "owner A's earlier prompt" in prompt_used
+    # … but owner B's never is.
     assert "pangolins" not in prompt_used
 
 
