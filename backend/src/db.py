@@ -721,7 +721,10 @@ def list_messages(session_id: str, page_id: str | None = None) -> list[Message]:
 
 def create_snapshot(session_id: str, page_id: str | None, label: str) -> Snapshot:
     mods = list_modules(session_id, page_id)
-    data = json.dumps([m.config.model_dump() for m in mods])
+    # v2 format: id + config per entry, so restore can preserve module ids and
+    # keep cross-module source_module_id bindings intact (R-1102). v1 (a bare
+    # config list, no ids) is still readable by restore_snapshot — see there.
+    data = json.dumps([{"id": m.id, "config": m.config.model_dump()} for m in mods])
     snap_id = str(uuid.uuid4())
     now = _now()
     with _conn() as c:
@@ -764,30 +767,106 @@ def list_snapshots(session_id: str, page_id: str | None = None) -> list[Snapshot
     return out
 
 
-def restore_snapshot(session_id: str, snapshot_id: str) -> bool:
-    with _conn() as c:
-        row = c.execute(
-            "SELECT page_id, data_json FROM snapshots WHERE id = ? AND session_id = ?",
-            (snapshot_id, session_id),
-        ).fetchone()
-    if row is None:
-        return False
-    page_id = row["page_id"]
-    # Parse AND validate every module config up front — before touching any live
-    # data. A snapshot with an unreadable row aborts cleanly (R-1105): no partial
-    # restore, no modules deleted.
+def restore_snapshot(session_id: str, snapshot_id: str) -> Literal["ok", "missing", "corrupt"]:
+    """Restore a page's modules from a snapshot (R-1102).
+
+    Runs entirely on ONE connection/transaction: the outer try/except wraps the
+    whole `with _conn() as c:` block, so an exception raised anywhere inside it
+    (including from a helper called mid-loop) propagates PAST `_conn`'s own
+    `conn.commit()` — nothing written during this restore is ever committed, and
+    a crash mid-restore leaves the page exactly as it was. Deliberately NOT
+    calling list_modules/delete_module/insert_module here: each of those opens
+    its OWN connection and commits independently, which is exactly the
+    atomicity bug this rewrite fixes (a crash between calls used to leave the
+    page half-restored).
+
+    Module ids from the snapshot are PRESERVED (v2 format) so cross-module
+    source_module_id bindings still resolve after a restore; v1 snapshots (a
+    bare config list, no ids — pre-R-1102) are still restorable, just without
+    id continuity. rev bumps on every overwritten module so an open tab still
+    conflict-detects (R-602); archived is reset to 0 and page_id is corrected
+    for a module that had moved elsewhere since the snapshot was taken.
+    """
     try:
-        raw_configs = json.loads(row["data_json"])
-        configs = [ModuleConfig.model_validate(cfg) for cfg in raw_configs]
+        with _conn() as c:
+            row = c.execute(
+                "SELECT page_id, data_json FROM snapshots WHERE id = ? AND session_id = ?",
+                (snapshot_id, session_id),
+            ).fetchone()
+            if row is None:
+                return "missing"
+            # Parse AND validate every module config up front — before touching
+            # any live data. A snapshot with an unreadable row aborts cleanly
+            # (R-1105): no partial restore, no modules deleted.
+            try:
+                raw = json.loads(row["data_json"])
+                if not isinstance(raw, list):
+                    raise ValueError("snapshot data_json is not a list")
+                # v2: {"id":..., "config":{...}}; v1: a bare config dict — id
+                # then falls back to None (fresh id minted on restore).
+                entries: list[tuple[str | None, ModuleConfig]] = [
+                    (e.get("id"), ModuleConfig.model_validate(e.get("config", e))) for e in raw
+                ]
+            except Exception:
+                _log.warning(
+                    "Quarantined unreadable snapshot %s (R-1105); restore aborted", snapshot_id
+                )
+                return "corrupt"
+
+            now = _now()
+            page_id = row["page_id"]
+            keep_ids = {mod_id for mod_id, _ in entries if mod_id}
+
+            # Delete live (unarchived) modules on this page that the snapshot
+            # doesn't keep — mirrors delete_module's own cleanup so history
+            # never orphans (module_versions rows go with their module).
+            if page_id is not None:
+                live_rows = c.execute(
+                    "SELECT id FROM modules WHERE session_id = ? AND page_id = ? AND archived = 0",
+                    (session_id, page_id),
+                ).fetchall()
+            else:
+                live_rows = c.execute(
+                    "SELECT id FROM modules WHERE session_id = ? AND page_id IS NULL AND archived = 0",
+                    (session_id,),
+                ).fetchall()
+            for m_row in live_rows:
+                if m_row["id"] not in keep_ids:
+                    c.execute(
+                        "DELETE FROM modules WHERE id = ? AND session_id = ?",
+                        (m_row["id"], session_id),
+                    )
+                    c.execute("DELETE FROM module_versions WHERE module_id = ?", (m_row["id"],))
+
+            for mod_id, config in entries:
+                cfg_json = config.model_dump_json()
+                existing = (
+                    c.execute(
+                        "SELECT 1 FROM modules WHERE id = ? AND session_id = ?",
+                        (mod_id, session_id),
+                    ).fetchone()
+                    if mod_id
+                    else None
+                )
+                if mod_id and existing:
+                    c.execute(
+                        "UPDATE modules SET config_json = ?, updated_at = ?, rev = rev + 1,"
+                        " page_id = ?, archived = 0 WHERE id = ? AND session_id = ?",
+                        (cfg_json, now, page_id, mod_id, session_id),
+                    )
+                    resolved_id = mod_id
+                else:
+                    resolved_id = mod_id or str(uuid.uuid4())
+                    c.execute(
+                        "INSERT INTO modules (id, session_id, page_id, config_json,"
+                        " created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+                        (resolved_id, session_id, page_id, cfg_json, now, now),
+                    )
+                _record_version(c, resolved_id, session_id, cfg_json, now)
     except Exception:
-        _log.warning("Quarantined unreadable snapshot %s (R-1105); restore aborted", snapshot_id)
-        return False
-    # Replace the page's live modules with the snapshot's.
-    for m in list_modules(session_id, page_id):
-        delete_module(session_id, m.id)
-    for cfg in configs:
-        insert_module(session_id, cfg, page_id=page_id)
-    return True
+        _log.warning("Restore of snapshot %s failed mid-transaction; rolled back", snapshot_id)
+        return "corrupt"
+    return "ok"
 
 
 def delete_snapshot(session_id: str, snapshot_id: str) -> bool:

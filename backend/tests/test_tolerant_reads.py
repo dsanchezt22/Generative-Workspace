@@ -70,7 +70,7 @@ def test_undo_skips_corrupt_version_and_falls_through(tmp_path, monkeypatch):
 
 def test_restore_snapshot_aborts_before_deletion_on_bad_row(tmp_path, monkeypatch):
     """A snapshot containing an unparseable module config aborts the restore
-    (returns False) WITHOUT deleting any of the page's live modules."""
+    (returns "corrupt") WITHOUT deleting any of the page's live modules."""
     monkeypatch.setenv("TRUS_DB_PATH", str(tmp_path / "t.db"))
     db.init_db()
     sid = db.ensure_session(None)
@@ -87,5 +87,5 @@ def test_restore_snapshot_aborts_before_deletion_on_bad_row(tmp_path, monkeypatc
         )
 
     ok = db.restore_snapshot(sid, "bad-snap")
-    assert ok is False
+    assert ok == "corrupt"
     assert [m.id for m in db.list_modules(sid, page.id)] == [kept.id]  # nothing deleted

@@ -359,8 +359,13 @@ async def list_snapshots(page_id: str, request: Request) -> list[Snapshot]:
 @router.post("/snapshots/{snapshot_id}/restore", status_code=204)
 async def restore_snapshot(snapshot_id: str, request: Request) -> None:
     sid = _owner_id(request)
-    if not db.restore_snapshot(sid, snapshot_id):
+    result = db.restore_snapshot(sid, snapshot_id)
+    if result == "missing":
         raise HTTPException(status_code=404, detail="Snapshot not found")
+    if result == "corrupt":
+        raise HTTPException(
+            status_code=409, detail="This snapshot is unreadable and was not restored."
+        )
 
 
 @router.delete("/snapshots/{snapshot_id}", status_code=204)
