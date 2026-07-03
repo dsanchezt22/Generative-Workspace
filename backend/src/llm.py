@@ -260,12 +260,17 @@ def generate(
     schema: dict | None = None,
     expect_array: bool = False,
 ) -> GenResult:
+    # Reset provenance up front so an exception path leaves last_call = None
+    # (unknown provenance), never a stale previous-call value (R-403).
+    last_call.set(None)
     provider = _resolve_provider()
-    model = os.environ.get("TRUS_LLM_MODEL") or os.environ.get("GEMINI_MODEL") or "stub"
 
     def _done(r: GenResult) -> GenResult:
         last_call.set(r)
         return r
+
+    def _gemini_model() -> str:
+        return os.environ.get("GEMINI_MODEL", DEFAULT_MODEL)
 
     def _stub_text() -> str:
         if expect_array:
@@ -287,27 +292,32 @@ def generate(
                 GenResult(
                     text,
                     "openai",
-                    model,
+                    os.environ.get("TRUS_LLM_MODEL", ""),
                     tokens_in=usage.get("prompt_tokens"),
                     tokens_out=usage.get("completion_tokens"),
                 )
             )
         except LLMError:
-            # Local/hosted endpoint unreachable → degrade gracefully.
+            # Local/hosted endpoint unreachable → degrade gracefully. The fallback
+            # result must carry the model that actually answered, not the failed one.
             if not _cascade_enabled():
                 raise
             if not _is_stub_key(os.environ.get("GEMINI_API_KEY")):
                 return _done(
-                    GenResult(_gemini_generate(prompt, system), "gemini", model, degraded=True)
+                    GenResult(
+                        _gemini_generate(prompt, system), "gemini", _gemini_model(), degraded=True
+                    )
                 )
             return _done(GenResult(_stub_text(), "stub", "stub", degraded=True))
-    return _done(GenResult(_gemini_generate(prompt, system), "gemini", model))
+    return _done(GenResult(_gemini_generate(prompt, system), "gemini", _gemini_model()))
 
 
 def generate_from_file(user_message: str, system: str | None, data: bytes, mime: str) -> str:
     """Multimodal generation. Gemini handles any file; the openai provider handles
     images (data URL); unsupported inputs return "{}" so callers can refuse honestly
     instead of silently degrading to a template."""
+    # Clear stale provenance: a raising path must not leave a prior call's result live.
+    last_call.set(None)
     provider = _resolve_provider()
     if provider == "stub":
         return "{}"

@@ -241,3 +241,30 @@ def test_promote_refuses_degraded_capture_with_409(client, monkeypatch):
     assert db.cache_stats()["entries"] == 0  # seed pool untouched
     mode, _ = semantic_cache.lookup("system", "calorie tracker")
     assert mode != "hit"
+
+
+_PROMOTABLE_CONFIG = json.dumps(
+    {"title": "T", "components": [{"id": "a", "type": "text_input", "label": "A"}]}
+)
+
+
+def test_promote_fails_closed_on_unparseable_capture_meta(client):
+    """F4/R-403: capture_meta that can't be parsed (or isn't a dict) is UNKNOWN
+    provenance — treat it as degraded and refuse (409), never promote."""
+    from src import db
+
+    bad = db.layout_add(
+        "calorie", "Corrupt", None, _PROMOTABLE_CONFIG, capture_meta_json="not-json{{{"
+    )
+    r = client.post(f"/api/studio/layouts/{bad}/promote")
+    assert r.status_code == 409
+    assert "degraded" in r.json()["detail"]
+
+    # A non-dict (but valid JSON) capture_meta is equally unsafe.
+    non_dict = db.layout_add(
+        "calorie", "NonDict", None, _PROMOTABLE_CONFIG, capture_meta_json="[1, 2, 3]"
+    )
+    r2 = client.post(f"/api/studio/layouts/{non_dict}/promote")
+    assert r2.status_code == 409
+
+    assert db.cache_stats()["entries"] == 0  # nothing seeded

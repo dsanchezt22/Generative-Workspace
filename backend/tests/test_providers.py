@@ -418,6 +418,65 @@ def test_generate_gemini_provider_returns_gemini_result(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# F6 — ContextVar hygiene: an exception path leaves last_call = None (unknown
+# provenance), never a stale prior value.
+# F7 — GenResult carries the model label of the branch that actually answered.
+# ---------------------------------------------------------------------------
+
+
+def test_generate_resets_last_call_to_none_on_error(monkeypatch):
+    _clear(monkeypatch)
+    monkeypatch.setenv("TRUS_LLM_PROVIDER", "openai")
+    monkeypatch.setenv("TRUS_LLM_BASE_URL", "http://h/v1")
+    monkeypatch.setenv("TRUS_LLM_MODEL", "m")
+    monkeypatch.setenv("TRUS_LLM_CASCADE", "off")  # raise instead of degrading
+    monkeypatch.setattr(
+        llm, "_openai_chat", lambda *a, **k: (_ for _ in ()).throw(LLMError("down"))
+    )
+    llm.last_call.set(llm.GenResult("stale", "stub", "stub"))  # pre-existing value
+    with pytest.raises(LLMError):
+        llm.generate("x")
+    assert llm.last_call.get() is None  # not the stale value
+
+
+def test_cascade_to_gemini_labels_the_gemini_model(monkeypatch):
+    _clear(monkeypatch)
+    monkeypatch.setenv("TRUS_LLM_PROVIDER", "openai")
+    monkeypatch.setenv("TRUS_LLM_MODEL", "local-qwen")
+    monkeypatch.setenv("TRUS_LLM_BASE_URL", "http://localhost:1/v1")
+    monkeypatch.setenv("GEMINI_API_KEY", "AIza-real")
+    monkeypatch.setenv("GEMINI_MODEL", "gemini-flash-latest")
+    monkeypatch.setattr(
+        llm, "_openai_chat", lambda *a, **k: (_ for _ in ()).throw(LLMError("down"))
+    )
+    monkeypatch.setattr(llm, "_gemini_generate", lambda p, s: '{"title":"cascaded"}')
+    out = llm.generate("x")
+    assert out.provider == "gemini"
+    assert out.model == "gemini-flash-latest"  # NOT the failed openai model
+    assert out.degraded is True
+
+
+def test_openai_success_labels_the_llm_model(monkeypatch):
+    _clear(monkeypatch)
+    monkeypatch.setenv("TRUS_LLM_PROVIDER", "openai")
+    monkeypatch.setenv("TRUS_LLM_MODEL", "local-qwen")
+    monkeypatch.setenv("TRUS_LLM_BASE_URL", "http://h/v1")
+    monkeypatch.setattr(llm, "_openai_chat", lambda *a, **k: ('{"title":"X"}', {}))
+    out = llm.generate("x")
+    assert out.provider == "openai"
+    assert out.model == "local-qwen"
+
+
+def test_gemini_provider_labels_the_gemini_model(monkeypatch):
+    _clear(monkeypatch)
+    monkeypatch.setenv("TRUS_LLM_PROVIDER", "gemini")
+    monkeypatch.setenv("GEMINI_MODEL", "gemini-2.5-pro")
+    monkeypatch.setattr(llm, "_gemini_generate", lambda p, s: '{"title":"G"}')
+    out = llm.generate("x")
+    assert out.model == "gemini-2.5-pro"
+
+
+# ---------------------------------------------------------------------------
 # generate_from_file — stub / openai (image, non-image) / gemini
 # ---------------------------------------------------------------------------
 

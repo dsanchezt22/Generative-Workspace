@@ -387,11 +387,13 @@ def generate_modules_from_file(
     mime: str,
     existing_modules: list[ModuleConfig] | None = None,
 ) -> list[ModuleConfig]:
-    """Build tools shaped around an uploaded document/image (Gemini multimodal)."""
-    if llm.is_stub_mode():
-        from src.stub_templates import pick_system
+    """Build tools shaped around an uploaded document/image (Gemini multimodal).
 
-        return [ModuleConfig.model_validate(c) for c in pick_system(prompt)]
+    R-211: this path claims to READ the uploaded document. If the active model
+    configuration can't read it (offline/stub, or an openai-compat endpoint that
+    can't take documents), llm.generate_from_file returns the "{}" sentinel and we
+    refuse honestly below — we never fall back to a generic keyword template, which
+    would fabricate a grounded-looking result from a file we never read."""
     user_message = (
         _seeded_system(prompt, existing_modules)
         + "\n\nA file is attached above. Read it and build tools shaped around its ACTUAL content — "
@@ -403,8 +405,8 @@ def generate_modules_from_file(
         raw = llm.generate_from_file(msg, DECOMPOSE_SYSTEM_PROMPT, data, mime)
         if not raw or raw.strip() in ("{}", ""):
             raise RefusalError(
-                "This file type can't be read with the current model configuration — "
-                "try an image, or paste the document's text into the prompt."
+                "This file can't be read with the current model configuration — "
+                "configure a live model, or paste the document's text into the prompt."
             )
         try:
             return _parse_modules(raw)

@@ -93,7 +93,16 @@ def generate(key: str, n: int = Query(default=4, ge=1, le=8)) -> list[StudioLayo
     layouts = studio.generate_layouts(key, n)
     stored: list[StudioLayout] = []
     for ly in layouts:
-        lid = db.layout_add(key, ly["label"], ly.get("inspired_by"), json.dumps(ly["config"]))
+        # Persist provenance so the promote gate below refuses degraded/stub layouts
+        # (R-403), and echo it back so the UI can label them.
+        capture_meta = {"degraded": bool(ly.get("degraded")), "source": ly.get("source")}
+        lid = db.layout_add(
+            key,
+            ly["label"],
+            ly.get("inspired_by"),
+            json.dumps(ly["config"]),
+            capture_meta_json=json.dumps(capture_meta),
+        )
         stored.append(
             StudioLayout(
                 id=lid,
@@ -101,6 +110,7 @@ def generate(key: str, n: int = Query(default=4, ge=1, le=8)) -> list[StudioLayo
                 label=ly["label"],
                 inspired_by=ly.get("inspired_by"),
                 config=ModuleConfig.model_validate(ly["config"]),
+                capture_meta=capture_meta,
             )
         )
     return stored
@@ -109,7 +119,9 @@ def generate(key: str, n: int = Query(default=4, ge=1, le=8)) -> list[StudioLayo
 def _load_image(file: UploadFile | None, image_url: str) -> tuple[bytes, str]:
     """Image bytes + mime from an upload or a single http(s) fetch of a URL."""
     if file is not None:
-        data = file.file.read()
+        # Cap the read (one byte past the limit) so an oversized upload is rejected
+        # by the size check below instead of being fully materialized first.
+        data = file.file.read(_MAX_IMAGE_BYTES + 1)
         mime = file.content_type or "image/png"
         if not mime.startswith("image/"):
             raise HTTPException(status_code=422, detail="That file isn't an image.")
@@ -246,8 +258,21 @@ def promote_layout(layout_id: str) -> PromoteResponse:
     row = db.layout_get(layout_id)
     if row is None:
         raise HTTPException(status_code=404, detail="Layout not found")
-    capture_meta = json.loads(row["capture_meta_json"]) if row["capture_meta_json"] else None
-    if capture_meta and capture_meta.get("degraded"):
+    # Fail closed: unparseable or non-dict capture_meta is UNKNOWN provenance, which
+    # is not safe to promote — treat it as degraded (R-403).
+    raw_meta = row["capture_meta_json"]
+    if raw_meta is None:
+        unsafe = False
+        capture_meta: object = None
+    else:
+        try:
+            capture_meta = json.loads(raw_meta)
+        except (json.JSONDecodeError, ValueError):
+            capture_meta = None
+            unsafe = True
+        else:
+            unsafe = not isinstance(capture_meta, dict)
+    if unsafe or (isinstance(capture_meta, dict) and capture_meta.get("degraded")):
         raise HTTPException(
             status_code=409,
             detail="This layout came from a degraded capture and cannot be "

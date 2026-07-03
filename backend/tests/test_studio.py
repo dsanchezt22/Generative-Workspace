@@ -51,10 +51,36 @@ def test_delete_missing_404(client):
     assert client.delete("/api/studio/layouts/does-not-exist").status_code == 404
 
 
-def test_promote_seeds_the_generation_pool(client):
-    """Promoting a studio layout makes it retrievable as a generation seed — this
-    is the connection to the main app's real-time generation."""
-    from src import semantic_cache
+def _clean_layouts_raw() -> str:
+    import json
+
+    return json.dumps(
+        [
+            {
+                "label": "Nutrient dashboard",
+                "inspired_by": "Cronometer",
+                "config": {
+                    "title": "Nutrition",
+                    "components": [{"id": "cals", "type": "kpi", "label": "Calories"}],
+                },
+            }
+        ]
+    )
+
+
+def test_promote_seeds_the_generation_pool(client, monkeypatch):
+    """Promoting a CLEAN (non-degraded) studio layout makes it retrievable as a
+    generation seed — this is the connection to the main app's real-time generation."""
+    from src import llm, semantic_cache
+
+    monkeypatch.setattr(llm, "is_stub_mode", lambda: False)
+
+    def clean_generate(*a, **k):
+        result = llm.GenResult(_clean_layouts_raw(), "openai", "m", degraded=False)
+        llm.last_call.set(result)
+        return result
+
+    monkeypatch.setattr(llm, "generate", clean_generate)
 
     client.post("/api/studio/use-cases/calorie/generate?n=1")
     lid = client.get("/api/studio/layouts?use_case=calorie").json()[0]["id"]
@@ -68,6 +94,42 @@ def test_promote_seeds_the_generation_pool(client):
     mode, cached = semantic_cache.lookup("system", "calorie tracker")
     assert mode == "hit"
     assert cached and cached[0]["title"]
+
+
+def test_promote_refuses_degraded_generate_layout_with_409(client):
+    """R-403/R-211: a stub-mode GENERATE layout is a generic template, not a real
+    generation — it is marked degraded and must be refused (409) by promote so it
+    can't poison the shared seed pool. (client fixture runs in stub mode.)"""
+    from src import db
+
+    client.post("/api/studio/use-cases/calorie/generate?n=1")
+    lid = client.get("/api/studio/layouts?use_case=calorie").json()[0]["id"]
+
+    r = client.post(f"/api/studio/layouts/{lid}/promote")
+    assert r.status_code == 409
+    assert "degraded" in r.json()["detail"]
+    assert db.cache_stats()["entries"] == 0  # seed pool untouched
+
+
+def test_import_small_file_read_ok(client, monkeypatch):
+    """F3: the studio image read-cap (_MAX_IMAGE_BYTES+1) must not truncate a normal
+    small upload — a tiny screenshot still flows through _load_image and imports."""
+    from src.services import studio
+
+    monkeypatch.setenv("TRUS_VISION_MODEL", "fake-vlm")
+    monkeypatch.setattr(
+        studio.llm,
+        "vision_describe",
+        lambda *a, **k: (
+            '{"title":"Imported","components":[{"id":"a","type":"text_input","label":"A"}]}'
+        ),
+    )
+    r = client.post(
+        "/api/studio/use-cases/calorie/import",
+        files={"file": ("small.png", _PNG, "image/png")},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["config"]["components"][0]["type"] == "text_input"
 
 
 _PNG = b"\x89PNG\r\n\x1a\n"  # minimal header — bytes are irrelevant when vision is mocked
@@ -146,6 +208,9 @@ def test_generate_layouts_non_stub_parses_model_output(monkeypatch):
     assert layouts[0]["label"] == "Nutrient dashboard"
     assert layouts[0]["inspired_by"] == "Cronometer"
     assert layouts[0]["config"]["title"] == "Nutrition"
+    # A clean (non-degraded) generate carries no degraded marker.
+    assert layouts[0]["degraded"] is False
+    assert layouts[0]["source"] is None
 
 
 def test_generate_layouts_unknown_use_case_raises_refusal():
@@ -165,6 +230,9 @@ def test_generate_layouts_falls_back_to_stub_after_persistent_invalid_output(mon
     layouts = studio.generate_layouts("calorie", n=1)
     assert layouts  # fell back to _stub_layouts instead of raising
     assert layouts[0]["config"]["title"]
+    # The fallback is a degraded, non-promotable result (R-403).
+    assert layouts[0]["degraded"] is True
+    assert layouts[0]["source"] == "stub_fallback"
 
 
 def test_generate_layouts_llm_error_breaks_and_falls_back_to_stub(monkeypatch):
@@ -179,6 +247,10 @@ def test_generate_layouts_llm_error_breaks_and_falls_back_to_stub(monkeypatch):
     monkeypatch.setattr(llm, "generate", boom)
     layouts = studio.generate_layouts("calorie", n=1)
     assert layouts
+    # LLMError → degraded stub fallback (last_call is NOT consulted here — it may
+    # be unset/stale on the error path).
+    assert layouts[0]["degraded"] is True
+    assert layouts[0]["source"] == "stub_fallback"
 
 
 def test_parse_layouts_unwraps_layouts_key_and_skips_invalid_items():

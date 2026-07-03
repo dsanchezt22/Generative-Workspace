@@ -1,4 +1,5 @@
 import contextlib
+import logging
 from typing import Literal
 
 from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile
@@ -23,6 +24,28 @@ from src.services import orchestrator
 from src.stub_templates import pick_template
 
 router = APIRouter()
+
+_logger = logging.getLogger(__name__)
+
+
+def _llm_error_detail(e: LLMError) -> str:
+    """Map an internal LLMError to a small set of safe, honest client messages.
+
+    LLMError messages can embed the internal endpoint URL and up to 400 chars of an
+    upstream response body (see llm.py), so the raw text is logged server-side and
+    NEVER returned to the client. Status stays 503 at the call sites (R-1104)."""
+    raw = str(e)
+    _logger.warning("LLM error (returned to client as sanitized 503): %s", raw)
+    low = raw.lower()
+    if any(s in low for s in ("could not reach", "unreachable", "timed out", "timeout")):
+        return "The AI model endpoint is unreachable right now. Please try again in a moment."
+    if any(s in low for s in ("offline", "set trus_llm_base_url", "template mode", "stub")):
+        return "No live AI model is configured. Configure a model to use AI generation."
+    if any(
+        s in low for s in ("empty response", "unexpected", "non-json", "returned http", "invalid")
+    ):
+        return "The AI model returned an unusable response. Please try again."
+    return "AI generation is temporarily unavailable. Please try again in a moment."
 
 
 def _session_id(request: Request) -> str:
@@ -61,11 +84,8 @@ def generate_module(
         return GenerateResponse(question=e.question)
     except RefusalError as e:
         raise HTTPException(status_code=422, detail={"refusal": e.reason}) from e
-    except LLMError:
-        raise HTTPException(
-            status_code=503,
-            detail="AI generation is temporarily unavailable. Please try again in a moment.",
-        ) from None
+    except LLMError as e:
+        raise HTTPException(status_code=503, detail=_llm_error_detail(e)) from None
     stored = [db.insert_module(sid, c, page_id=page_id) for c in configs]
     _log(sid, "user", prompt, page_id=stored[0].page_id)
     for s in stored:
@@ -92,11 +112,8 @@ def preview_modules(
         return GenerateResponse(question=e.question)
     except RefusalError as e:
         raise HTTPException(status_code=422, detail={"refusal": e.reason}) from e
-    except LLMError:
-        raise HTTPException(
-            status_code=503,
-            detail="AI generation is temporarily unavailable. Please try again in a moment.",
-        ) from None
+    except LLMError as e:
+        raise HTTPException(status_code=503, detail=_llm_error_detail(e)) from None
     deg = llm.last_call.get()
     return GenerateResponse(previews=configs, degraded=bool(deg and deg.degraded))
 
@@ -125,7 +142,9 @@ def generate_from_file(
     page_id: str | None = Query(default=None),
 ) -> GenerateResponse:
     sid = _session_id(request)
-    data = file.file.read()
+    # Cap the read before materializing the whole upload in memory: read one byte
+    # past the limit so the size check below still fires for oversized files.
+    data = file.file.read(15 * 1024 * 1024 + 1)
     if not data:
         raise HTTPException(status_code=422, detail="The file is empty.")
     if len(data) > 15 * 1024 * 1024:
@@ -141,11 +160,8 @@ def generate_from_file(
         return GenerateResponse(question=e.question)
     except RefusalError as e:
         raise HTTPException(status_code=422, detail={"refusal": e.reason}) from e
-    except LLMError:
-        raise HTTPException(
-            status_code=503,
-            detail="AI generation is temporarily unavailable. Please try again in a moment.",
-        ) from None
+    except LLMError as e:
+        raise HTTPException(status_code=503, detail=_llm_error_detail(e)) from None
     stored = [db.insert_module(sid, c, page_id=page_id) for c in configs]
     _log(sid, "user", f"📎 {file.filename}: {instruction}", page_id=stored[0].page_id)
     for s in stored:
@@ -273,9 +289,7 @@ def refine_module(module_id: str, body: RefineRequest, request: Request) -> Stor
     except RefusalError as e:
         raise HTTPException(status_code=422, detail={"refusal": e.reason}) from e
     except LLMError as e:
-        raise HTTPException(
-            status_code=503, detail=str(e) or "AI generation is temporarily unavailable."
-        ) from None
+        raise HTTPException(status_code=503, detail=_llm_error_detail(e)) from None
     updated = db.update_module(sid, module_id, new_config)
     if updated is None:
         raise HTTPException(status_code=404, detail="Module not found")
@@ -349,8 +363,6 @@ def workspace_insights(
     except RefusalError as e:
         raise HTTPException(status_code=422, detail={"refusal": e.reason}) from e
     except LLMError as e:
-        raise HTTPException(
-            status_code=503, detail=str(e) or "AI generation is temporarily unavailable."
-        ) from None
+        raise HTTPException(status_code=503, detail=_llm_error_detail(e)) from None
     stored = db.insert_module(sid, config, page_id=page_id)
     return GenerateResponse(module=stored)

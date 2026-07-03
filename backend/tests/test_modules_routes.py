@@ -521,3 +521,41 @@ def test_workspace_insights_surfaces_llm_failure_as_503(client):
     ):
         resp = client.post("/api/workspace/insights")
     assert resp.status_code == 503
+
+
+# ---------------------------------------------------------------------------
+# F5 — LLMError detail is sanitized: internal endpoint URLs and upstream response
+# bodies embedded in the error must never reach the client (refine/insights used
+# to pass str(e) straight through).
+# ---------------------------------------------------------------------------
+
+
+def test_refine_llm_error_detail_is_sanitized(client):
+    with patch("src.services.orchestrator.llm.generate", return_value=_gr(VALID_RAW)):
+        created = client.post("/api/modules/generate", json={"prompt": "track my workouts"}).json()
+    module_id = created["module"]["id"]
+    leak = "Could not reach the LLM endpoint at http://10.1.2.3:11434/v1: refused"
+    with patch("src.services.orchestrator.llm.generate", side_effect=LLMError(leak)):
+        resp = client.post(f"/api/modules/{module_id}/refine", json={"prompt": "add a field"})
+    assert resp.status_code == 503
+    detail = resp.json()["detail"]
+    assert "10.1.2.3" not in detail
+    assert "unreachable" in detail.lower()
+
+
+def test_insights_llm_error_detail_is_sanitized(client):
+    with patch("src.services.orchestrator.llm.generate", return_value=_gr(VALID_RAW)):
+        client.post("/api/modules/generate", json={"prompt": "workout"})
+    leak = "LLM endpoint returned HTTP 500: <html>trace 192.168.9.9 stack</html>"
+    with patch("src.services.orchestrator.llm.generate", side_effect=LLMError(leak)):
+        resp = client.post("/api/workspace/insights")
+    assert resp.status_code == 503
+    assert "192.168.9.9" not in resp.json()["detail"]
+
+
+def test_generate_llm_error_detail_is_sanitized(client):
+    leak = "Could not reach the LLM endpoint at http://192.0.2.7:8000/v1: refused"
+    with patch("src.services.orchestrator.llm.generate", side_effect=LLMError(leak)):
+        resp = client.post("/api/modules/generate", json={"prompt": "track my workouts"})
+    assert resp.status_code == 503
+    assert "192.0.2.7" not in resp.json()["detail"]

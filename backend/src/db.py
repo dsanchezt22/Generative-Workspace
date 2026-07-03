@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import threading
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -110,19 +111,31 @@ CREATE INDEX IF NOT EXISTS idx_layout_use_case ON layout_library(use_case, creat
 # (idempotent) DDL when the path changes — or when the file vanishes underneath
 # a running server. Reliability over cleverness (design doc I.3).
 _schema_ready_for: str | None = None
+# Serializes the migration body: concurrent first requests against a stale DB must
+# not both run ALTER TABLE (the losers would 500 with 'duplicate column name').
+_schema_lock = threading.Lock()
 
 
 def _ensure_schema(conn: sqlite3.Connection) -> None:
     global _schema_ready_for
     path = str(_db_path())
-    needs = _schema_ready_for != path
-    if not needs:
-        # Cheap guard against the file having been deleted mid-run.
-        try:
+
+    def _ready() -> bool:
+        if _schema_ready_for != path:
+            return False
+        try:  # cheap guard against the file having been deleted mid-run
             conn.execute("SELECT 1 FROM sessions LIMIT 1")
+            return True
         except sqlite3.OperationalError:
-            needs = True
-    if needs:
+            return False
+
+    if _ready():
+        return
+    with _schema_lock:
+        # Double-check inside the lock: a racing thread may have finished the
+        # migration (and set _schema_ready_for) while we waited for the lock.
+        if _ready():
+            return
         conn.executescript(_SCHEMA)
         # Additive migrations for existing databases.
         _migrate(conn)
@@ -163,8 +176,11 @@ def _conn() -> Iterator[sqlite3.Connection]:
     conn = sqlite3.connect(_db_path())
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
-    conn.execute("PRAGMA journal_mode = WAL")
+    # busy_timeout BEFORE journal_mode: switching to WAL takes a write lock, and a
+    # concurrent connection must wait rather than fail with 'database is locked'.
     conn.execute("PRAGMA busy_timeout = 5000")
+    if str(conn.execute("PRAGMA journal_mode").fetchone()[0]).lower() != "wal":
+        conn.execute("PRAGMA journal_mode = WAL")
     _ensure_schema(conn)
     try:
         yield conn

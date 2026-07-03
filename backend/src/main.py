@@ -41,12 +41,14 @@ app.include_router(studio.router, prefix="/api")
 
 
 @app.get("/api/health")
-def health() -> dict[str, str]:
+async def health() -> dict[str, str]:
+    # async so this trivial handler runs on the event loop instead of competing for
+    # the sync threadpool that serves (blocking) LLM generations.
     return {"status": "ok"}
 
 
 @app.get("/api/llm/status")
-def llm_status() -> dict:
+async def llm_status() -> dict:
     """Which model backend is active (provider/model/base_url) — no secrets.
     Lets you confirm a local/open-source model is wired before generating, and
     shows how big the self-growing template cache is."""
