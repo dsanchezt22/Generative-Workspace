@@ -502,6 +502,53 @@ def test_preview_rejects_overlong_exchange_field(client):
 
 
 # ---------------------------------------------------------------------------
+# R-302: recent conversation feeds generation context (generate/preview only).
+# ---------------------------------------------------------------------------
+
+
+def test_generate_recent_conversation_reaches_the_model(client):
+    """A distinctive prior turn on this session must appear in the next call's
+    model-visible prompt as bounded 'Recent conversation:' context."""
+    with patch("src.services.orchestrator.llm.generate", return_value=_gr(VALID_RAW)):
+        client.post(
+            "/api/modules/generate",
+            json={"prompt": "a wildly distinctive prior prompt about narwhals"},
+        )
+    with patch("src.services.orchestrator.llm.generate", return_value=_gr(VALID_RAW)) as mock_gen:
+        client.post("/api/modules/generate", json={"prompt": "a new unrelated prompt"})
+    second_prompt = mock_gen.call_args[0][0]
+    assert "narwhals" in second_prompt
+    assert "Recent conversation:" in second_prompt
+
+
+def test_preview_recent_conversation_reaches_the_model(client):
+    """Same wiring on the preview (propose-without-persist) path."""
+    with patch("src.services.orchestrator.llm.generate", return_value=_gr(VALID_RAW)):
+        client.post(
+            "/api/modules/generate",
+            json={"prompt": "a wildly distinctive prior prompt about walruses"},
+        )
+    with patch("src.services.orchestrator.llm.generate", return_value=_gr(VALID_RAW)) as mock_gen:
+        client.post("/api/modules/preview", json={"prompt": "a new unrelated prompt"})
+    second_prompt = mock_gen.call_args[0][0]
+    assert "walruses" in second_prompt
+
+
+def test_recent_conversation_is_cross_owner_isolated(client, second_client):
+    """R-903: another owner's conversation must never leak into this owner's
+    generation context."""
+    with patch("src.services.orchestrator.llm.generate", return_value=_gr(VALID_RAW)):
+        second_client.post(
+            "/api/modules/generate",
+            json={"prompt": "owner B's distinctive secret prompt about pangolins"},
+        )
+    with patch("src.services.orchestrator.llm.generate", return_value=_gr(VALID_RAW)) as mock_gen:
+        client.post("/api/modules/generate", json={"prompt": "owner A's prompt"})
+    prompt_used = mock_gen.call_args[0][0]
+    assert "pangolins" not in prompt_used
+
+
+# ---------------------------------------------------------------------------
 # Preview-then-accept: POST /modules/preview proposes without persisting;
 # POST /modules persists what the caller accepts.
 # ---------------------------------------------------------------------------

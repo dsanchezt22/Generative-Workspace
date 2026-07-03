@@ -108,6 +108,9 @@ def generate_module(
     sid = _owner_id(request)
     existing = [m.config for m in db.list_modules(sid)]
     exchange_context = _fold_exchange(body.exchange)
+    # R-302: the owner's recent conversation on this page feeds generation
+    # context (not the grounded-file path — see generate_modules_from_file).
+    recent = db.recent_messages(sid, page_id, limit=10)
     try:
         with _track(sid, "generate"):
             configs = orchestrator.generate_modules(
@@ -117,6 +120,7 @@ def generate_module(
                 exchange_context=exchange_context,
                 # R-102 hard cap: 4 answered questions → a 5th is never relayed.
                 allow_question=not body.exchange or len(body.exchange) < 4,
+                recent_messages=recent,
             )
     except ClarifyingQuestion as e:
         return GenerateResponse(question=e.question)
@@ -148,6 +152,9 @@ def preview_modules(
     sid = _owner_id(request)
     existing = [m.config for m in db.list_modules(sid)]
     exchange_context = _fold_exchange(body.exchange)
+    # R-302: the owner's recent conversation on this page feeds generation
+    # context (not the grounded-file path — see generate_modules_from_file).
+    recent = db.recent_messages(sid, page_id, limit=10)
     try:
         with _track(sid, "preview"):
             configs = orchestrator.generate_modules(
@@ -157,6 +164,7 @@ def preview_modules(
                 exchange_context=exchange_context,
                 # R-102 hard cap: 4 answered questions → a 5th is never relayed.
                 allow_question=not body.exchange or len(body.exchange) < 4,
+                recent_messages=recent,
             )
     except ClarifyingQuestion as e:
         return GenerateResponse(question=e.question)

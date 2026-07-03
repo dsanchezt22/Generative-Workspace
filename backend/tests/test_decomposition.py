@@ -156,6 +156,63 @@ def test_exchange_context_reaches_the_model_message():
     assert "Tokyo" in prompt_used
 
 
+# --- R-302: recent conversation feeds generation context ---
+
+
+def test_recent_messages_reach_the_model_message():
+    arr = json.dumps(
+        [{"title": "A", "components": [{"id": "x", "type": "text_input", "label": "X"}]}]
+    )
+    history = [
+        {"role": "user", "text": "a distinctive prior message about narwhals"},
+        {"role": "assistant", "text": "Created Narwhal Tracker"},
+    ]
+    with _fake_llm(arr) as mock_gen:
+        orchestrator.generate_modules("plan my context-aware prompt", recent_messages=history)
+    prompt_used = mock_gen.call_args[0][0]
+    assert "narwhals" in prompt_used
+    assert "Recent conversation:" in prompt_used
+
+
+def test_no_recent_messages_omits_the_conversation_block():
+    arr = json.dumps(
+        [{"title": "A", "components": [{"id": "x", "type": "text_input", "label": "X"}]}]
+    )
+    with _fake_llm(arr) as mock_gen:
+        orchestrator.generate_modules("plan a trip with no history")
+    prompt_used = mock_gen.call_args[0][0]
+    assert "Recent conversation:" not in prompt_used
+
+
+def test_recent_conversation_bounded_to_about_1200_chars():
+    arr = json.dumps(
+        [{"title": "A", "components": [{"id": "x", "type": "text_input", "label": "X"}]}]
+    )
+    history = [{"role": "user", "text": f"message number {i} " * 5} for i in range(30)]
+    with _fake_llm(arr) as mock_gen:
+        orchestrator.generate_modules("plan my bounded context prompt", recent_messages=history)
+    prompt_used = mock_gen.call_args[0][0]
+    start = prompt_used.index("Recent conversation:")
+    end = prompt_used.index("\n\nReturn the adapted", start)
+    block = prompt_used[start:end]
+    assert len(block) <= 1200 + 100  # header + slack around the ~1200-char budget
+
+
+def test_recent_conversation_single_oversized_message_keeps_recent_tail():
+    """When even the single most recent turn alone exceeds the ~1200-char
+    budget, its TAIL (most recent characters, containing the sentinel) is kept
+    rather than dropping the turn entirely."""
+    arr = json.dumps(
+        [{"title": "A", "components": [{"id": "x", "type": "text_input", "label": "X"}]}]
+    )
+    history = [{"role": "user", "text": ("x" * 2000) + "TAIL-SENTINEL"}]
+    with _fake_llm(arr) as mock_gen:
+        orchestrator.generate_modules("plan my oversized turn prompt", recent_messages=history)
+    prompt_used = mock_gen.call_args[0][0]
+    assert "Recent conversation:" in prompt_used
+    assert "TAIL-SENTINEL" in prompt_used
+
+
 def test_new_component_types_validate():
     from src.schema import ModuleConfig
 

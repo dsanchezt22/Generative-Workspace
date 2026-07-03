@@ -249,3 +249,48 @@ def test_chain_generation_never_seeds_the_prompt_cache(monkeypatch):
     assert [m.title for m in r2] == ["Fresh Tool"]
     assert calls["n"] == 2  # not served an interview-specialized result
     assert db.cache_stats()["entries"] == 1  # the plain result stores as usual
+
+
+def test_cache_hit_ignores_differing_conversation_history(monkeypatch):
+    """R-302: conversation context lives in the seeded system message, never
+    the cache key (`prompt`) — an identical re-prompt still cache-HITs even
+    though the owner's recent conversation has moved on in between."""
+    from src.services import orchestrator
+
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.setenv("TRUS_LLM_PROVIDER", "openai")
+    monkeypatch.setenv("TRUS_LLM_BASE_URL", "http://h/v1")
+    monkeypatch.setenv("TRUS_LLM_MODEL", "m")
+    for k in _VARS:
+        monkeypatch.delenv(k, raising=False)
+
+    calls = {"n": 0}
+
+    def fake_generate(prompt, system=None, *, schema=None, expect_array=False):
+        calls["n"] += 1
+        text = json.dumps(
+            [
+                {
+                    "title": "Cached Tool",
+                    "components": [{"id": "a", "type": "text_input", "label": "A"}],
+                },
+            ]
+        )
+        result = gen_result(text, provider="openai", model="m")
+        llm.last_call.set(result)
+        return result
+
+    monkeypatch.setattr(orchestrator.llm, "generate", fake_generate)
+
+    prompt = "a very specific unique conversation-context caching prompt"
+    r1 = orchestrator.generate_modules(
+        prompt, recent_messages=[{"role": "user", "text": "some earlier chat about ferrets"}]
+    )
+    assert [m.title for m in r1] == ["Cached Tool"]
+    assert calls["n"] == 1
+
+    r2 = orchestrator.generate_modules(
+        prompt, recent_messages=[{"role": "user", "text": "a completely different later chat"}]
+    )
+    assert [m.title for m in r2] == ["Cached Tool"]
+    assert calls["n"] == 1  # model NOT called again — served from cache despite differing history

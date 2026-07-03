@@ -323,6 +323,39 @@ def test_generate_from_file_non_stub_happy_path_persists_and_grounds(client, mon
     assert any("expenses.csv" in m["text"] for m in convo if m["role"] == "user")
 
 
+def test_generate_from_file_grounded_path_excludes_recent_conversation(client, monkeypatch):
+    """R-302: conversation context feeds the generate/preview paths only — the
+    grounded (file) path must never receive it (document content already
+    dominates there). Seed a distinctive prior turn via a normal generate call,
+    then confirm the grounded file-path prompt has no trace of it."""
+    client.post(
+        "/api/modules/generate", json={"prompt": "a distinctive prior request about llamas"}
+    )
+
+    captured: dict = {}
+    inner = fake_generate(
+        json.dumps(
+            [{"title": "Grounded", "components": [{"id": "a", "type": "text_input", "label": "A"}]}]
+        )
+    )
+
+    def spy(*args, **kwargs):
+        captured["args"] = args
+        return inner(*args, **kwargs)
+
+    monkeypatch.setattr(llm, "generate", spy)
+
+    resp = client.post(
+        "/api/modules/generate_from_file",
+        files={"file": ("notes.txt", b"Some grounded document content here", "text/plain")},
+        data={"prompt": "make a tool"},
+    )
+    assert resp.status_code == 200, resp.text
+    prompt = captured["args"][0]
+    assert "Recent conversation:" not in prompt
+    assert "llamas" not in prompt
+
+
 def test_generate_from_file_route_module_is_reachable():
     """Guard: the route module imports the orchestrator symbol it delegates to."""
     assert hasattr(orchestrator, "generate_modules_from_file")

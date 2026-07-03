@@ -699,6 +699,28 @@ def add_message(
     )
 
 
+def recent_messages(owner: str, page_id: str | None = None, limit: int = 10) -> list[dict]:
+    """The owner's most recent messages (R-302 conversation context) — same
+    page-filter pattern as list_messages (page_id=None → whole session, no
+    filter). Pulls the `limit` NEWEST rows, then returns them OLDEST-first so
+    callers can render a natural transcript. R-903: scoped to `owner` by WHERE
+    clause — another owner's messages can never appear."""
+    with _conn() as c:
+        if page_id:
+            rows = c.execute(
+                "SELECT role, text FROM messages WHERE session_id = ? AND page_id = ? "
+                "ORDER BY created_at DESC, rowid DESC LIMIT ?",
+                (owner, page_id, limit),
+            ).fetchall()
+        else:
+            rows = c.execute(
+                "SELECT role, text FROM messages WHERE session_id = ? "
+                "ORDER BY created_at DESC, rowid DESC LIMIT ?",
+                (owner, limit),
+            ).fetchall()
+    return [{"role": r["role"], "text": r["text"]} for r in reversed(rows)]
+
+
 def list_messages(session_id: str, page_id: str | None = None) -> list[Message]:
     with _conn() as c:
         if page_id:

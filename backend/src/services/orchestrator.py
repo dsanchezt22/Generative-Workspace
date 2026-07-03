@@ -216,6 +216,30 @@ def _module_context(modules: list[ModuleConfig]) -> str:
     )
 
 
+# R-302: cap on the rendered "Recent conversation:" block (bounded overall
+# length, not per-message) so a long history never dominates the prompt.
+_CONVERSATION_CONTEXT_BUDGET = 1200
+
+
+def _conversation_block(messages: list[dict] | None) -> str:
+    """Render the owner's recent persisted conversation (db.recent_messages,
+    oldest-first) as a bounded context block, so e.g. "make it like the one I
+    made yesterday" has something to bind to (R-302). Bounded to ~1200 chars
+    total; when it doesn't fit, OLDER turns are dropped first (messages are
+    already oldest-first, so this pops from the front)."""
+    if not messages:
+        return ""
+    lines = [f"{m['role']}: {m['text']}" for m in messages]
+    while lines and sum(len(x) for x in lines) + len(lines) - 1 > _CONVERSATION_CONTEXT_BUDGET:
+        lines.pop(0)
+    if not lines:
+        # Even the single most recent turn alone exceeds the budget — keep its
+        # tail (the most recent characters) rather than drop it entirely.
+        tail = f"{messages[-1]['role']}: {messages[-1]['text']}"
+        lines = [tail[-_CONVERSATION_CONTEXT_BUDGET:]]
+    return "\n\nRecent conversation:\n" + "\n".join(lines)
+
+
 def _seeded_prompt(prompt: str, existing_modules: list[ModuleConfig] | None = None) -> str:
     """Ground generation with the nearest preloaded skeleton, which the model is
     told to adapt to the request. This is "preloaded templates that adjust to the
@@ -329,6 +353,7 @@ def _seeded_system(
     existing_modules: list[ModuleConfig] | None = None,
     seed_override: list | None = None,
     exchange_context: str | None = None,
+    recent_messages: list[dict] | None = None,
 ) -> str:
     from src.stub_templates import pick_system
 
@@ -337,9 +362,17 @@ def _seeded_system(
     # cache has nothing close.
     seed = json.dumps(seed_override if seed_override is not None else pick_system(prompt))
     context = _module_context(existing_modules or [])
+    # R-302: the owner's recent persisted conversation (db.recent_messages, via
+    # the generate/preview routes only — never the grounded-file path, where
+    # document content already dominates). Bounded, never the cache key.
+    convo_block = _conversation_block(recent_messages)
     # R-102: the folded interview Q/A (built by the route from GenerateRequest.exchange)
     # reaches the model here so a multi-turn clarifying chain sees ALL prior answers —
     # never the semantic-cache key (see generate_modules — that stays the raw `prompt`).
+    # A just-asked question may already be reflected in `convo_block` too (the persisted
+    # history and the exchange fold overlap when a chain's earlier turns were logged) —
+    # accepted rather than filtered; there's no reliable timestamp to correlate an
+    # exchange turn against a messages row.
     exchange_block = (
         f"\n\nConversation so far (answers already given — do not ask about these again):\n"
         f"{exchange_context}"
@@ -351,6 +384,7 @@ def _seeded_system(
         f"Example starting system (adapt freely — change the number of tools, fields, components, "
         f"labels, icons, accents, and prefill state to match the request; do not return it as-is):\n{seed}"
         f"{context}"
+        f"{convo_block}"
         f"{exchange_block}\n\n"
         f"Return the adapted ModuleConfig JSON array."
     )
@@ -419,6 +453,7 @@ def generate_modules(
     owner: str = "local",
     exchange_context: str | None = None,
     allow_question: bool = True,
+    recent_messages: list[dict] | None = None,
 ) -> list[ModuleConfig]:
     """Decompose a request into the set of tools it needs (1-6 modules).
 
@@ -431,7 +466,11 @@ def generate_modules(
     the model is not relayed: retry once with a strengthened build-now note, and
     refuse honestly if it still questions — the user never sees a fifth question.
     The parsed plan (R-103/R-301) is surfaced via `last_plan`, not the return
-    value, so every existing caller of this function is unaffected."""
+    value, so every existing caller of this function is unaffected.
+    `recent_messages` (R-302: the owner's last ~10 persisted `messages` rows for
+    the current page, oldest-first — see db.recent_messages) also reaches the
+    model via `_seeded_system` only, never the cache key: an identical re-prompt
+    still cache-HITs regardless of how the conversation has moved on since."""
     last_plan.set(None)
     if llm.is_stub_mode():
         from src.stub_templates import pick_system
@@ -452,6 +491,7 @@ def generate_modules(
         existing_modules,
         seed_override=cached if mode == "seed" else None,
         exchange_context=exchange_context,
+        recent_messages=recent_messages,
     )
     try:
         parsed = _generate_validated(
