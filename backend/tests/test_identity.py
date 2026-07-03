@@ -43,7 +43,8 @@ def test_claim_grants_access_and_two_devices_share_a_workspace(tmp_path, monkeyp
     monkeypatch.setenv("TRUS_ALLOW_ANON", "0")
     user = db.create_user("Janus")
     with TestClient(app) as device_a, TestClient(app) as device_b:
-        assert device_a.get(f"/api/auth/claim?token={user['invite_token']}").status_code == 200
+        claimed = device_a.post("/api/auth/claim", json={"token": user["invite_token"]})
+        assert claimed.status_code == 200
         created = device_a.post(
             "/api/modules",
             json={
@@ -57,9 +58,95 @@ def test_claim_grants_access_and_two_devices_share_a_workspace(tmp_path, monkeyp
             },
         )
         assert created.status_code == 201
-        assert device_b.get(f"/api/auth/claim?token={user['invite_token']}").status_code == 200
+        claimed_b = device_b.post("/api/auth/claim", json={"token": user["invite_token"]})
+        assert claimed_b.status_code == 200
         titles = [m["config"]["title"] for m in device_b.get("/api/modules").json()]
         assert "Shared" in titles  # R-902 AC: same workspace from a second device
+
+
+def test_get_claim_is_a_read_only_preview(tmp_path, monkeypatch):
+    """GET /api/auth/claim validates the invite but mutates NOTHING — no session
+    write, no adoption. A shared link opened by link previewers/crawlers (or an
+    attacker-forced GET) must never change who the browser is signed in as."""
+    monkeypatch.setenv("TRUS_DB_PATH", str(tmp_path / "t.db"))
+    monkeypatch.setenv("TRUS_ALLOW_ANON", "0")
+    user = db.create_user("Previewed")
+    with TestClient(app) as client:
+        r = client.get(f"/api/auth/claim?token={user['invite_token']}")
+        assert r.status_code == 200
+        assert r.json() == {"valid": True, "name": "Previewed"}
+        # Nothing was claimed: still gated, still anonymous.
+        assert client.get("/api/auth/me").json() == {"claimed": False, "name": None}
+        assert client.get("/api/modules").status_code == 401
+
+
+def test_claim_rebind_without_confirm_is_409(tmp_path, monkeypatch):
+    """A claimed session hit with a DIFFERENT user's invite must not silently
+    rebind — the caller has to confirm the account switch."""
+    monkeypatch.setenv("TRUS_DB_PATH", str(tmp_path / "t.db"))
+    monkeypatch.setenv("TRUS_ALLOW_ANON", "0")
+    user_a = db.create_user("Alice")
+    user_b = db.create_user("Bob")
+    with TestClient(app) as client:
+        assert (
+            client.post("/api/auth/claim", json={"token": user_a["invite_token"]}).status_code
+            == 200
+        )
+        r = client.post("/api/auth/claim", json={"token": user_b["invite_token"]})
+        assert r.status_code == 409
+        assert r.json()["detail"] == {"rebind": "Alice"}
+        # Still Alice — the forced claim changed nothing.
+        assert client.get("/api/auth/me").json() == {"claimed": True, "name": "Alice"}
+
+
+def test_claim_rebind_with_confirm_switches_without_moving_data(tmp_path, monkeypatch):
+    """A confirmed rebind switches the session's user but never adopts: the
+    previous user's uid-keyed data stays theirs and is invisible to the new user."""
+    monkeypatch.setenv("TRUS_DB_PATH", str(tmp_path / "t.db"))
+    monkeypatch.setenv("TRUS_ALLOW_ANON", "0")
+    user_a = db.create_user("Alice")
+    user_b = db.create_user("Bob")
+    with TestClient(app) as client:
+        assert (
+            client.post("/api/auth/claim", json={"token": user_a["invite_token"]}).status_code
+            == 200
+        )
+        created = client.post(
+            "/api/modules",
+            json={
+                "configs": [
+                    {
+                        "title": "Alice's tool",
+                        "icon": "activity",
+                        "components": [{"id": "n", "type": "number_input", "label": "N"}],
+                    }
+                ]
+            },
+        )
+        assert created.status_code == 201
+        r = client.post("/api/auth/claim", json={"token": user_b["invite_token"], "confirm": True})
+        assert r.status_code == 200 and r.json()["name"] == "Bob"
+        assert client.get("/api/auth/me").json() == {"claimed": True, "name": "Bob"}
+        # Alice's work did NOT move to Bob …
+        titles = [m["config"]["title"] for m in client.get("/api/modules").json()]
+        assert "Alice's tool" not in titles
+        # … it is still Alice's (visible from a fresh session claiming Alice).
+        with TestClient(app) as alice_again:
+            alice_again.post("/api/auth/claim", json={"token": user_a["invite_token"]})
+            titles_a = [m["config"]["title"] for m in alice_again.get("/api/modules").json()]
+            assert "Alice's tool" in titles_a
+
+
+def test_reclaiming_the_same_user_is_not_a_rebind(tmp_path, monkeypatch):
+    monkeypatch.setenv("TRUS_DB_PATH", str(tmp_path / "t.db"))
+    monkeypatch.setenv("TRUS_ALLOW_ANON", "0")
+    user = db.create_user("Same")
+    with TestClient(app) as client:
+        assert (
+            client.post("/api/auth/claim", json={"token": user["invite_token"]}).status_code == 200
+        )
+        again = client.post("/api/auth/claim", json={"token": user["invite_token"]})
+        assert again.status_code == 200  # idempotent, no confirm needed
 
 
 def test_adopt_on_claim_migrates_anonymous_work(tmp_path, monkeypatch):
@@ -81,7 +168,8 @@ def test_adopt_on_claim_migrates_anonymous_work(tmp_path, monkeypatch):
             },
         )
         assert created.status_code == 201
-        assert client.get(f"/api/auth/claim?token={user['invite_token']}").status_code == 200
+        claimed = client.post("/api/auth/claim", json={"token": user["invite_token"]})
+        assert claimed.status_code == 200
         titles = [m["config"]["title"] for m in client.get("/api/modules").json()]
         assert "Pre-claim" in titles  # anonymous pre-claim work followed the user
 
@@ -102,7 +190,11 @@ def test_revoked_invite_cannot_claim(tmp_path, monkeypatch):
     user = db.create_user("Gone")
     db.revoke_user(user["id"])
     with TestClient(app) as client:
+        # Both the preview and the claim refuse a revoked invite.
         assert client.get(f"/api/auth/claim?token={user['invite_token']}").status_code == 403
+        assert (
+            client.post("/api/auth/claim", json={"token": user["invite_token"]}).status_code == 403
+        )
 
 
 def test_revoked_user_session_is_401_on_next_request(tmp_path, monkeypatch):
@@ -110,7 +202,8 @@ def test_revoked_user_session_is_401_on_next_request(tmp_path, monkeypatch):
     monkeypatch.setenv("TRUS_ALLOW_ANON", "0")
     user = db.create_user("Temp")
     with TestClient(app) as client:
-        assert client.get(f"/api/auth/claim?token={user['invite_token']}").status_code == 200
+        claimed = client.post("/api/auth/claim", json={"token": user["invite_token"]})
+        assert claimed.status_code == 200
         assert client.get("/api/modules").status_code == 200
         db.revoke_user(user["id"])
         assert client.get("/api/modules").status_code == 401  # re-checked → back to gate
@@ -118,7 +211,9 @@ def test_revoked_user_session_is_401_on_next_request(tmp_path, monkeypatch):
 
 def test_unknown_token_claim_is_404(tmp_path, monkeypatch):
     with _client(tmp_path, monkeypatch) as client:
+        # Both verbs refuse an unknown invite.
         assert client.get("/api/auth/claim?token=does-not-exist").status_code == 404
+        assert client.post("/api/auth/claim", json={"token": "does-not-exist"}).status_code == 404
 
 
 # ---------------------------------------------------------------------------
@@ -132,7 +227,7 @@ def test_me_reports_claim_state(tmp_path, monkeypatch):
     user = db.create_user("Named")
     with TestClient(app) as client:
         assert client.get("/api/auth/me").json() == {"claimed": False, "name": None}
-        client.get(f"/api/auth/claim?token={user['invite_token']}")
+        client.post("/api/auth/claim", json={"token": user["invite_token"]})
         assert client.get("/api/auth/me").json() == {"claimed": True, "name": "Named"}
 
 

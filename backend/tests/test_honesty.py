@@ -233,7 +233,7 @@ def test_promote_fails_closed_on_unparseable_capture_meta(client):
 
     # Own the corrupt layouts as a claimed user so the owner-scoped promote finds them.
     user = db.create_user("Curator")
-    client.get(f"/api/auth/claim?token={user['invite_token']}")
+    client.post("/api/auth/claim", json={"token": user["invite_token"]})
     bad = db.layout_add(
         "calorie",
         "Corrupt",

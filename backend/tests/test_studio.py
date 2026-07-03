@@ -75,7 +75,7 @@ def test_promote_seeds_the_generation_pool(client, monkeypatch):
 
     # Claim a user so the promote seeds (and is retrievable) under a known owner (R-903).
     user = db.create_user("Promoter")
-    client.get(f"/api/auth/claim?token={user['invite_token']}")
+    client.post("/api/auth/claim", json={"token": user["invite_token"]})
     monkeypatch.setattr(llm, "is_stub_mode", lambda: False)
     monkeypatch.setattr(llm, "generate", fake_generate(_clean_layouts_raw()))
 

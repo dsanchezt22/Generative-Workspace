@@ -140,7 +140,7 @@ def test_capture_route_end_to_end_and_autoseed(client, monkeypatch):
 
     # Claim a user so the capture route seeds the pool under a known owner (R-903).
     user = db.create_user("Capturer")
-    client.get(f"/api/auth/claim?token={user['invite_token']}")
+    client.post("/api/auth/claim", json={"token": user["invite_token"]})
     monkeypatch.setattr(llm, "vision_capture", lambda *a, **k: json.dumps(_IR))
     monkeypatch.setattr(llm, "generate", fake_generate(json.dumps(_FULL_CONFIG)))
 
