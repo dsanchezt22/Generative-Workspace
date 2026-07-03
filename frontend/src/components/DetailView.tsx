@@ -1,6 +1,6 @@
 "use client";
 
-import type { StoredModule } from "@/lib/types";
+import type { ModuleConfig, StoredModule } from "@/lib/types";
 import { Module } from "./Module";
 import { Icon } from "./Icon";
 import { resolveAccent, resolveIconName } from "@/lib/theme";
@@ -10,7 +10,7 @@ interface Props {
   crossModuleValues: Record<string, number>;
   inspectorOpen: boolean;
   onClose: () => void;
-  onChange: (m: StoredModule) => void;
+  onCommit: (id: string, config: ModuleConfig, delay?: number) => void;
   onUndo: (id: string) => void;
   onRefine: (id: string) => void;
   onSelect: (id: string) => void;
@@ -18,7 +18,7 @@ interface Props {
   onDelete: (id: string) => void;
 }
 
-export function DetailView({ module, crossModuleValues, inspectorOpen, onClose, onChange, onUndo, onRefine, onSelect, onEdit, onDelete }: Props) {
+export function DetailView({ module, crossModuleValues, inspectorOpen, onClose, onCommit, onUndo, onRefine, onSelect, onEdit, onDelete }: Props) {
   const theme = resolveAccent(module.config.accent, module.config.title);
   const icon = resolveIconName(module.config.icon, module.config.title);
   return (
@@ -41,7 +41,7 @@ export function DetailView({ module, crossModuleValues, inspectorOpen, onClose, 
             variant="detail"
             crossModuleValues={crossModuleValues}
             selected={false}
-            onChange={onChange}
+            onCommit={onCommit}
             onDelete={onDelete}
             onUndo={onUndo}
             onSelectForRefine={onRefine}

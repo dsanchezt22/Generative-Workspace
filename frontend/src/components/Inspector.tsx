@@ -2,7 +2,6 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Automation, Component, ComponentType, ModuleConfig, StoredModule } from "@/lib/types";
-import { api } from "@/lib/api";
 import { COMPONENT_TYPES, makeComponent } from "@/lib/componentFactory";
 import { ICON_CHOICES, resolveAccent, resolveIconName } from "@/lib/theme";
 import { Icon } from "./Icon";
@@ -11,7 +10,7 @@ import { FieldOptions } from "./FieldOptions";
 
 interface Props {
   module: StoredModule;
-  onChange: (m: StoredModule) => void;
+  onCommit: (id: string, config: ModuleConfig, delay?: number) => void;
   onClose: () => void;
   onRefine: (id: string) => void;
   onDelete: (id: string) => void;
@@ -35,10 +34,9 @@ function convertType(c: Component, type: ComponentType): Component {
   return { ...makeComponent(type, c.label), id: c.id };
 }
 
-export function Inspector({ module, onChange, onClose, onRefine, onDelete, onDuplicate, onArchive }: Props) {
+export function Inspector({ module, onCommit, onClose, onRefine, onDelete, onDuplicate, onArchive }: Props) {
   const [draft, setDraft] = useState<Draft>(() => fromModule(module));
   const [dragId, setDragId] = useState<string | null>(null);
-  const timer = useRef<number | null>(null);
   // Field ids whose type changed — their stored value is from the old type and
   // is dropped on the next save so the new renderer starts from a clean default.
   const resetIds = useRef<Set<string>>(new Set());
@@ -61,9 +59,11 @@ export function Inspector({ module, onChange, onClose, onRefine, onDelete, onDup
     };
   }
 
+  // Build the full config from the draft and commit it upward. The single saver
+  // owns debouncing/coalescing/retry — the inspector no longer PATCHes directly.
+  // `delay` (0 for structural edits, 400 for typing) is forwarded to the saver.
   const persist = useCallback(
     (d: Draft, delay: number) => {
-      if (timer.current) window.clearTimeout(timer.current);
       const config: ModuleConfig = {
         ...module.config,
         title: d.title,
@@ -81,16 +81,9 @@ export function Inspector({ module, onChange, onClose, onRefine, onDelete, onDup
         config.state = state;
         resetIds.current.clear();
       }
-      timer.current = window.setTimeout(async () => {
-        try {
-          const saved = await api.patchModule(module.id, config);
-          onChange(saved);
-        } catch (err) {
-          console.error("Failed to persist inspector change", err);
-        }
-      }, delay);
+      onCommit(module.id, config, delay);
     },
-    [module.id, module.config, onChange],
+    [module.id, module.config, onCommit],
   );
 
   const update = useCallback(

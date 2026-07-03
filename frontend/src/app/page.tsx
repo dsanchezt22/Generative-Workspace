@@ -18,9 +18,10 @@ import { IntroSplash } from "@/components/IntroSplash";
 import { InviteGate } from "@/components/InviteGate";
 import { Icon } from "@/components/Icon";
 import { api, ApiError } from "@/lib/api";
+import { createModuleSaver, type SaveStatus } from "@/lib/moduleSaver";
 import { useAppearance } from "@/lib/appearance";
 import { resolveIconName } from "@/lib/theme";
-import type { Message, Page, Snapshot, StoredModule } from "@/lib/types";
+import type { Message, ModuleConfig, Page, Snapshot, StoredModule } from "@/lib/types";
 
 function HeaderInsights({
   activePageId,
@@ -108,6 +109,47 @@ export default function Home() {
   const [identityName, setIdentityName] = useState<string | null>(null);
   const pendingFocusRef = useRef<string | null>(null);
   const { theme, setTheme } = useAppearance();
+
+  // R-601/R-602: a single writer owns all module persistence. `commitModule`
+  // updates the parent modules array synchronously (optimistic — a metric bound
+  // to another module recomputes on the same render pass), then hands the config
+  // to the saver, which debounces, coalesces, serializes one in-flight PATCH per
+  // module, retries failures with backoff, and exposes a save status.
+  const saver = useMemo(
+    () =>
+      createModuleSaver({
+        patch: (id, c) => api.patchModule(id, c),
+        // Reconcile server metadata only — never overwrite config, which may
+        // already hold a newer local edit (overwriting would revert a keystroke).
+        onSaved: (m) =>
+          setModules((ms) => ms.map((x) => (x.id === m.id ? { ...x, updated_at: m.updated_at } : x))),
+        onError: (id, err) => console.error("Failed to save module", id, err),
+      }),
+    [],
+  );
+  const [saveStatus, setSaveStatus] = useState<SaveStatus>("idle");
+  useEffect(() => {
+    setSaveStatus(saver.status());
+    return saver.subscribe(() => setSaveStatus(saver.status()));
+  }, [saver]);
+  // Don't lose an in-flight edit if the tab closes mid-save: flush + warn.
+  useEffect(() => {
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (saver.status() !== "idle") {
+        void saver.flushAll();
+        e.preventDefault();
+      }
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, [saver]);
+  const commitModule = useCallback(
+    (id: string, config: ModuleConfig, delay?: number) => {
+      setModules((ms) => ms.map((m) => (m.id === id ? { ...m, config } : m)));
+      saver.commit(id, config, delay);
+    },
+    [saver],
+  );
 
   useEffect(() => {
     if (!sessionStorage.getItem("trus-intro-seen")) setIntroOpen(true);
@@ -251,11 +293,12 @@ export default function Home() {
   }, []);
 
   const handleDeleteModule = useCallback((id: string) => {
+    saver.forget(id); // drop any pending save so it can't resurrect a deleted module
     setModules((prev) => prev.filter((m) => m.id !== id));
     setSelectedId((cur) => (cur === id ? null : cur));
     setInspectorId((cur) => (cur === id ? null : cur));
     void api.deleteModule(id).catch((err) => console.error("Failed to delete module", err));
-  }, []);
+  }, [saver]);
 
   const handleUndoModule = useCallback(async (id: string) => {
     try {
@@ -375,11 +418,12 @@ export default function Home() {
   }, []);
 
   const handleArchiveModule = useCallback(async (id: string) => {
+    saver.forget(id); // drop any pending save for a module leaving the canvas
     setModules((prev) => prev.filter((m) => m.id !== id));
     setSelectedId((cur) => (cur === id ? null : cur));
     setInspectorId((cur) => (cur === id ? null : cur));
     try { await api.archiveModule(id); } catch (err) { console.error("Failed to archive", err); }
-  }, []);
+  }, [saver]);
 
   const openArchived = useCallback(async () => {
     setSelectedId(null);
@@ -613,6 +657,34 @@ export default function Home() {
         <AppearanceMenu />
       </header>
 
+      {/* Save-status pill (R-602). Ethos: Geist Mono "machine" register, sentence
+          case, restrained — the muted "Saving…" carries no accent (magenta is
+          rationed for the one primary action); errors use the muted terracotta
+          status token (--danger / --status-err-dim), never neon red. */}
+      {saveStatus !== "idle" && (
+        <div
+          role="status"
+          aria-live="polite"
+          className={`absolute top-16 left-4 z-30 flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-mono tracking-wide backdrop-blur transition-colors ${
+            saveStatus === "error"
+              ? "border-[var(--danger)] text-[var(--danger)] bg-[var(--status-err-dim)]"
+              : "border-[var(--border)] text-[var(--muted)] bg-[var(--surface)]/90"
+          }`}
+        >
+          {saveStatus === "error" ? (
+            <>
+              <span aria-hidden>⚠</span>
+              <span>Not saved — retrying</span>
+            </>
+          ) : (
+            <>
+              <span aria-hidden className="w-1.5 h-1.5 rounded-full bg-[var(--muted)] animate-pulse" />
+              <span>Saving…</span>
+            </>
+          )}
+        </div>
+      )}
+
       <Canvas
         modules={activeModules}
         activePageId={activePageId ?? undefined}
@@ -621,6 +693,7 @@ export default function Home() {
         onModuleEdit={(id) => { setSelectedId(id); setInspectorId(id); setConvoOpen(false); setArchivedOpen(false); setSnapshotsOpen(false); }}
         onModuleExpand={handleExpand}
         onModuleChange={handleModuleChange}
+        onModuleCommit={commitModule}
         onModuleDelete={handleDeleteModule}
         onModuleUndo={handleUndoModule}
         onModuleSelectForRefine={handleSelectForRefine}
@@ -674,7 +747,7 @@ export default function Home() {
           crossModuleValues={{}}
           inspectorOpen={!!inspectorModule}
           onClose={() => setDetailId(null)}
-          onChange={handleModuleChange}
+          onCommit={commitModule}
           onUndo={handleUndoModule}
           onRefine={(id) => { handleSelectForRefine(id); setDetailId(null); }}
           onSelect={setSelectedId}
@@ -686,7 +759,7 @@ export default function Home() {
       {inspectorModule && (
         <Inspector
           module={inspectorModule}
-          onChange={handleModuleChange}
+          onCommit={commitModule}
           onClose={() => setInspectorId(null)}
           onRefine={(id) => { handleSelectForRefine(id); setInspectorId(null); }}
           onDelete={(id) => { handleDeleteModule(id); }}

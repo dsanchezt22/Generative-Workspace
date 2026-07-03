@@ -1,13 +1,15 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { StoredModule } from "@/lib/types";
+import type { ModuleConfig, StoredModule } from "@/lib/types";
 import { Module } from "./Module";
-import { api } from "@/lib/api";
 
 interface Props {
   modules: StoredModule[];
+  // Live, in-memory update during a drag/resize gesture (no network).
   onModuleChange: (updated: StoredModule) => void;
+  // Persist a settled change through the single saver (optimistic + PATCH).
+  onModuleCommit: (id: string, config: ModuleConfig, delay?: number) => void;
   onModuleDelete: (id: string) => void;
   onModuleUndo: (id: string) => void;
   onModuleSelectForRefine: (id: string) => void;
@@ -65,6 +67,7 @@ function crossModuleValues(modules: StoredModule[], module: StoredModule): Recor
 export function Canvas({
   modules,
   onModuleChange,
+  onModuleCommit,
   onModuleDelete,
   onModuleUndo,
   onModuleSelectForRefine,
@@ -226,9 +229,12 @@ export function Canvas({
     setDraggingModule(null);
     if (ref) {
       const m = latestModulesRef.current.find((mm) => mm.id === ref.moduleId);
-      if (m) void api.patchModule(m.id, m.config).catch((err) => console.error("Failed to persist layout", err));
+      // Commit the settled layout through the single saver. m.config already
+      // carries any state edits made just before the drag (they merge into one
+      // PATCH), retiring the edit-then-drag snap-back (R-602 AC #3).
+      if (m) onModuleCommit(m.id, m.config);
     }
-  }, [winMove]);
+  }, [winMove, onModuleCommit]);
 
   const beginGesture = useCallback((e: React.PointerEvent) => {
     e.stopPropagation();
@@ -369,7 +375,7 @@ export function Canvas({
               onMeasure={reportHeight}
               crossModuleValues={crossModuleValues(modules, m)}
               selected={m.id === selectedId}
-              onChange={onModuleChange}
+              onCommit={onModuleCommit}
               onDelete={onModuleDelete}
               onUndo={onModuleUndo}
               onSelectForRefine={onModuleSelectForRefine}
