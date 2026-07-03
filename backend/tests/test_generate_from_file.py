@@ -185,22 +185,39 @@ def test_generate_from_file_rejects_oversized_file(client):
     assert resp.status_code == 413
 
 
-def test_generate_from_file_small_file_reads_fully(client, monkeypatch):
-    """F3: the read-cap (15MB+1) must not truncate a normal small upload."""
-    monkeypatch.setattr(llm, "is_stub_mode", lambda: False)
-    monkeypatch.setattr(
-        llm,
-        "generate_from_file",
-        lambda *a, **k: json.dumps(
-            [{"title": "OK", "components": [{"id": "a", "type": "text_input", "label": "A"}]}]
-        ),
+def test_generate_from_file_read_cap_preserves_full_content(client, monkeypatch):
+    """F3: the route's read-cap (15MB+1) must not truncate a normal upload.
+    Proven on the grounded (extraction) path: the ENTIRE file content — start,
+    middle rows, and end sentinel — must reach the generation prompt verbatim.
+    (Content is kept under extract.py's 20k-char cap so any missing byte can
+    only mean the route-level read truncated it.)"""
+    body = (
+        "START-SENTINEL\n"
+        + "\n".join(f"row {i:03d}: value-{i}" for i in range(200))
+        + "\nEND-SENTINEL"
     )
+    assert len(body) < 20_000  # guard: stay under the extraction cap
+
+    captured: dict = {}
+    inner = fake_generate(
+        json.dumps(
+            [{"title": "OK", "components": [{"id": "a", "type": "text_input", "label": "A"}]}]
+        )
+    )
+
+    def spy(*args, **kwargs):
+        captured["args"] = args
+        return inner(*args, **kwargs)
+
+    monkeypatch.setattr(llm, "generate", spy)
+
     resp = client.post(
         "/api/modules/generate_from_file",
-        files={"file": ("small.txt", b"tiny content", "text/plain")},
+        files={"file": ("small.txt", body.encode("utf-8"), "text/plain")},
         data={"prompt": "make a tool"},
     )
     assert resp.status_code == 200, resp.text
+    assert body in captured["args"][0]  # full content, not a truncated prefix
 
 
 def test_generate_from_file_non_stub_empty_sentinel_refuses(client, monkeypatch):
