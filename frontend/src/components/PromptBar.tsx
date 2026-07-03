@@ -95,11 +95,15 @@ export function PromptBar({ onModule, activePageId, refineTarget, onRefineModule
     setVoiceMode(hasRecorder ? "full" : SR ? "speech-only" : "none");
   }, []);
 
-  // Never leave the mic "hot" if the bar unmounts mid-recording.
+  // Never leave the mic "hot" if the bar unmounts mid-recording. MediaRecorder
+  // .stop() throws InvalidStateError on an already-"inactive" recorder (any
+  // completed ramble), so it MUST be state-guarded — an uncaught throw here
+  // would surface as an unhandled unmount error (no error boundary in the app).
   useEffect(() => {
     return () => {
       if (elapsedTimerRef.current) clearInterval(elapsedTimerRef.current);
-      mediaRecorderRef.current?.stop();
+      const mr = mediaRecorderRef.current;
+      if (mr && mr.state !== "inactive") mr.stop();
       streamRef.current?.getTracks().forEach((t) => t.stop());
       recRef.current?.stop();
     };
@@ -107,6 +111,13 @@ export function PromptBar({ onModule, activePageId, refineTarget, onRefineModule
 
   const clearElapsedTimer = () => {
     if (elapsedTimerRef.current) { clearInterval(elapsedTimerRef.current); elapsedTimerRef.current = null; }
+  };
+
+  // MediaRecorder.stop() throws InvalidStateError if the recorder is already
+  // "inactive"; every stop() call site goes through this guard.
+  const stopRecorderSafely = () => {
+    const mr = mediaRecorderRef.current;
+    if (mr && mr.state !== "inactive") mr.stop();
   };
 
   // The AUTHORITATIVE transcript always comes from here — either the server
@@ -162,9 +173,20 @@ export function PromptBar({ onModule, activePageId, refineTarget, onRefineModule
   };
 
   const startFullRecording = async () => {
+    // Split the two failure modes: a getUserMedia rejection is a permission
+    // denial (R-204 message), while a later MediaRecorder construction/start
+    // throw is NOT a permission problem — and it leaves the mic OPEN, so its
+    // tracks must be stopped or the OS mic indicator stays lit with no release.
+    let stream: MediaStream;
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      streamRef.current = stream;
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch {
+      setError("Microphone blocked — allow access to use voice.");
+      setRecording(false);
+      return;
+    }
+    streamRef.current = stream;
+    try {
       const mimeType = pickAudioMime((t) => MediaRecorder.isTypeSupported(t));
       const mr = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
       chunksRef.current = [];
@@ -180,13 +202,21 @@ export function PromptBar({ onModule, activePageId, refineTarget, onRefineModule
       elapsedTimerRef.current = setInterval(() => setElapsedSec((s) => s + 1), 1000);
       startSpeechGarnish();
     } catch {
-      // getUserMedia rejected — almost always a permission denial (R-204).
-      setError("Microphone blocked — allow access to use voice.");
+      // Recorder construction/start failed (unsupported constraints etc.) —
+      // release the mic we just opened before surfacing an honest, non-
+      // permission error.
+      stream.getTracks().forEach((t) => t.stop());
+      streamRef.current = null;
+      mediaRecorderRef.current = null;
+      setError("Couldn't start recording.");
       setRecording(false);
     }
   };
 
   const finishFullRecording = async (mimeType: string) => {
+    // onstop has fired → the recorder is now "inactive"; drop the ref so the
+    // unmount cleanup never calls .stop() on a completed recorder.
+    mediaRecorderRef.current = null;
     streamRef.current?.getTracks().forEach((t) => t.stop());
     streamRef.current = null;
     recRef.current?.stop();
@@ -266,7 +296,7 @@ export function PromptBar({ onModule, activePageId, refineTarget, onRefineModule
     setRecording(false);
     if (voiceMode === "full") {
       setTranscribing(true); // optimistic — finishFullRecording flips it off
-      mediaRecorderRef.current?.stop(); // → mr.onstop → finishFullRecording
+      stopRecorderSafely(); // → mr.onstop → finishFullRecording (guarded)
       recRef.current?.stop(); // garnish recognizer, best effort
     } else {
       recRef.current?.stop(); // → rec.onend → applyTranscript
