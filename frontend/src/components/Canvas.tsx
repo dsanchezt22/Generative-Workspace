@@ -565,6 +565,15 @@ export function Canvas({
       // honestly (422) instead of degrading to a template.
       const result = await api.generateModuleFromFile(file, "", activePageId, SKETCH_HINT);
       const mods = result.modules?.length ? result.modules : result.module ? [result.module] : [];
+      if (result.question || mods.length === 0) {
+        // A clarifying question OR an empty result means the snap produced nothing
+        // to place. Surface it and KEEP the ink — exitSketch would wipe the strokes,
+        // silently destroying the user's drawing with no way to retry/adjust.
+        setSketchError(
+          result.question ?? "The model couldn't read this sketch — add labels and try again.",
+        );
+        return; // strokes persist; overlay stays open (finally still clears `snapping`)
+      }
       onSketchModules?.(mods);
       exitSketch(); // R-223: sketch consumed on success → clear ink + leave mode
     } catch (err) {

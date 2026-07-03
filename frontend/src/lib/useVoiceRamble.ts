@@ -14,6 +14,13 @@ import { pickAudioMime } from "@/lib/voiceRamble";
 
 const noop = () => {};
 
+// R-201 (fix): the Web-Speech FALLBACK (server STT unconfigured → 422) is
+// delivered from the browser recognizer, which routinely stops after ~60s / on
+// silence — so a long ramble can be truncated. Flag it so the user knows to
+// review before submitting.
+const WEB_SPEECH_FALLBACK_NOTICE =
+  "Built from browser speech recognition — may be incomplete.";
+
 export type VoiceMode = "none" | "speech-only" | "full";
 
 export interface UseVoiceRambleOptions {
@@ -97,17 +104,14 @@ export function useVoiceRamble(options: UseVoiceRambleOptions): VoiceRamble {
     if (elapsedTimerRef.current) { clearInterval(elapsedTimerRef.current); elapsedTimerRef.current = null; }
   };
 
-  // MediaRecorder.stop() throws InvalidStateError if already "inactive".
-  const stopRecorderSafely = () => {
-    const mr = mediaRecorderRef.current;
-    if (mr && mr.state !== "inactive") mr.stop();
-  };
-
   // Hand the finished transcript to the caller (append + auto-submit is theirs).
-  const deliverTranscript = (text: string) => {
+  // `wasEmptyOverride` forces the auto-submit signal: the Web-Speech fallback
+  // passes false so a possibly-truncated transcript is NEVER auto-submitted —
+  // only the authoritative server transcript honors the empty-at-start rule.
+  const deliverTranscript = (text: string, wasEmptyOverride?: boolean) => {
     const trimmed = text.trim();
     if (!trimmed) return;
-    cbRef.current.onTranscript(trimmed, wasEmptyAtStartRef.current);
+    cbRef.current.onTranscript(trimmed, wasEmptyOverride ?? wasEmptyAtStartRef.current);
   };
 
   // Live ghost text only — never drives the transcript in "full" mode.
@@ -185,6 +189,13 @@ export function useVoiceRamble(options: UseVoiceRambleOptions): VoiceRamble {
     // onstop has fired → the recorder is now "inactive"; drop the ref so the
     // unmount cleanup never calls .stop() on a completed recorder.
     mediaRecorderRef.current = null;
+    // A SPONTANEOUS stop (track ended: OS interruption, unplug, iOS lock,
+    // permission revoked) reaches here WITHOUT going through stopRecording, which
+    // is the only other place `recording`/the elapsed timer are reset. Reset them
+    // here too, or the UI stays stuck on "Recording…" with a dead recorder and a
+    // ticking timer — and a later tap would wedge the mic in "Transcribing…".
+    setRecording(false);
+    clearElapsedTimer();
     streamRef.current?.getTracks().forEach((t) => t.stop());
     streamRef.current = null;
     recRef.current?.stop();
@@ -206,7 +217,10 @@ export function useVoiceRamble(options: UseVoiceRambleOptions): VoiceRamble {
         // final transcript when it caught anything.
         const fallback = speechFinalRef.current.trim();
         if (fallback) {
-          deliverTranscript(fallback);
+          // Flag the possibly-truncated fallback and NEVER auto-submit it —
+          // deliver with wasEmpty=false so the user reviews before submitting.
+          cbRef.current.onError(WEB_SPEECH_FALLBACK_NOTICE);
+          deliverTranscript(fallback, false);
         } else {
           cbRef.current.onError(err.message || "Voice transcription isn't set up — type instead.");
         }
@@ -267,8 +281,16 @@ export function useVoiceRamble(options: UseVoiceRambleOptions): VoiceRamble {
     clearElapsedTimer();
     setRecording(false);
     if (voiceMode === "full") {
-      setTranscribing(true); // optimistic — finishFullRecording flips it off
-      stopRecorderSafely(); // → mr.onstop → finishFullRecording (guarded)
+      const mr = mediaRecorderRef.current;
+      // Only enter "Transcribing…" when there's a LIVE recorder to stop. After a
+      // spontaneous stop, finishFullRecording already ran and nulled the ref, so
+      // there's nothing to stop — setting transcribing=true here would strand it
+      // forever (nothing flips it back off), disabling the mic. MediaRecorder.stop()
+      // also throws InvalidStateError on an already-"inactive" recorder, so guard.
+      if (mr && mr.state !== "inactive") {
+        setTranscribing(true); // optimistic — finishFullRecording flips it off
+        mr.stop(); // → mr.onstop → finishFullRecording (guarded)
+      }
       recRef.current?.stop(); // garnish recognizer, best effort
     } else {
       recRef.current?.stop(); // → rec.onend → deliverTranscript
