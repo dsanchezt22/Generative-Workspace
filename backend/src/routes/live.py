@@ -33,6 +33,7 @@ def get_live_value(
     lat: float | None = Query(default=None),
     lon: float | None = Query(default=None),
     place: str | None = Query(default=None),
+    food: str | None = Query(default=None),
     refresh_secs: int = Query(default=600, ge=60, le=86400),
 ) -> dict:
     sid = _owner_id(request)
@@ -52,8 +53,12 @@ def get_live_value(
         }
     if provider not in live_data.ALLOWED_PROVIDERS:
         raise HTTPException(status_code=422, detail=f"Unknown live-data provider: {provider}")
-    if place:
-        query: dict[str, str | float] = {"place": place}
+    if provider == "nutrition":
+        if not food:
+            raise HTTPException(status_code=422, detail="Provide a food name.")
+        query: dict[str, str | float] = {"food": food}
+    elif place:
+        query = {"place": place}
     elif lat is not None and lon is not None:
         query = {"lat": lat, "lon": lon}
     else:

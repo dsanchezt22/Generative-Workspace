@@ -7,6 +7,10 @@ public data (this bounds outbound fetches, it isn't per-user privacy).
 Weather: Open-Meteo, keyless. `query` carries {lat, lon} (floats) or
 {place: "City"} (geocoded first via Open-Meteo's geocoding API).
 
+Nutrition (R-702): Open Food Facts, keyless. `query` carries {food: "banana"}.
+Returns calories per 100g (the field Open Food Facts reports most reliably
+across products) as `unit: "kcal/100g"`.
+
 Zero-dep urllib, mirroring llm.py's `_openai_chat`/`transcribe` style: a
 network/parse failure never raises past this module — `fetch()` always
 returns a payload (fresh, stale-cached, or null-value-with-error), never an
@@ -29,6 +33,7 @@ _TIMEOUT = 10.0
 
 _GEOCODE_URL = "https://geocoding-api.open-meteo.com/v1/search"
 _FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
+_OFF_SEARCH_URL = "https://world.openfoodfacts.org/cgi/search.pl"
 
 
 def _now_iso() -> str:
@@ -107,11 +112,50 @@ def _fetch_weather(query: dict[str, Any]) -> dict[str, Any]:
         return _empty_payload("Open-Meteo", f"Open-Meteo returned an unusable response: {e}")
 
 
-_FETCHERS = {"weather": _fetch_weather}
+def _fetch_nutrition(query: dict[str, Any]) -> dict[str, Any]:
+    food = query.get("food")
+    if not food:
+        return _empty_payload("Open Food Facts", "Nutrition needs a food name.")
+    try:
+        params = {
+            "search_terms": str(food),
+            "search_simple": 1,
+            "action": "process",
+            "json": 1,
+            "page_size": 1,
+            "fields": "product_name,nutriments",
+        }
+        url = f"{_OFF_SEARCH_URL}?{urllib.parse.urlencode(params)}"
+        payload = _get_json(url)
+        products = payload.get("products") or []
+        if not products:
+            return _empty_payload("Open Food Facts", f"No product found for '{food}'.")
+        nutriments = products[0].get("nutriments") or {}
+        value = nutriments.get("energy-kcal_100g")
+        if value is None:
+            return _empty_payload(
+                "Open Food Facts", f"Open Food Facts has no calorie data for '{food}'."
+            )
+        return {
+            "value": float(value),
+            "unit": "kcal/100g",
+            "as_of": _now_iso(),
+            "source": "Open Food Facts",
+            "stale": False,
+            "error": None,
+        }
+    except (urllib.error.URLError, OSError) as e:
+        return _empty_payload("Open Food Facts", f"Could not reach Open Food Facts: {e}")
+    except (json.JSONDecodeError, KeyError, ValueError, TypeError) as e:
+        return _empty_payload(
+            "Open Food Facts", f"Open Food Facts returned an unusable response: {e}"
+        )
 
-# The providers this module can actually dispatch. The schema's DataSource
-# Literal also allows "nutrition" (Task 3 adds its fetcher here) — until then
-# a request for it is honestly "unknown", same as any other out-of-domain name.
+
+_FETCHERS = {"weather": _fetch_weather, "nutrition": _fetch_nutrition}
+
+# The providers this module can actually dispatch — mirrors the schema's
+# DataSource Literal exactly.
 ALLOWED_PROVIDERS = frozenset(_FETCHERS)
 
 

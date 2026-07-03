@@ -148,6 +148,157 @@ def test_fetch_unknown_provider_returns_error_payload():
     assert result["error"] is not None
 
 
+# ---------------------------------------------------------------------------
+# live_data.fetch — unit level (nutrition via mocked urlopen)
+# ---------------------------------------------------------------------------
+
+
+def _off_payload(kcal=88.1, name="Banana"):
+    return {
+        "products": [
+            {"product_name": name, "nutriments": {"energy-kcal_100g": kcal}},
+        ]
+    }
+
+
+def test_fetch_nutrition_returns_kcal_value_and_source(monkeypatch):
+    calls = []
+
+    def fake_urlopen(req, timeout=None):
+        calls.append(req.full_url)
+        return _FakeResp(_off_payload())
+
+    monkeypatch.setattr(live_data.urllib.request, "urlopen", fake_urlopen)
+    result = live_data.fetch("nutrition", {"food": "banana"})
+
+    assert result["value"] == 88.1
+    assert result["unit"] == "kcal/100g"
+    assert result["source"] == "Open Food Facts"
+    assert result["stale"] is False
+    assert result["error"] is None
+    assert result["as_of"] is not None
+    assert len(calls) == 1
+    assert "search_terms=banana" in calls[0]
+
+
+def test_fetch_nutrition_url_encodes_food_name_with_space_and_ampersand(monkeypatch):
+    calls = []
+
+    def fake_urlopen(req, timeout=None):
+        calls.append(req.full_url)
+        return _FakeResp(_off_payload(name="Mac & Cheese"))
+
+    monkeypatch.setattr(live_data.urllib.request, "urlopen", fake_urlopen)
+    result = live_data.fetch("nutrition", {"food": "mac & cheese"})
+
+    assert result["error"] is None
+    assert len(calls) == 1
+    # the raw '&' / space must not leak into the query string unescaped —
+    # urlencode quotes them, so the literal substring never appears.
+    assert "mac & cheese" not in calls[0]
+    assert "search_terms=mac" in calls[0]
+    assert "%26" in calls[0] or "search_terms=mac+%26+cheese" in calls[0]
+
+
+def test_fetch_nutrition_no_products_returns_error_payload(monkeypatch):
+    monkeypatch.setattr(
+        live_data.urllib.request, "urlopen", lambda req, timeout=None: _FakeResp({"products": []})
+    )
+    result = live_data.fetch("nutrition", {"food": "zzznonexistentfood"})
+
+    assert result["value"] is None
+    assert result["error"] is not None
+    assert result["stale"] is False
+
+
+def test_fetch_nutrition_missing_calorie_field_returns_error_payload(monkeypatch):
+    monkeypatch.setattr(
+        live_data.urllib.request,
+        "urlopen",
+        lambda req, timeout=None: _FakeResp(
+            {"products": [{"product_name": "Mystery Item", "nutriments": {}}]}
+        ),
+    )
+    result = live_data.fetch("nutrition", {"food": "mystery item"})
+
+    assert result["value"] is None
+    assert result["error"] is not None
+
+
+def test_fetch_nutrition_missing_query_returns_error_payload():
+    result = live_data.fetch("nutrition", {})
+    assert result["value"] is None
+    assert result["error"] is not None
+
+
+def test_fetch_nutrition_ttl_cache_hit_skips_second_urlopen(monkeypatch):
+    calls = {"n": 0}
+
+    def fake_urlopen(req, timeout=None):
+        calls["n"] += 1
+        return _FakeResp(_off_payload())
+
+    monkeypatch.setattr(live_data.urllib.request, "urlopen", fake_urlopen)
+    q = {"food": "apple"}
+    first = live_data.fetch("nutrition", q, refresh_secs=600)
+    second = live_data.fetch("nutrition", q, refresh_secs=600)
+
+    assert calls["n"] == 1  # second call served from cache, no second urlopen
+    assert second == first
+
+
+def test_fetch_nutrition_error_returns_stale_with_last_cached_value(monkeypatch):
+    q = {"food": "bread"}
+
+    monkeypatch.setattr(
+        live_data.urllib.request,
+        "urlopen",
+        lambda req, timeout=None: _FakeResp(_off_payload()),
+    )
+    first = live_data.fetch("nutrition", q, refresh_secs=600)
+    assert first["error"] is None
+
+    # Age the cache row past its TTL so the next fetch attempts a real refresh.
+    qhash = live_data._query_hash(q)
+    expired = (datetime.now(timezone.utc) - timedelta(seconds=700)).isoformat()
+    with db._conn() as c:
+        c.execute(
+            "UPDATE live_cache SET fetched_at = ? WHERE provider = ? AND query_hash = ?",
+            (expired, "nutrition", qhash),
+        )
+
+    def failing_urlopen(req, timeout=None):
+        raise OSError("network down")
+
+    monkeypatch.setattr(live_data.urllib.request, "urlopen", failing_urlopen)
+    second = live_data.fetch("nutrition", q, refresh_secs=600)
+
+    assert second["value"] == first["value"]
+    assert second["stale"] is True
+
+
+def test_fetch_nutrition_error_never_cached_returns_error_payload(monkeypatch):
+    def failing_urlopen(req, timeout=None):
+        raise OSError("network down")
+
+    monkeypatch.setattr(live_data.urllib.request, "urlopen", failing_urlopen)
+    result = live_data.fetch("nutrition", {"food": "kiwi"})
+
+    assert result["value"] is None
+    assert result["stale"] is False
+    assert result["error"] is not None
+
+
+def test_fetch_nutrition_non_json_response_returns_error_payload(monkeypatch):
+    monkeypatch.setattr(
+        live_data.urllib.request, "urlopen", lambda req, timeout=None: _BadJsonResp()
+    )
+    result = live_data.fetch("nutrition", {"food": "kale"})
+
+    assert result["value"] is None
+    assert result["error"] is not None
+
+
 def test_fetch_weather_ttl_cache_hit_skips_second_urlopen(monkeypatch):
     calls = {"n": 0}
 
@@ -270,6 +421,37 @@ def test_live_route_bad_provider_422(client):
 
 def test_live_route_bad_query_422(client):
     resp = client.get("/api/live/weather")
+    assert resp.status_code == 422, resp.text
+
+
+def test_live_route_nutrition_success(client, monkeypatch):
+    captured = {}
+
+    def fake(provider, query, refresh_secs=600):
+        captured["provider"] = provider
+        captured["query"] = query
+        return {
+            "value": 88.1,
+            "unit": "kcal/100g",
+            "as_of": "2026-07-03T12:00",
+            "source": "Open Food Facts",
+            "stale": False,
+            "error": None,
+        }
+
+    monkeypatch.setattr("src.routes.live.live_data.fetch", fake)
+    resp = client.get("/api/live/nutrition", params={"food": "banana"})
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["value"] == 88.1
+    assert body["unit"] == "kcal/100g"
+    assert body["source"] == "Open Food Facts"
+    assert captured["provider"] == "nutrition"
+    assert captured["query"] == {"food": "banana"}
+
+
+def test_live_route_nutrition_missing_food_422(client):
+    resp = client.get("/api/live/nutrition")
     assert resp.status_code == 422, resp.text
 
 
