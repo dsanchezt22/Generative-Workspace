@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { ApiError, api } from "@/lib/api";
 import type { ModuleConfig, StoredModule } from "@/lib/types";
+import { appendTranscript, formatElapsed, pickAudioMime } from "@/lib/voiceRamble";
 import { Icon } from "./Icon";
 import { Module } from "./Module";
 
@@ -51,40 +52,233 @@ export function PromptBar({ onModule, activePageId, refineTarget, onRefineModule
 
   const isRefining = Boolean(refineTarget);
   const [recording, setRecording] = useState(false);
+  // R-201: true while the stopped recording's blob is in flight to
+  // /api/transcribe — recording has ended but there's no transcript yet.
+  const [transcribing, setTranscribing] = useState(false);
+  const [elapsedSec, setElapsedSec] = useState(0);
+  // Web Speech interim text shown as a ghosted live preview WHILE recording —
+  // visual only; the server transcript is authoritative (see finishFullRecording).
+  const [liveInterim, setLiveInterim] = useState("");
+  // Feature-detected once on mount (client-only): "full" = MediaRecorder +
+  // getUserMedia (records, POSTs to /api/transcribe); "speech-only" = old
+  // iOS Safari etc. without MediaRecorder — Web Speech drives the transcript
+  // directly; "none" = neither available, so the mic button is hidden (R-204).
+  const [voiceMode, setVoiceMode] = useState<"none" | "speech-only" | "full">("none");
   const [file, setFile] = useState<File | null>(null);
   const [previews, setPreviews] = useState<ModuleConfig[]>([]);
   // R-103/R-301: the model's one-paragraph rationale for the current preview stack.
   const [plan, setPlan] = useState<string | null>(null);
   const lastPromptRef = useRef<string>("");
   const fileRef = useRef<HTMLInputElement | null>(null);
+  // Whichever SpeechRecognition instance is currently active — either the
+  // "full" mode's live-garnish recognizer, or the "speech-only" fallback's
+  // transcript-driving one. Only one is ever live at a time.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const recRef = useRef<any>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const chunksRef = useRef<Blob[]>([]);
+  // Was the input empty when THIS recording started — decides auto-submit (R-202).
+  const wasEmptyAtStartRef = useRef(false);
+  const elapsedTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Accumulated Web Speech FINAL transcript during a "full" recording — used
+  // only as a fallback if the server transcript comes back 422 (STT unconfigured).
+  const speechFinalRef = useRef("");
 
-  const toggleMic = () => {
+  // Feature-detect once on mount (client-only — window/navigator are absent
+  // during SSR). iOS Safari < 14.3 lacks MediaRecorder; a browser with
+  // neither API gets no mic button at all rather than a broken one (R-204).
+  useEffect(() => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    if (!SR) { setError("Voice input isn't supported in this browser."); return; }
-    if (recording) { recRef.current?.stop(); return; }
+    const hasRecorder = typeof MediaRecorder !== "undefined" && !!navigator.mediaDevices?.getUserMedia;
+    setVoiceMode(hasRecorder ? "full" : SR ? "speech-only" : "none");
+  }, []);
+
+  // Never leave the mic "hot" if the bar unmounts mid-recording.
+  useEffect(() => {
+    return () => {
+      if (elapsedTimerRef.current) clearInterval(elapsedTimerRef.current);
+      mediaRecorderRef.current?.stop();
+      streamRef.current?.getTracks().forEach((t) => t.stop());
+      recRef.current?.stop();
+    };
+  }, []);
+
+  const clearElapsedTimer = () => {
+    if (elapsedTimerRef.current) { clearInterval(elapsedTimerRef.current); elapsedTimerRef.current = null; }
+  };
+
+  // The AUTHORITATIVE transcript always comes from here — either the server
+  // response or (on a 422 STT-unconfigured fallback) the accumulated Web
+  // Speech text. Appends (never overwrites, R-201) and auto-submits through
+  // the normal submit() flow when the input was empty at record-start
+  // (R-202) — reusing submit() means an in-progress interview/refine/preview
+  // is resolved correctly instead of being clobbered by a bare preview call.
+  const applyTranscript = (text: string, wasEmptyAtStart: boolean) => {
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    const current = inputRef.current?.value ?? prompt;
+    const combined = appendTranscript(current, trimmed);
+    setPrompt(combined);
+    if (wasEmptyAtStart) {
+      void submit(undefined, combined);
+    } else {
+      setTimeout(() => inputRef.current?.focus(), 0);
+    }
+  };
+
+  // Live ghost text only — never drives the transcript in "full" mode. Best
+  // effort: any Web Speech hiccup (permission quirks, early onend on
+  // silence) is swallowed since the server transcript is authoritative.
+  const startSpeechGarnish = () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SR) return;
+    try {
+      const rec = new SR();
+      rec.lang = "en-US";
+      rec.interimResults = true;
+      rec.continuous = true;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      rec.onresult = (e: any) => {
+        let interim = "";
+        let final = "";
+        for (let i = 0; i < e.results.length; i++) {
+          const chunk = e.results[i][0].transcript;
+          if (e.results[i].isFinal) final += (final ? " " : "") + chunk;
+          else interim += chunk;
+        }
+        speechFinalRef.current = final;
+        setLiveInterim(interim || final);
+      };
+      rec.onerror = noop;
+      recRef.current = rec;
+      rec.start();
+    } catch {
+      // Web Speech unavailable/blocked — the recording still proceeds on the
+      // server transcript alone.
+    }
+  };
+
+  const startFullRecording = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      streamRef.current = stream;
+      const mimeType = pickAudioMime((t) => MediaRecorder.isTypeSupported(t));
+      const mr = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+      chunksRef.current = [];
+      mr.ondataavailable = (e) => { if (e.data.size > 0) chunksRef.current.push(e.data); };
+      mr.onstop = () => { void finishFullRecording(mr.mimeType || mimeType || "audio/webm"); };
+      mediaRecorderRef.current = mr;
+      wasEmptyAtStartRef.current = prompt.trim().length === 0;
+      speechFinalRef.current = "";
+      setLiveInterim("");
+      mr.start();
+      setRecording(true);
+      setElapsedSec(0);
+      elapsedTimerRef.current = setInterval(() => setElapsedSec((s) => s + 1), 1000);
+      startSpeechGarnish();
+    } catch {
+      // getUserMedia rejected — almost always a permission denial (R-204).
+      setError("Microphone blocked — allow access to use voice.");
+      setRecording(false);
+    }
+  };
+
+  const finishFullRecording = async (mimeType: string) => {
+    streamRef.current?.getTracks().forEach((t) => t.stop());
+    streamRef.current = null;
+    recRef.current?.stop();
+    recRef.current = null;
+    setLiveInterim("");
+    const blob = new Blob(chunksRef.current, { type: mimeType });
+    chunksRef.current = [];
+    if (blob.size === 0) { setTranscribing(false); return; }
+    try {
+      const { text } = await api.transcribe(blob);
+      applyTranscript(text, wasEmptyAtStartRef.current);
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 422) {
+        // STT unconfigured — fall back to the Web Speech garnish's
+        // accumulated final transcript when it caught anything.
+        const fallback = speechFinalRef.current.trim();
+        if (fallback) {
+          applyTranscript(fallback, wasEmptyAtStartRef.current);
+        } else {
+          setError(err.message || "Voice transcription isn't set up — type instead.");
+        }
+      } else if (err instanceof Error) {
+        setError(err.message);
+      } else {
+        setError("Couldn't transcribe that recording.");
+      }
+    } finally {
+      setTranscribing(false);
+      speechFinalRef.current = "";
+    }
+  };
+
+  // Old-iOS-Safari fallback (no MediaRecorder): Web Speech drives the
+  // transcript directly rather than just garnishing it.
+  const startSpeechOnlyRecording = () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SR) return;
     const rec = new SR();
     rec.lang = "en-US";
     rec.interimResults = true;
-    rec.continuous = false;
+    rec.continuous = true;
+    let finalText = "";
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     rec.onresult = (e: any) => {
-      let t = "";
-      for (let i = 0; i < e.results.length; i++) t += e.results[i][0].transcript;
-      setPrompt(t);
+      let interim = "";
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        const chunk = e.results[i][0].transcript;
+        if (e.results[i].isFinal) finalText += (finalText ? " " : "") + chunk;
+        else interim += chunk;
+      }
+      setLiveInterim(interim);
     };
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     rec.onerror = (e: any) => {
       setError(e.error === "not-allowed" ? "Microphone blocked — allow access to use voice." : "Didn't catch that — try again.");
       setRecording(false);
+      setLiveInterim("");
+      clearElapsedTimer();
     };
-    rec.onend = () => setRecording(false);
+    rec.onend = () => {
+      setRecording(false);
+      setLiveInterim("");
+      clearElapsedTimer();
+      applyTranscript(finalText, wasEmptyAtStartRef.current);
+    };
     recRef.current = rec;
+    wasEmptyAtStartRef.current = prompt.trim().length === 0;
     rec.start();
     setRecording(true);
+    setElapsedSec(0);
+    elapsedTimerRef.current = setInterval(() => setElapsedSec((s) => s + 1), 1000);
+  };
+
+  const stopRecording = () => {
+    clearElapsedTimer();
+    setRecording(false);
+    if (voiceMode === "full") {
+      setTranscribing(true); // optimistic — finishFullRecording flips it off
+      mediaRecorderRef.current?.stop(); // → mr.onstop → finishFullRecording
+      recRef.current?.stop(); // garnish recognizer, best effort
+    } else {
+      recRef.current?.stop(); // → rec.onend → applyTranscript
+    }
+  };
+
+  const toggleMic = () => {
+    if (recording) { stopRecording(); return; }
+    if (voiceMode === "none" || transcribing) return;
     setError(null);
+    if (voiceMode === "full") void startFullRecording();
+    else startSpeechOnlyRecording();
   };
 
   // Refill the input when a past prompt is reused from the history panel.
@@ -131,9 +325,15 @@ export function PromptBar({ onModule, activePageId, refineTarget, onRefineModule
     if (result.degraded) setError(DEGRADED_NOTICE);
   };
 
-  const submit = async (e?: React.FormEvent) => {
+  // `overrideText` lets a voice auto-submit (R-202) drive this with the
+  // just-appended transcript without waiting a render for `prompt` state to
+  // catch up — every other branch still reads current component state
+  // (isRefining/file/exchange/previews), so the auto-submit takes whichever
+  // path a typed Enter would take right now (default preview, refine-the-
+  // preview, or resolving a pending interview question).
+  const submit = async (e?: React.FormEvent, overrideText?: string) => {
     e?.preventDefault();
-    const v = prompt.trim();
+    const v = (overrideText ?? prompt).trim();
     if ((!v && !file) || loading) return;
     setLoading(true);
     setError(null);
@@ -361,18 +561,38 @@ export function PromptBar({ onModule, activePageId, refineTarget, onRefineModule
           </div>
         )}
 
+        {(recording || transcribing) && (
+          <div className="flex items-center gap-2 px-4 pt-2.5 pb-0">
+            <span
+              className={`text-[10px] uppercase tracking-wide font-mono shrink-0 animate-pulse ${
+                recording ? "text-[var(--danger)]" : "text-[var(--accent)]"
+              }`}
+            >
+              {recording ? `Recording ${formatElapsed(elapsedSec)}` : "Transcribing…"}
+            </span>
+            {recording && liveInterim && (
+              <span className="text-xs text-[var(--muted)] italic opacity-70 truncate flex-1" aria-hidden>
+                {liveInterim}
+              </span>
+            )}
+          </div>
+        )}
+
         <div className="flex items-center gap-2 px-4 py-3">
-          <button
-            type="button"
-            onClick={toggleMic}
-            className={`shrink-0 w-8 h-8 grid place-items-center rounded-full transition ${
-              recording ? "bg-[var(--danger)] text-white animate-pulse" : "text-[var(--muted)] hover:text-[var(--foreground)] hover:bg-[var(--surface-elevated)]"
-            }`}
-            title={recording ? "Stop recording" : "Speak"}
-            aria-label={recording ? "Stop recording" : "Voice input"}
-          >
-            <Icon name="mic" size={16} />
-          </button>
+          {voiceMode !== "none" && (
+            <button
+              type="button"
+              onClick={toggleMic}
+              disabled={transcribing}
+              className={`shrink-0 w-8 h-8 grid place-items-center rounded-full transition disabled:opacity-40 ${
+                recording ? "bg-[var(--danger)] text-white animate-pulse" : "text-[var(--muted)] hover:text-[var(--foreground)] hover:bg-[var(--surface-elevated)]"
+              }`}
+              title={recording ? "Stop recording" : transcribing ? "Transcribing…" : "Speak"}
+              aria-label={recording ? "Stop recording" : transcribing ? "Transcribing" : "Voice input"}
+            >
+              <Icon name="mic" size={16} />
+            </button>
+          )}
           <button
             type="button"
             onClick={() => fileRef.current?.click()}

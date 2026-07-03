@@ -168,6 +168,33 @@ export const api = {
     }
     return (await res.json()) as GenerateResponse;
   },
+  // R-201/204: POST the recorded ramble (webm/opus, or the browser's
+  // MediaRecorder default) to the pluggable STT endpoint. Origin-gated, so a
+  // same-origin fetch needs no extra auth beyond the session cookie.
+  transcribe: async (blob: Blob): Promise<{ text: string }> => {
+    const ext = blob.type.includes("webm")
+      ? "webm"
+      : blob.type.includes("ogg")
+        ? "ogg"
+        : blob.type.includes("mp4")
+          ? "mp4"
+          : blob.type.includes("wav")
+            ? "wav"
+            : "webm";
+    const fd = new FormData();
+    fd.append("file", blob, `ramble.${ext}`);
+    const res = await fetch(`${BASE}/api/transcribe`, {
+      method: "POST",
+      credentials: "include",
+      body: fd, // browser sets multipart boundary; do not set Content-Type
+    });
+    if (!res.ok) {
+      let detail: unknown = res.statusText;
+      try { const b = await res.json(); detail = b.detail ?? b; } catch { /* keep */ }
+      throw new ApiError(res.status, detail);
+    }
+    return (await res.json()) as { text: string };
+  },
   patchModule: (id: string, config: ModuleConfig, rev?: number) =>
     request<StoredModule>(`/api/modules/${id}`, {
       method: "PATCH",
