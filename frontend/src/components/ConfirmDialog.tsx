@@ -16,6 +16,7 @@ interface Props {
 // so it reads as native to the app, not a bolted-on browser confirm().
 export function ConfirmDialog({ open, title, body, confirmLabel, onConfirm, onCancel }: Props) {
   const cancelRef = useRef<HTMLButtonElement | null>(null);
+  const confirmRef = useRef<HTMLButtonElement | null>(null);
   // Keep the latest onCancel without re-running the open-effect on every parent
   // render (page.tsx re-renders often — e.g. saveStatus — which would otherwise
   // re-steal focus from the dialog and thrash the Escape listener).
@@ -24,12 +25,31 @@ export function ConfirmDialog({ open, title, body, confirmLabel, onConfirm, onCa
 
   useEffect(() => {
     if (!open) return;
+    // Focus restoration: remember what had focus (usually the ✕ that opened
+    // the dialog) and hand it back on close if it's still in the document.
+    const prevFocus = document.activeElement as HTMLElement | null;
     cancelRef.current?.focus();
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") { e.preventDefault(); onCancelRef.current(); }
+      if (e.key === "Escape") {
+        // Consume the event so global Escape handlers (e.g. page.tsx closing
+        // the panel hosting this dialog) don't also fire. Capture phase +
+        // stopPropagation kills the bubble to window regardless of listener
+        // registration order.
+        e.preventDefault();
+        e.stopPropagation();
+        onCancelRef.current();
+      } else if (e.key === "Tab") {
+        // Focus trap: the two buttons are the only tabbables, so Tab and
+        // Shift+Tab both just move to the other one (a 2-element cycle).
+        e.preventDefault();
+        (document.activeElement === cancelRef.current ? confirmRef.current : cancelRef.current)?.focus();
+      }
     };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    window.addEventListener("keydown", onKey, true);
+    return () => {
+      window.removeEventListener("keydown", onKey, true);
+      if (prevFocus?.isConnected) prevFocus.focus();
+    };
   }, [open]);
 
   if (!open) return null;
@@ -56,6 +76,7 @@ export function ConfirmDialog({ open, title, body, confirmLabel, onConfirm, onCa
             Cancel
           </button>
           <button
+            ref={confirmRef}
             type="button"
             onClick={onConfirm}
             className="rounded-md bg-[var(--danger)] text-white px-3 py-1.5 text-xs font-medium hover:brightness-110 transition"

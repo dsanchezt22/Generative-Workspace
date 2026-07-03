@@ -98,8 +98,10 @@ export default function Home() {
   const [snapshotsOpen, setSnapshotsOpen] = useState(false);
   const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
   // R-1102: page delete is the most destructive action (cascades every module
-  // on the page) — always confirmed, stating the module count.
-  const [pageDeleteConfirm, setPageDeleteConfirm] = useState<Page | null>(null);
+  // on the page) — always confirmed, stating the module count. Holds the page
+  // plus its real module ids: `modules` state only covers the ACTIVE page,
+  // but any sidebar row can be deleted, so the ids are fetched per-page.
+  const [pageDeleteConfirm, setPageDeleteConfirm] = useState<{ page: Page; moduleIds: string[] } | null>(null);
   const [cmdOpen, setCmdOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [allModules, setAllModules] = useState<StoredModule[]>([]);
@@ -407,33 +409,44 @@ export default function Home() {
 
   // R-1102: Sidebar only requests the delete; this opens the confirm dialog
   // stating the module count. The actual delete happens in handleConfirmDeletePage.
-  const handleRequestDeletePage = useCallback((page: Page) => {
-    setPageDeleteConfirm(page);
+  // The target page's modules are fetched here (before the dialog opens) — the
+  // local `modules` state only holds the active page's, and the sidebar's ✕
+  // works on every row, so counting/forgetting from local state would report
+  // "0 modules" and skip the forget-sweep for any non-active page.
+  const handleRequestDeletePage = useCallback(async (page: Page) => {
+    let moduleIds: string[];
+    try {
+      moduleIds = (await api.listModules(page.id)).map((m) => m.id);
+    } catch {
+      // Fetch failed — fall back to what we know locally (exact for the
+      // active page, best-effort otherwise) rather than blocking the delete.
+      moduleIds = modulesRef.current.filter((m) => m.page_id === page.id).map((m) => m.id);
+    }
+    setPageDeleteConfirm({ page, moduleIds });
   }, []);
 
   const handleCancelDeletePage = useCallback(() => setPageDeleteConfirm(null), []);
 
   const handleConfirmDeletePage = useCallback(async () => {
-    const page = pageDeleteConfirm;
-    if (!page) return;
+    const req = pageDeleteConfirm;
+    if (!req) return;
     setPageDeleteConfirm(null);
     // Cascading delete: the server drops every module on this page (FK
     // cascade) — forget any pending saves too, so a debounced PATCH can't
     // fire against a module that's about to vanish.
-    const idsOnPage = modules.filter((m) => m.page_id === page.id).map((m) => m.id);
-    idsOnPage.forEach((id) => saver.forget(id));
+    req.moduleIds.forEach((id) => saver.forget(id));
     try {
-      await api.deletePage(page.id);
+      await api.deletePage(req.page.id);
     } catch {
       return; // last page (409) or not found
     }
-    setModules((prev) => prev.filter((m) => m.page_id !== page.id));
+    setModules((prev) => prev.filter((m) => m.page_id !== req.page.id));
     setPages((prev) => {
-      const remaining = prev.filter((p) => p.id !== page.id);
-      setActivePageId((cur) => (cur === page.id ? remaining[remaining.length - 1]?.id ?? null : cur));
+      const remaining = prev.filter((p) => p.id !== req.page.id);
+      setActivePageId((cur) => (cur === req.page.id ? remaining[remaining.length - 1]?.id ?? null : cur));
       return remaining;
     });
-  }, [pageDeleteConfirm, modules, saver]);
+  }, [pageDeleteConfirm, saver]);
 
   // Conversation handlers
   const handleReusePrompt = useCallback((text: string) => {
@@ -859,7 +872,7 @@ export default function Home() {
       <ConfirmDialog
         open={pageDeleteConfirm !== null}
         title={pageDeleteConfirm
-          ? `Delete "${pageDeleteConfirm.name}" and its ${modules.filter((m) => m.page_id === pageDeleteConfirm.id).length} module${modules.filter((m) => m.page_id === pageDeleteConfirm.id).length === 1 ? "" : "s"}?`
+          ? `Delete "${pageDeleteConfirm.page.name}" and its ${pageDeleteConfirm.moduleIds.length} module${pageDeleteConfirm.moduleIds.length === 1 ? "" : "s"}?`
           : ""}
         body="This cannot be undone."
         confirmLabel="Delete"
