@@ -134,6 +134,17 @@ CREATE TABLE IF NOT EXISTS gen_events (
     created_at  TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_gen_events_owner_day ON gen_events (owner, created_at);
+-- Live external-data cache (R-701/R-704): per-provider+query (NOT per-owner —
+-- weather/nutrition lookups are public data), bounding outbound fetches to the
+-- caller-supplied refresh_secs TTL (enforced in services/live_data.py against
+-- fetched_at, not stored here).
+CREATE TABLE IF NOT EXISTS live_cache (
+    provider     TEXT NOT NULL,
+    query_hash   TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    fetched_at   TEXT NOT NULL,
+    PRIMARY KEY (provider, query_hash)
+);
 """
 
 # Tracks which db file has had its schema ensured this process, so we re-run the
@@ -1231,6 +1242,30 @@ def daily_active(days: int = 14) -> list[dict]:
             (cutoff,),
         ).fetchall()
     return [{"day": r["day"], "owners": r["owners"]} for r in rows]
+
+
+# ── Live external-data cache (R-701/R-704) ───────────────────────────────────
+
+
+def live_cache_get(provider: str, query_hash: str) -> dict | None:
+    with _conn() as c:
+        row = c.execute(
+            "SELECT payload_json, fetched_at FROM live_cache WHERE provider = ? AND query_hash = ?",
+            (provider, query_hash),
+        ).fetchone()
+    if row is None:
+        return None
+    return {"payload": json.loads(row["payload_json"]), "fetched_at": row["fetched_at"]}
+
+
+def live_cache_set(provider: str, query_hash: str, payload_json: str, fetched_at: str) -> None:
+    with _conn() as c:
+        c.execute(
+            "INSERT INTO live_cache (provider, query_hash, payload_json, fetched_at) VALUES (?, ?, ?, ?) "
+            "ON CONFLICT (provider, query_hash) DO UPDATE SET"
+            " payload_json = excluded.payload_json, fetched_at = excluded.fetched_at",
+            (provider, query_hash, payload_json, fetched_at),
+        )
 
 
 def last_seen_by_user(days: int = 30) -> list[dict]:

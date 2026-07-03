@@ -39,6 +39,16 @@ export interface ComponentBase {
   emphasis?: "normal" | "primary" | "muted" | null;
 }
 
+/** A live external-data binding for a single-value display component
+ * (R-701/R-704): Metric/Kpi/Ring/Gauge/ProgressBar may carry one. Mirrors
+ * backend/src/schema.py's DataSource. */
+export interface DataSource {
+  provider: "weather" | "nutrition";
+  query: Record<string, string | number>;
+  refresh_secs?: number;
+  label?: string | null;
+}
+
 export interface TextInput extends ComponentBase {
   type: "text_input";
   placeholder?: string | null;
@@ -69,6 +79,7 @@ export interface ProgressBar extends ComponentBase {
   max: number;
   bound_to?: string | null;
   source_module_id?: string | null;
+  data_source?: DataSource | null;
 }
 
 export interface Metric extends ComponentBase {
@@ -76,6 +87,7 @@ export interface Metric extends ComponentBase {
   formula: "sum" | "count" | "avg" | "max" | "min";
   source_component_id: string;
   unit?: string | null;
+  data_source?: DataSource | null;
 }
 
 export interface ListField extends ComponentBase {
@@ -97,6 +109,7 @@ export interface Tags extends ComponentBase {
 export interface Kpi extends ComponentBase {
   type: "kpi";
   unit?: string | null;
+  data_source?: DataSource | null;
 }
 
 export interface DatePicker extends ComponentBase {
@@ -142,6 +155,7 @@ export interface Ring extends ComponentBase {
   type: "ring";
   max: number;
   bound_to?: string | null;
+  data_source?: DataSource | null;
 }
 
 export interface Timeline extends ComponentBase {
@@ -158,7 +172,7 @@ export interface Section extends ComponentBase { type: "section"; }
 export interface Divider extends ComponentBase { type: "divider"; }
 export interface Kanban extends ComponentBase { type: "kanban"; columns: string[]; }
 export interface Heatmap extends ComponentBase { type: "heatmap"; unit?: string | null; }
-export interface Gauge extends ComponentBase { type: "gauge"; min: number; max: number; unit?: string | null; }
+export interface Gauge extends ComponentBase { type: "gauge"; min: number; max: number; unit?: string | null; data_source?: DataSource | null; }
 export interface Checklist extends ComponentBase { type: "checklist"; }
 export interface Gallery extends ComponentBase { type: "gallery"; }
 export interface Note extends ComponentBase { type: "note"; placeholder?: string | null; }
