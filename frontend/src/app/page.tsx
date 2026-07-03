@@ -843,6 +843,7 @@ export default function Home() {
         onModuleSelectForRefine={handleSelectForRefine}
         focusRequest={focusReq}
         fitRequest={fitReq}
+        onSketchModules={(mods) => mods.forEach(handleNewModule)}
       />
 
       {!loading && activeModules.length === 0 && (

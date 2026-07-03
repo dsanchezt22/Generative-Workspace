@@ -1,8 +1,35 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { api, ApiError } from "@/lib/api";
 import type { CommitModule, StoredModule } from "@/lib/types";
+import {
+  screenToWorld,
+  strokeBounds,
+  type Bounds,
+  type Point,
+  type Stroke,
+} from "@/lib/sketchExport";
+import { Icon } from "./Icon";
 import { Module } from "./Module";
+
+// R-221: the sketch snap's interpretation instruction, sent as the `hint` the
+// backend folds into the vision model's message (bounded server-side to ~200).
+const SKETCH_HINT =
+  "Hand-drawn wireframe sketch of a tool layout — interpret boxes as fields/components, labels as their names, lines as groupings.";
+const SNAP_PAD = 24; // world-px margin around the sketch bbox for the raster
+const ERASE_RADIUS = 14; // screen-px reach of the stroke eraser (scaled by zoom)
+
+// The app's charcoal bg + ink, read live so the raster matches whatever theme is
+// active (the vision model sees strokes-on-charcoal like the real UI).
+function readSketchColors(): { ink: string; bg: string } {
+  if (typeof window === "undefined") return { ink: "#f0efed", bg: "#181818" };
+  const cs = getComputedStyle(document.documentElement);
+  return {
+    ink: cs.getPropertyValue("--foreground").trim() || "#f0efed",
+    bg: cs.getPropertyValue("--background").trim() || "#181818",
+  };
+}
 
 interface Props {
   modules: StoredModule[];
@@ -21,6 +48,10 @@ interface Props {
   activePageId?: string;
   focusRequest?: { id: string; n: number };
   fitRequest?: number;
+  // R-221-223: snapped sketch → generated modules land on the canvas via the
+  // parent's normal new-module path (placement + fit). Optional so Canvas renders
+  // without it (the Sketch toggle simply won't reach generation).
+  onSketchModules?: (modules: StoredModule[]) => void;
 }
 
 interface View {
@@ -79,6 +110,7 @@ export function Canvas({
   activePageId,
   focusRequest,
   fitRequest,
+  onSketchModules,
 }: Props) {
   const [view, setView] = useState<View>({ x: 0, y: 0, zoom: 1 });
   const [draggingModule, setDraggingModule] = useState<string | null>(null);
@@ -348,6 +380,223 @@ export function Canvas({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fitRequest]);
 
+  // ------------------------------------------------------------ sketch (R-221) -
+  // A transparent full-viewport overlay drawn in WORLD coordinates: strokes are
+  // stored as world-space polylines and rendered through the SAME pan/zoom the
+  // modules use, so a stroke stays put when you pan/zoom. While sketch mode is on
+  // the overlay sits above everything and captures every pointer event, which
+  // suspends canvas pan/drag/module-interaction (they only fire on the container
+  // below). The sketch is ephemeral (R-223): consumed by Snap, cleared on cancel.
+  const [sketchMode, setSketchMode] = useState(false);
+  const [tool, setTool] = useState<"pen" | "eraser">("pen");
+  const [strokes, setStrokes] = useState<Stroke[]>([]);
+  const [snapping, setSnapping] = useState(false);
+  const [sketchError, setSketchError] = useState<string | null>(null);
+  const overlayRef = useRef<HTMLCanvasElement | null>(null);
+  const draftRef = useRef<Point[] | null>(null);
+  const drawingRef = useRef(false);
+  const strokesRef = useRef<Stroke[]>(strokes);
+  useEffect(() => { strokesRef.current = strokes; }, [strokes]);
+  const sketchModeRef = useRef(sketchMode);
+  useEffect(() => { sketchModeRef.current = sketchMode; }, [sketchMode]);
+  const toolRef = useRef(tool);
+  useEffect(() => { toolRef.current = tool; }, [tool]);
+
+  // Full redraw of the overlay: clear, then draw every stored stroke (plus the
+  // in-progress draft) in SCREEN space at a constant 2px, positioning each world
+  // point through the current view — so line weight never distorts with zoom and
+  // strokes track the world on pan/zoom.
+  const redrawSketch = useCallback(() => {
+    const canvas = overlayRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    const dpr = window.devicePixelRatio || 1;
+    const w = canvas.clientWidth;
+    const h = canvas.clientHeight;
+    if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) {
+      canvas.width = Math.round(w * dpr);
+      canvas.height = Math.round(h * dpr);
+    }
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+    const v = latestViewRef.current;
+    ctx.strokeStyle = readSketchColors().ink;
+    ctx.lineWidth = 2;
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    ctx.globalAlpha = 0.8;
+    const draw = (s: Point[]) => {
+      if (s.length === 0) return;
+      ctx.beginPath();
+      for (let i = 0; i < s.length; i++) {
+        const sx = v.x + s[i].x * v.zoom;
+        const sy = v.y + s[i].y * v.zoom;
+        if (i === 0) ctx.moveTo(sx, sy);
+        else ctx.lineTo(sx, sy);
+      }
+      if (s.length === 1) ctx.lineTo(v.x + s[0].x * v.zoom + 0.1, v.y + s[0].y * v.zoom + 0.1);
+      ctx.stroke();
+    };
+    for (const s of strokesRef.current) draw(s);
+    if (draftRef.current) draw(draftRef.current);
+    ctx.globalAlpha = 1;
+  }, []);
+
+  // Redraw whenever the overlay is shown, the view changes (pan/zoom), the
+  // committed strokes change (a new stroke, an erase, or a clear), or the
+  // container resizes.
+  useEffect(() => {
+    if (sketchMode) redrawSketch();
+  }, [sketchMode, view, strokes, csize, redrawSketch]);
+
+  const exitSketch = useCallback(() => {
+    setSketchMode(false);
+    setStrokes([]);
+    draftRef.current = null;
+    drawingRef.current = false;
+    setTool("pen");
+    setSketchError(null);
+  }, []);
+
+  const toggleSketch = useCallback(() => {
+    setSketchMode((on) => {
+      if (on) {
+        // Turning off IS the cancel path — drop the ephemeral ink (R-223).
+        setStrokes([]);
+        draftRef.current = null;
+        setTool("pen");
+        setSketchError(null);
+      }
+      return !on;
+    });
+  }, []);
+
+  const eraseAt = useCallback((world: Point) => {
+    const r = ERASE_RADIUS / (latestViewRef.current.zoom || 1);
+    setStrokes((prev) =>
+      prev.filter((s) => !s.some((p) => Math.hypot(p.x - world.x, p.y - world.y) <= r)),
+    );
+  }, []);
+
+  const onSketchDown = useCallback((e: React.PointerEvent) => {
+    const rect = containerRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    e.preventDefault();
+    (e.currentTarget as Element).setPointerCapture(e.pointerId);
+    setSketchError(null);
+    drawingRef.current = true;
+    const world = screenToWorld(e.clientX, e.clientY, rect, latestViewRef.current);
+    if (toolRef.current === "eraser") {
+      eraseAt(world);
+      return;
+    }
+    draftRef.current = [world];
+    redrawSketch();
+  }, [eraseAt, redrawSketch]);
+
+  const onSketchMove = useCallback((e: React.PointerEvent) => {
+    if (!drawingRef.current) return;
+    const rect = containerRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const world = screenToWorld(e.clientX, e.clientY, rect, latestViewRef.current);
+    if (toolRef.current === "eraser") {
+      eraseAt(world);
+      return;
+    }
+    if (draftRef.current) {
+      draftRef.current.push(world);
+      redrawSketch(); // imperative — avoids a React render per pointermove
+    }
+  }, [eraseAt, redrawSketch]);
+
+  const onSketchUp = useCallback((e: React.PointerEvent) => {
+    (e.currentTarget as Element).releasePointerCapture?.(e.pointerId);
+    drawingRef.current = false;
+    const d = draftRef.current;
+    draftRef.current = null;
+    if (d && d.length > 0) setStrokes((prev) => [...prev, d]);
+  }, []);
+
+  // Offscreen raster for the snap: an image sized to the padded bbox, filled with
+  // the app's charcoal FIRST (so the model sees strokes-on-charcoal like the real
+  // UI, not transparent), then the ink drawn on top at 1:1 world→px.
+  const rasterizeSketch = (list: Stroke[], bounds: Bounds): Promise<Blob | null> => {
+    const w = Math.max(1, Math.ceil(bounds.width));
+    const h = Math.max(1, Math.ceil(bounds.height));
+    const off = document.createElement("canvas");
+    off.width = w;
+    off.height = h;
+    const ctx = off.getContext("2d");
+    if (!ctx) return Promise.resolve(null);
+    const { ink, bg } = readSketchColors();
+    ctx.fillStyle = bg;
+    ctx.fillRect(0, 0, w, h);
+    ctx.strokeStyle = ink;
+    ctx.lineWidth = 2;
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    for (const s of list) {
+      if (s.length === 0) continue;
+      ctx.beginPath();
+      s.forEach((p, i) => {
+        const x = p.x - bounds.minX;
+        const y = p.y - bounds.minY;
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      });
+      if (s.length === 1) ctx.lineTo(s[0].x - bounds.minX + 0.1, s[0].y - bounds.minY + 0.1);
+      ctx.stroke();
+    }
+    return new Promise((resolve) => off.toBlob((b) => resolve(b), "image/png"));
+  };
+
+  const doSnap = useCallback(async () => {
+    const bounds = strokeBounds(strokesRef.current, SNAP_PAD);
+    if (!bounds || snapping) return;
+    setSnapping(true);
+    setSketchError(null);
+    try {
+      const blob = await rasterizeSketch(strokesRef.current, bounds);
+      if (!blob) throw new Error("Could not rasterize the sketch.");
+      const file = new File([blob], "sketch.png", { type: "image/png" });
+      // The EXISTING image path — prompt "" + the sketch HINT — feeds the same
+      // proposal loop a file upload uses. On a non-vision provider it refuses
+      // honestly (422) instead of degrading to a template.
+      const result = await api.generateModuleFromFile(file, "", activePageId, SKETCH_HINT);
+      const mods = result.modules?.length ? result.modules : result.module ? [result.module] : [];
+      onSketchModules?.(mods);
+      exitSketch(); // R-223: sketch consumed on success → clear ink + leave mode
+    } catch (err) {
+      const msg =
+        err instanceof ApiError && err.refusal
+          ? err.refusal
+          : err instanceof Error
+            ? err.message
+            : "Couldn't snap the sketch.";
+      setSketchError(msg);
+    } finally {
+      setSnapping(false);
+    }
+  }, [snapping, activePageId, onSketchModules, exitSketch]);
+
+  // Keyboard: `s` toggles sketch (not while typing / with a modifier); Escape
+  // cancels an active sketch. Registered on window so it works anywhere on canvas.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      const el = e.target as HTMLElement | null;
+      const typing = !!el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable);
+      if (typing) return;
+      if (e.key.toLowerCase() === "s") { e.preventDefault(); toggleSketch(); }
+      else if (e.key === "Escape" && sketchModeRef.current) { e.preventDefault(); exitSketch(); }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [toggleSketch, exitSketch]);
+
+  const canSnap = strokeBounds(strokes, SNAP_PAD) !== null;
+
   return (
     <div
       ref={containerRef}
@@ -389,6 +638,76 @@ export function Canvas({
           ))}
         </div>
       </div>
+
+      {/* R-221: the sketch overlay sits above modules and controls; while active
+          it captures every pointer, suspending pan/drag/module interaction. */}
+      {sketchMode && (
+        <canvas
+          ref={overlayRef}
+          className="absolute inset-0 z-[15]"
+          style={{ touchAction: "none", cursor: tool === "eraser" ? "cell" : "crosshair" }}
+          onPointerDown={onSketchDown}
+          onPointerMove={onSketchMove}
+          onPointerUp={onSketchUp}
+          onPointerCancel={onSketchUp}
+        />
+      )}
+
+      {sketchMode && (
+        <div className="absolute top-4 left-1/2 -translate-x-1/2 z-20 flex items-center gap-1 rounded-full bg-[var(--surface)]/95 backdrop-blur px-1.5 py-1 border border-[var(--border)] shadow-lg text-xs">
+          <button
+            type="button"
+            onClick={() => setTool("pen")}
+            aria-pressed={tool === "pen"}
+            title="Pen"
+            className={`flex items-center gap-1 rounded-full px-2 py-1 transition ${tool === "pen" ? "bg-[var(--surface-elevated)] text-[var(--foreground)]" : "text-[var(--muted)] hover:text-[var(--foreground)]"}`}
+          >
+            <Icon name="pen" size={13} /> Pen
+          </button>
+          <button
+            type="button"
+            onClick={() => setTool("eraser")}
+            aria-pressed={tool === "eraser"}
+            title="Eraser"
+            className={`rounded-full px-2 py-1 transition ${tool === "eraser" ? "bg-[var(--surface-elevated)] text-[var(--foreground)]" : "text-[var(--muted)] hover:text-[var(--foreground)]"}`}
+          >
+            Eraser
+          </button>
+          <button
+            type="button"
+            onClick={() => { setStrokes([]); draftRef.current = null; setSketchError(null); }}
+            disabled={!canSnap}
+            title="Clear the sketch"
+            className="rounded-full px-2 py-1 text-[var(--muted)] hover:text-[var(--foreground)] disabled:opacity-40 transition"
+          >
+            Clear
+          </button>
+          <span className="w-px h-4 bg-[var(--border)] mx-0.5" aria-hidden />
+          <button
+            type="button"
+            onClick={doSnap}
+            disabled={!canSnap || snapping}
+            title="Turn this sketch into tools"
+            className="rounded-full bg-[var(--accent)] text-[var(--accent-fg)] px-3 py-1 font-medium disabled:opacity-40 hover:brightness-110 transition"
+          >
+            {snapping ? "Snapping…" : "Snap to tools"}
+          </button>
+          <button
+            type="button"
+            onClick={exitSketch}
+            title="Cancel (Esc)"
+            className="rounded-full px-2 py-1 text-[var(--muted)] hover:text-[var(--foreground)] transition"
+          >
+            Cancel
+          </button>
+        </div>
+      )}
+
+      {sketchMode && sketchError && (
+        <div className="absolute top-16 left-1/2 -translate-x-1/2 z-20 max-w-[min(420px,90vw)] rounded-lg border border-[var(--danger)] bg-[var(--surface)] px-3 py-1.5 text-xs text-[var(--danger)] shadow">
+          {sketchError}
+        </div>
+      )}
 
       {showMiniMap && (() => {
         const b = contentBounds();
@@ -453,6 +772,12 @@ export function Canvas({
         <span className="w-px h-4 bg-[var(--border)]" aria-hidden />
         <button type="button" onClick={() => setShowMiniMap((v) => !v)} title="Mini-map" aria-label="Toggle mini-map"
           className={`transition w-6 h-6 grid place-items-center rounded ${showMiniMap ? "text-[var(--accent)]" : "hover:text-[var(--foreground)]"}`}>▦</button>
+        <span className="w-px h-4 bg-[var(--border)]" aria-hidden />
+        {/* R-221: Sketch toggle (keyboard `s`). Turns on the world-space drawing overlay. */}
+        <button type="button" onClick={toggleSketch} title="Sketch (s)" aria-label="Toggle sketch mode" aria-pressed={sketchMode}
+          className={`transition w-6 h-6 grid place-items-center rounded ${sketchMode ? "text-[var(--accent)]" : "hover:text-[var(--foreground)]"}`}>
+          <Icon name="pen" size={13} />
+        </button>
       </div>
 
       {draggingModule && (

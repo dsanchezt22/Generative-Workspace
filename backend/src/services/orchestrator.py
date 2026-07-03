@@ -583,6 +583,7 @@ def generate_modules_from_file(
     mime: str,
     existing_modules: list[ModuleConfig] | None = None,
     filename: str | None = None,
+    hint: str | None = None,
 ) -> list[ModuleConfig]:
     """Build tools shaped around an uploaded document/image.
 
@@ -594,7 +595,14 @@ def generate_modules_from_file(
     failure/unsupported mime falls through to the native multimodal call below,
     which refuses honestly (via the "{}" sentinel) if that can't read it either
     — we never fabricate a generic keyword template from a file we never
-    actually read."""
+    actually read.
+
+    R-221: `hint` (the sketch snap's interpretation instruction, bounded by the
+    route) is folded into the user request the model sees, so the sketch-specific
+    guidance reaches BOTH the grounded and native multimodal paths below. Default
+    None → every other caller (plain file upload) is unaffected."""
+    if hint:
+        prompt = f"{prompt}\n\n{hint}"
     if _needs_text_extraction(mime):
         extracted = extract.text_from_file(data, mime, filename=filename)
         if extracted is not None:

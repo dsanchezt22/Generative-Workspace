@@ -202,6 +202,7 @@ def generate_from_file(
     request: Request,
     file: UploadFile = File(...),
     prompt: str = Form(""),
+    hint: str = Form(""),
     page_id: str | None = Query(default=None),
 ) -> GenerateResponse:
     _require_trusted_origin(request)
@@ -215,11 +216,20 @@ def generate_from_file(
         raise HTTPException(status_code=413, detail="That file is too large (max 15MB).")
     mime = file.content_type or "application/octet-stream"
     instruction = prompt.strip() or f"Build the tools I need from {file.filename}."
+    # R-221: the sketch snap sends a bounded interpretation hint (~200 chars) that
+    # the orchestrator folds into the model-visible message; a normal file upload
+    # sends none (empty → None) and is unchanged.
+    hint_text = hint.strip()[:200] or None
     existing = [m.config for m in db.list_modules(sid)]
     try:
         with _track(sid, "file"):
             configs = orchestrator.generate_modules_from_file(
-                instruction, data, mime, existing_modules=existing, filename=file.filename
+                instruction,
+                data,
+                mime,
+                existing_modules=existing,
+                filename=file.filename,
+                hint=hint_text,
             )
     except ClarifyingQuestion as e:
         return GenerateResponse(question=e.question)

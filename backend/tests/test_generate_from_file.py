@@ -363,3 +363,82 @@ def test_generate_from_file_grounded_path_excludes_recent_conversation(client, m
 def test_generate_from_file_route_module_is_reachable():
     """Guard: the route module imports the orchestrator symbol it delegates to."""
     assert hasattr(orchestrator, "generate_modules_from_file")
+
+
+# --- R-221 sketch snap: hint passthrough + stub+image honest refusal ---------
+
+_SKETCH_HINT = (
+    "Hand-drawn wireframe sketch of a tool layout — interpret boxes as "
+    "fields/components, labels as their names, lines as groupings."
+)
+
+
+def test_generate_from_file_hint_reaches_model_message(client, monkeypatch):
+    """R-221: the sketch snap posts a `hint` form field — it must reach the actual
+    user message the vision model sees (folded into the request), so the
+    'interpret boxes/labels/lines' guidance shapes the interpretation."""
+    captured: dict = {}
+
+    def spy(user_message, system, data, mime):
+        captured["user_message"] = user_message
+        return json.dumps(
+            [{"title": "Sketch", "components": [{"id": "a", "type": "text_input", "label": "A"}]}]
+        )
+
+    # A non-stub GEMINI_API_KEY resolves the provider to gemini (reads image/png
+    # natively) → exercises the multimodal path where `hint` is appended.
+    monkeypatch.setenv("GEMINI_API_KEY", "not-a-stub-key")
+    monkeypatch.setattr(llm, "is_stub_mode", lambda: False)
+    monkeypatch.setattr(llm, "generate_from_file", spy)
+
+    resp = client.post(
+        "/api/modules/generate_from_file",
+        files={"file": ("sketch.png", b"\x89PNG\r\nfake", "image/png")},
+        data={"prompt": "", "hint": _SKETCH_HINT},
+    )
+    assert resp.status_code == 200, resp.text
+    assert _SKETCH_HINT in captured["user_message"]
+
+
+def test_generate_from_file_without_hint_message_unchanged(client, monkeypatch):
+    """The hint defaults to None: a normal file upload's model message carries no
+    sketch instruction (other callers unaffected)."""
+    captured: dict = {}
+
+    def spy(user_message, system, data, mime):
+        captured["user_message"] = user_message
+        return json.dumps(
+            [{"title": "X", "components": [{"id": "a", "type": "text_input", "label": "A"}]}]
+        )
+
+    monkeypatch.setenv("GEMINI_API_KEY", "not-a-stub-key")
+    monkeypatch.setattr(llm, "is_stub_mode", lambda: False)
+    monkeypatch.setattr(llm, "generate_from_file", spy)
+
+    resp = client.post(
+        "/api/modules/generate_from_file",
+        files={"file": ("photo.png", b"\x89PNG\r\nfake", "image/png")},
+        data={"prompt": "build a tool"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert "wireframe sketch" not in captured["user_message"].lower()
+    assert "build a tool" in captured["user_message"]  # the real request still lands
+
+
+def test_generate_from_file_stub_image_refuses_honestly(client):
+    """R-221 honesty (do NOT weaken): a sketch PNG on the stub (text-only) provider
+    must refuse honestly (422), never a silent generic template. Trace: image mime
+    → stub can't read natively AND has no text to extract → the '{}' sentinel →
+    RefusalError. Nothing persisted, no fake 'Created …' turn."""
+    resp = client.post(
+        "/api/modules/generate_from_file",
+        files={"file": ("sketch.png", b"\x89PNG\r\nfake ink", "image/png")},
+        data={"prompt": "", "hint": _SKETCH_HINT},
+    )
+    assert resp.status_code == 422, resp.text
+    detail = resp.json()["detail"]
+    assert "refusal" in detail
+    assert "current model configuration" in detail["refusal"]
+    assert client.get("/api/modules").json() == []
+    convo = client.get("/api/conversations").json()
+    assert not any(m["text"].startswith("Created ") for m in convo if m["role"] == "assistant")

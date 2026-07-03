@@ -156,10 +156,13 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ configs, prompt }),
     }),
-  generateModuleFromFile: async (file: File, prompt: string, pageId?: string): Promise<GenerateResponse> => {
+  // R-221: `hint` is the sketch snap's bounded interpretation instruction; the
+  // backend folds it into the model-visible message. Omitted for plain uploads.
+  generateModuleFromFile: async (file: File, prompt: string, pageId?: string, hint?: string): Promise<GenerateResponse> => {
     const fd = new FormData();
     fd.append("file", file);
     fd.append("prompt", prompt);
+    if (hint) fd.append("hint", hint);
     const res = await fetch(`${BASE}/api/modules/generate_from_file${pageId ? `?page_id=${pageId}` : ""}`, {
       method: "POST",
       credentials: "include",
