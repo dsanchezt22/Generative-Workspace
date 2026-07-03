@@ -213,6 +213,80 @@ def test_recent_conversation_single_oversized_message_keeps_recent_tail():
     assert "TAIL-SENTINEL" in prompt_used
 
 
+# --- Stage-2b backlog: composed-prompt token cap (_MAX_PROMPT_CHARS) ---
+
+
+def test_cap_composed_prompt_is_a_noop_under_budget():
+    result = orchestrator._cap_composed_prompt("h", "c", "v", "e", "t")
+    assert result == "hcvet"
+
+
+def test_cap_composed_prompt_never_truncates_head_exchange_or_tail():
+    head = "User request: a distinctive raw prompt\n\n"
+    tail = "\n\nReturn the adapted ModuleConfig JSON array."
+    exchange_block = "\n\nConversation so far:\nQ: Which city?\nA: Tokyo" * 20
+    context = "C" * 20000
+    convo_block = "V" * 20000
+    result = orchestrator._cap_composed_prompt(head, context, convo_block, exchange_block, tail)
+    assert len(result) <= orchestrator._MAX_PROMPT_CHARS
+    assert result.startswith(head)
+    assert result.endswith(tail)
+    assert exchange_block in result
+
+
+def test_cap_composed_prompt_truncates_conversation_before_module_context():
+    """When the module-context block alone fits comfortably but the
+    conversation block is oversized, the conversation is cut (or dropped)
+    first — module-context stays fully intact."""
+    head = "User request: a distinctive raw prompt\n\n"
+    tail = "\n\nReturn the adapted ModuleConfig JSON array."
+    exchange_block = "\n\nConversation so far:\nQ: Which city?\nA: Tokyo"
+    context = "\n\nExisting modules on canvas:\n- Module: field_a, field_b"
+    convo_block = "\n\nRecent conversation:\n" + ("user: filler turn. " * 2000)
+    result = orchestrator._cap_composed_prompt(head, context, convo_block, exchange_block, tail)
+    assert len(result) <= orchestrator._MAX_PROMPT_CHARS
+    assert context in result  # module-context untouched
+    assert convo_block not in result  # conversation was cut to fit
+
+
+def test_cap_composed_prompt_also_truncates_module_context_when_conversation_alone_is_not_enough():
+    """When even fully dropping the conversation block isn't enough, the
+    module-context detail is trimmed too (still never head/exchange/tail)."""
+    head = "User request: another distinctive raw prompt\n\n"
+    tail = "\n\nReturn the adapted ModuleConfig JSON array."
+    exchange_block = "\n\nConversation so far:\nQ: Which city?\nA: Tokyo"
+    context = "\n\nExisting modules on canvas:\n" + ("- Module: field_a, field_b\n" * 2000)
+    convo_block = "\n\nRecent conversation:\nuser: hi"
+    result = orchestrator._cap_composed_prompt(head, context, convo_block, exchange_block, tail)
+    assert len(result) <= orchestrator._MAX_PROMPT_CHARS
+    assert result.startswith(head)
+    assert result.endswith(tail)
+    assert exchange_block in result
+    assert convo_block not in result  # conversation dropped first
+    assert context not in result  # and module-context also had to be trimmed
+
+
+def test_seeded_system_wires_the_cap_end_to_end():
+    """Integration: _seeded_system itself enforces the cap via its own
+    (private) helpers _module_context/_conversation_block — patched here to
+    return oversized strings so the wiring (not just the pure helper) is
+    proven."""
+    huge_context = "\n\nExisting modules on canvas:\n" + ("- Module: field_a, field_b\n" * 2000)
+    small_convo = "\n\nRecent conversation:\nuser: hi"
+    with (
+        patch("src.services.orchestrator._module_context", return_value=huge_context),
+        patch("src.services.orchestrator._conversation_block", return_value=small_convo),
+    ):
+        msg = orchestrator._seeded_system(
+            "a distinctive raw user prompt", exchange_context="Q: Which city?\nA: Tokyo"
+        )
+    assert len(msg) <= orchestrator._MAX_PROMPT_CHARS
+    assert "a distinctive raw user prompt" in msg
+    assert "Tokyo" in msg
+    assert small_convo not in msg
+    assert huge_context not in msg
+
+
 def test_new_component_types_validate():
     from src.schema import ModuleConfig
 

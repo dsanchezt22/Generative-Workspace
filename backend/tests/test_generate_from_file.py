@@ -425,6 +425,63 @@ def test_generate_from_file_without_hint_message_unchanged(client, monkeypatch):
     assert "build a tool" in captured["user_message"]  # the real request still lands
 
 
+def test_generate_from_file_preview_flag_does_not_persist(client, monkeypatch):
+    """Stage-2b backlog (R-223): `preview=true` mirrors /modules/preview — the
+    file/sketch caller gets `previews` back to route through the existing
+    confirm UI; nothing is written to the canvas or logged until the caller
+    separately POSTs the accepted configs to /api/modules."""
+    monkeypatch.setenv("GEMINI_API_KEY", "not-a-stub-key")
+    monkeypatch.setattr(llm, "is_stub_mode", lambda: False)
+    monkeypatch.setattr(
+        llm,
+        "generate_from_file",
+        lambda *a, **k: json.dumps(
+            [
+                {
+                    "title": "Previewed",
+                    "components": [{"id": "a", "type": "text_input", "label": "A"}],
+                }
+            ]
+        ),
+    )
+    resp = client.post(
+        "/api/modules/generate_from_file",
+        files={"file": ("sketch.png", b"\x89PNG\r\nfake", "image/png")},
+        data={"prompt": "build a tool", "preview": "true"},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["module"] is None
+    assert body["modules"] is None
+    assert body["previews"] and body["previews"][0]["title"] == "Previewed"
+    assert client.get("/api/modules").json() == []
+    assert client.get("/api/conversations").json() == []
+
+
+def test_generate_from_file_preview_flag_defaults_false(client, monkeypatch):
+    """Omitting `preview` keeps the existing direct-insert behavior — every
+    pre-existing caller (and test) is unaffected."""
+    monkeypatch.setenv("GEMINI_API_KEY", "not-a-stub-key")
+    monkeypatch.setattr(llm, "is_stub_mode", lambda: False)
+    monkeypatch.setattr(
+        llm,
+        "generate_from_file",
+        lambda *a, **k: json.dumps(
+            [{"title": "Direct", "components": [{"id": "a", "type": "text_input", "label": "A"}]}]
+        ),
+    )
+    resp = client.post(
+        "/api/modules/generate_from_file",
+        files={"file": ("photo.png", b"\x89PNG\r\nfake", "image/png")},
+        data={"prompt": "build a tool"},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["previews"] is None
+    assert body["module"]["config"]["title"] == "Direct"
+    assert len(client.get("/api/modules").json()) == 1
+
+
 def test_generate_from_file_stub_image_refuses_honestly(client):
     """R-221 honesty (do NOT weaken): a sketch PNG on the stub (text-only) provider
     must refuse honestly (422), never a silent generic template. Trace: image mime

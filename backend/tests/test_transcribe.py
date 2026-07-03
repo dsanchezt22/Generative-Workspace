@@ -433,3 +433,73 @@ def test_llm_transcribe_filename_none_defaults(monkeypatch):
     monkeypatch.setattr(llm.urllib.request, "urlopen", fake_urlopen)
     llm.transcribe(b"data", "audio/webm", None)
     assert b'filename="audio"' in captured["body"]
+
+
+# ---------------------------------------------------------------------------
+# Stage-2b backlog: per-owner sliding-window rate limit (≤20 / 5 min) → 429.
+# ---------------------------------------------------------------------------
+
+
+def test_rate_limiter_allows_up_to_max_then_blocks():
+    from src.routes.transcribe import _RateLimiter
+
+    limiter = _RateLimiter(max_calls=3, window_secs=60)
+    assert limiter.allow("a", now=1000.0)
+    assert limiter.allow("a", now=1000.0)
+    assert limiter.allow("a", now=1000.0)
+    assert not limiter.allow("a", now=1000.0)
+
+
+def test_rate_limiter_sliding_window_expires_old_hits():
+    from src.routes.transcribe import _RateLimiter
+
+    limiter = _RateLimiter(max_calls=1, window_secs=10)
+    assert limiter.allow("a", now=0.0)
+    assert not limiter.allow("a", now=5.0)
+    assert limiter.allow("a", now=11.0)  # the first hit has slid out of the window
+
+
+def test_rate_limiter_is_independent_per_key():
+    from src.routes.transcribe import _RateLimiter
+
+    limiter = _RateLimiter(max_calls=1, window_secs=60)
+    assert limiter.allow("a", now=0.0)
+    assert limiter.allow("b", now=0.0)  # a different key is unaffected
+    assert not limiter.allow("a", now=1.0)
+
+
+def test_transcribe_21st_call_in_window_is_429(client, monkeypatch):
+    _configure_stt(monkeypatch)
+    monkeypatch.setattr(llm, "transcribe", lambda data, mime, filename: "ok")
+    for _ in range(20):
+        resp = client.post(
+            "/api/transcribe", files={"file": ("r.webm", b"fake-audio-bytes", "audio/webm")}
+        )
+        assert resp.status_code == 200, resp.text
+    resp = client.post(
+        "/api/transcribe", files={"file": ("r.webm", b"fake-audio-bytes", "audio/webm")}
+    )
+    assert resp.status_code == 429, resp.text
+    assert "too many" in resp.json()["detail"].lower()
+
+
+def test_transcribe_rate_limit_is_per_owner(client, monkeypatch):
+    """A different owner (a separate session/cookie jar) is unaffected by
+    another owner's exhausted rate limit."""
+    _configure_stt(monkeypatch)
+    monkeypatch.setattr(llm, "transcribe", lambda data, mime, filename: "ok")
+    for _ in range(20):
+        resp = client.post(
+            "/api/transcribe", files={"file": ("r.webm", b"fake-audio-bytes", "audio/webm")}
+        )
+        assert resp.status_code == 200, resp.text
+    resp = client.post(
+        "/api/transcribe", files={"file": ("r.webm", b"fake-audio-bytes", "audio/webm")}
+    )
+    assert resp.status_code == 429, resp.text
+
+    with TestClient(app) as other:
+        resp2 = other.post(
+            "/api/transcribe", files={"file": ("r.webm", b"fake-audio-bytes", "audio/webm")}
+        )
+        assert resp2.status_code == 200, resp2.text

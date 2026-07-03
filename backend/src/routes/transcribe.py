@@ -27,6 +27,36 @@ router = APIRouter()
 _MAX_BYTES = 25 * 1024 * 1024
 
 
+class _RateLimiter:
+    """A per-key, in-memory sliding-window limiter: at most `max_calls` calls
+    per `window_secs` for a given key. Deliberately generic (not hardcoded to
+    "owner") — the generate/preview routes are the next customer for the same
+    pattern, each with their own instance + limits. Process-local only (fine
+    for the MVP's single-instance deployment; a multi-instance deploy would
+    need a shared store instead)."""
+
+    def __init__(self, max_calls: int, window_secs: float) -> None:
+        self._max_calls = max_calls
+        self._window_secs = window_secs
+        self._hits: dict[str, list[float]] = {}
+
+    def allow(self, key: str, now: float | None = None) -> bool:
+        now = time.monotonic() if now is None else now
+        hits = self._hits.setdefault(key, [])
+        cutoff = now - self._window_secs
+        while hits and hits[0] < cutoff:
+            hits.pop(0)
+        if len(hits) >= self._max_calls:
+            return False
+        hits.append(now)
+        return True
+
+
+# R-204 backlog: ≤20 transcribes / 5 min per owner — cheap abuse guard on a
+# cost-bearing endpoint.
+_transcribe_limiter = _RateLimiter(max_calls=20, window_secs=5 * 60)
+
+
 class TranscriptionResponse(BaseModel):
     text: str
 
@@ -54,6 +84,11 @@ def _track_transcribe(sid: str, outcome: str, t0: float) -> None:
 def transcribe_audio(request: Request, file: UploadFile = File(...)) -> TranscriptionResponse:
     _require_trusted_origin(request)
     sid = _owner_id(request)
+    if not _transcribe_limiter.allow(sid):
+        raise HTTPException(
+            status_code=429,
+            detail="Too many transcriptions — wait a few minutes and try again.",
+        )
     if not llm.stt_available():
         raise HTTPException(
             status_code=422,

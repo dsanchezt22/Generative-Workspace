@@ -220,6 +220,14 @@ def _module_context(modules: list[ModuleConfig]) -> str:
 # length, not per-message) so a long history never dominates the prompt.
 _CONVERSATION_CONTEXT_BUDGET = 1200
 
+# Stage-2b backlog: a cap on the FINAL composed message once seed-JSON +
+# module-context + exchange fold + conversation block are all stacked (see
+# _seeded_system below). `_CONVERSATION_CONTEXT_BUDGET` already bounds the
+# conversation block on its own, but a large module-context list (many
+# existing modules) can still push the total over a sane size. This is a
+# last-resort guard, not the primary budget.
+_MAX_PROMPT_CHARS = 12000
+
 
 def _conversation_block(messages: list[dict] | None) -> str:
     """Render the owner's recent persisted conversation (db.recent_messages,
@@ -348,6 +356,30 @@ Rules:
 """
 
 
+def _cap_composed_prompt(
+    head: str, context: str, convo_block: str, exchange_block: str, tail: str
+) -> str:
+    """Stage-2b backlog: bound the final composed message to `_MAX_PROMPT_CHARS`.
+    `head` (the raw user request + seed skeleton) and `exchange_block` (the
+    interview answers) are NEVER truncated — the model needs both to do the
+    job and to avoid re-asking an already-answered question. When over budget,
+    the LOWEST-priority blocks are cut first: the conversation block, then the
+    module-context detail."""
+    full = head + context + convo_block + exchange_block + tail
+    if len(full) <= _MAX_PROMPT_CHARS:
+        return full
+    protected_len = len(head) + len(exchange_block) + len(tail)
+    budget = max(0, _MAX_PROMPT_CHARS - protected_len)
+    if len(context) >= budget:
+        # No room left for any conversation block; module-context itself must
+        # also be trimmed to what's left of the budget.
+        convo_block = ""
+        context = context[:budget]
+    else:
+        convo_block = convo_block[: budget - len(context)]
+    return head + context + convo_block + exchange_block + tail
+
+
 def _seeded_system(
     prompt: str,
     existing_modules: list[ModuleConfig] | None = None,
@@ -379,15 +411,15 @@ def _seeded_system(
         if exchange_context
         else ""
     )
-    return (
+    head = (
         f"User request: {prompt}\n\n"
         f"Example starting system (adapt freely — change the number of tools, fields, components, "
         f"labels, icons, accents, and prefill state to match the request; do not return it as-is):\n{seed}"
-        f"{context}"
-        f"{convo_block}"
-        f"{exchange_block}\n\n"
-        f"Return the adapted ModuleConfig JSON array."
     )
+    tail = "\n\nReturn the adapted ModuleConfig JSON array."
+    # Stage-2b backlog: cap the total composed size AFTER everything above is
+    # built — see _cap_composed_prompt's truncation priority.
+    return _cap_composed_prompt(head, context, convo_block, exchange_block, tail)
 
 
 @dataclass

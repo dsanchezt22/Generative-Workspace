@@ -207,6 +207,7 @@ def generate_from_file(
     file: UploadFile = File(...),
     prompt: str = Form(""),
     hint: str = Form(""),
+    preview: bool = Form(False),
     page_id: str | None = Query(default=None),
 ) -> GenerateResponse:
     _require_trusted_origin(request)
@@ -241,11 +242,17 @@ def generate_from_file(
         raise HTTPException(status_code=422, detail={"refusal": e.reason}) from e
     except LLMError as e:
         raise HTTPException(status_code=503, detail=_llm_error_detail(e)) from None
+    deg = llm.last_call.get()
+    if preview:
+        # R-223 backlog: preview-then-confirm for file/sketch uploads, mirroring
+        # /modules/preview — nothing is persisted or logged here; the caller
+        # confirms via POST /api/modules (insert_modules), which does its own
+        # logging once the user actually accepts a proposed tool.
+        return GenerateResponse(previews=configs, degraded=bool(deg and deg.degraded))
     stored = [db.insert_module(sid, c, page_id=page_id) for c in configs]
     _log(sid, "user", f"📎 {file.filename}: {instruction}", page_id=stored[0].page_id)
     for s in stored:
         _log(sid, "assistant", f"Created {s.config.title}", page_id=s.page_id, module_id=s.id)
-    deg = llm.last_call.get()
     return GenerateResponse(module=stored[0], modules=stored, degraded=bool(deg and deg.degraded))
 
 

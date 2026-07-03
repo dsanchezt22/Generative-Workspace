@@ -1015,6 +1015,34 @@ def cache_stats() -> dict:
 # (R-104's async route) instead of degrading into an unbounded table scan.
 _SUGGESTION_SCAN_CAP = 500
 
+# Stage-2b backlog: moved server-side from frontend/src/lib/suggestions.ts'
+# filterSuggestions so ANY consumer of GET /api/suggestions gets clean chips —
+# the frontend filter stays in place too (belt-and-braces). Kept in sync with
+# that file: a 📎-prefixed file-upload log line, a refine-combined prompt
+# (PromptBar joins "original — tweak" with this em-dash), a refine imperative
+# ("make it…"), and anything under 3 words are all noise, not build ideas.
+_SUGGESTION_REFINE_JOIN = " — "
+_SUGGESTION_REFINE_PREFIXES = (
+    "make it",
+    "make the",
+    "change ",
+    "turn it",
+    "also add",
+    "remove the",
+    "rename ",
+)
+
+
+def _is_suggestion_noise(text: str) -> bool:
+    if text.startswith("📎"):
+        return True
+    if _SUGGESTION_REFINE_JOIN in text:
+        return True
+    if len(text.split()) < 3:
+        return True
+    lower = text.lower()
+    return any(lower.startswith(p) for p in _SUGGESTION_REFINE_PREFIXES)
+
 
 def suggestion_prompts(owner: str, limit: int) -> list[str]:
     """This owner's recent distinct generation prompts, for suggestion chips
@@ -1023,8 +1051,9 @@ def suggestion_prompts(owner: str, limit: int) -> list[str]:
     (favors prompts that actually got reused); if that yields fewer than `limit`,
     tops up from recent user-role `messages` rows for the same owner (page-agnostic
     — messages.session_id doubles as the owner key, same as gen_cache.owner).
-    Deduped case-insensitively; blob-like entries (len > 200, template seeds) and
-    empty/whitespace-only strings are excluded; messages never re-add a prompt
+    Deduped case-insensitively; blob-like entries (len > 200, template seeds),
+    empty/whitespace-only strings, and suggestion noise (see
+    _is_suggestion_noise) are excluded; messages never re-add a prompt
     gen_cache already contributed."""
     if limit <= 0:
         return []
@@ -1033,7 +1062,7 @@ def suggestion_prompts(owner: str, limit: int) -> list[str]:
 
     def _consider(text: str | None) -> None:
         text = (text or "").strip()
-        if not text or len(text) > 200:
+        if not text or len(text) > 200 or _is_suggestion_noise(text):
             return
         key = text.lower()
         if key in seen:
