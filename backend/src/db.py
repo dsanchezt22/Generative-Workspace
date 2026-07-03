@@ -58,6 +58,7 @@ CREATE TABLE IF NOT EXISTS modules (
     page_id     TEXT REFERENCES pages(id) ON DELETE CASCADE,
     config_json TEXT NOT NULL,
     archived    INTEGER NOT NULL DEFAULT 0,
+    rev         INTEGER NOT NULL DEFAULT 0,
     created_at  TEXT NOT NULL,
     updated_at  TEXT NOT NULL
 );
@@ -180,6 +181,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
         )
     if "archived" not in cols:
         conn.execute("ALTER TABLE modules ADD COLUMN archived INTEGER NOT NULL DEFAULT 0")
+    if "rev" not in cols:
+        conn.execute("ALTER TABLE modules ADD COLUMN rev INTEGER NOT NULL DEFAULT 0")
     # Create the page index after the column is guaranteed to exist.
     conn.execute("CREATE INDEX IF NOT EXISTS idx_modules_page ON modules(page_id, created_at)")
     pcols = {r[1] for r in conn.execute("PRAGMA table_info(pages)").fetchall()}
@@ -509,13 +512,14 @@ def _stored_from_row(r) -> StoredModule | None:
             updated_at=r["updated_at"],
             page_id=r["page_id"],
             archived=bool(r["archived"]),
+            rev=r["rev"],
         )
     except Exception:
         _log.warning("Quarantined unreadable module row %s (R-1105)", r["id"])
         return None
 
 
-_MOD_COLS = "id, page_id, config_json, created_at, updated_at, archived"
+_MOD_COLS = "id, page_id, config_json, created_at, updated_at, archived, rev"
 
 
 def get_module(session_id: str, module_id: str) -> StoredModule | None:
@@ -574,28 +578,54 @@ def duplicate_module(session_id: str, module_id: str) -> StoredModule | None:
     return insert_module(session_id, cfg, page_id=existing.page_id)
 
 
-def update_module(session_id: str, module_id: str, config: ModuleConfig) -> StoredModule | None:
+class RevConflict(Exception):
+    """Raised when expected_rev no longer matches the stored rev (R-602): another
+    writer won the race. Callers surface `current` so the loser can reload
+    visibly instead of silently overwriting it."""
+
+    def __init__(self, current: StoredModule) -> None:
+        super().__init__(f"rev conflict on module {current.id}")
+        self.current = current
+
+
+def update_module(
+    session_id: str, module_id: str, config: ModuleConfig, expected_rev: int | None = None
+) -> StoredModule | None:
+    """Persist `config`. When `expected_rev` is given, the write only applies if
+    the stored rev still matches (optimistic concurrency, R-602) — a mismatch
+    raises RevConflict with the current row instead of clobbering it. When
+    `expected_rev` is None the write is unconditional (internal writers: refine,
+    snapshot restore) but still bumps rev, so an open tab still conflict-detects
+    against it."""
     now = _now()
     config_json = config.model_dump_json()
     with _conn() as c:
-        cur = c.execute(
-            "UPDATE modules SET config_json = ?, updated_at = ? WHERE id = ? AND session_id = ?",
-            (config_json, now, module_id, session_id),
-        )
+        if expected_rev is None:
+            cur = c.execute(
+                "UPDATE modules SET config_json = ?, updated_at = ?, rev = rev + 1"
+                " WHERE id = ? AND session_id = ?",
+                (config_json, now, module_id, session_id),
+            )
+        else:
+            cur = c.execute(
+                "UPDATE modules SET config_json = ?, updated_at = ?, rev = rev + 1"
+                " WHERE id = ? AND session_id = ? AND rev = ?",
+                (config_json, now, module_id, session_id, expected_rev),
+            )
         if cur.rowcount == 0:
+            row = c.execute(
+                f"SELECT {_MOD_COLS} FROM modules WHERE id = ? AND session_id = ?",
+                (module_id, session_id),
+            ).fetchone()
+            if row is None:
+                return None
+            current = _stored_from_row(row)
+            if current is not None:
+                raise RevConflict(current)
             return None
         _record_version(c, module_id, session_id, config_json, now)
-        row = c.execute(
-            "SELECT page_id, created_at, archived FROM modules WHERE id = ?", (module_id,)
-        ).fetchone()
-    return StoredModule(
-        id=module_id,
-        config=config,
-        created_at=row["created_at"],
-        updated_at=now,
-        page_id=row["page_id"],
-        archived=bool(row["archived"]),
-    )
+        row = c.execute(f"SELECT {_MOD_COLS} FROM modules WHERE id = ?", (module_id,)).fetchone()
+    return _stored_from_row(row)
 
 
 def delete_module(session_id: str, module_id: str) -> bool:

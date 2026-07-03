@@ -319,6 +319,7 @@ class StoredModule(BaseModel):
     updated_at: str
     page_id: str | None = None
     archived: bool = False
+    rev: int = 0
 
 
 class Page(BaseModel):
@@ -400,6 +401,7 @@ class InsertModulesRequest(BaseModel):
 
 class PatchRequest(BaseModel):
     config: ModuleConfig
+    rev: int | None = None
 
 
 class RefusalError(Exception):

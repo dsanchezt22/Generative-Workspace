@@ -257,7 +257,12 @@ async def list_modules(
 @router.patch("/modules/{module_id}", response_model=StoredModule)
 async def patch_module(module_id: str, body: PatchRequest, request: Request) -> StoredModule:
     sid = _owner_id(request)
-    updated = db.update_module(sid, module_id, body.config)
+    try:
+        updated = db.update_module(sid, module_id, body.config, expected_rev=body.rev)
+    except db.RevConflict as e:
+        raise HTTPException(
+            status_code=409, detail={"conflict": e.current.model_dump(mode="json")}
+        ) from e
     if updated is None:
         raise HTTPException(status_code=404, detail="Module not found")
     return updated
