@@ -40,6 +40,40 @@ export function EntryScreen({ onSubmit, onSkip }: Props) {
   // the existing rise/fade motion rather than a hard cut.
   const [leaving, setLeaving] = useState(false);
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const containerRef = useRef<HTMLDivElement | null>(null);
+
+  // Stage-2b backlog: focus trap + restore (mirrors ConfirmDialog's pattern).
+  // EntryScreen only exists in the tree while introOpen (page.tsx renders it
+  // conditionally) — mount IS "open", so a plain mount/unmount effect matches
+  // ConfirmDialog's `if (!open) return` + cleanup lifecycle exactly. Traps
+  // Tab/Shift+Tab among THIS dialog's own tabbables (mic/input/submit/skip —
+  // the mic button only exists when voiceMode !== "none") and hands focus
+  // back to whatever had it before the screen opened.
+  useEffect(() => {
+    const prevFocus = document.activeElement as HTMLElement | null;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Tab") return;
+      const focusable = Array.from(
+        containerRef.current?.querySelectorAll<HTMLElement>(
+          'button:not([disabled]), input:not([disabled])',
+        ) ?? [],
+      );
+      if (focusable.length === 0) return;
+      e.preventDefault();
+      const last = focusable.length - 1;
+      const current = document.activeElement as HTMLElement | null;
+      const idx = current ? focusable.indexOf(current) : -1;
+      const next = e.shiftKey
+        ? focusable[idx <= 0 ? last : idx - 1]
+        : focusable[idx === -1 || idx === last ? 0 : idx + 1];
+      next.focus();
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => {
+      window.removeEventListener("keydown", onKey, true);
+      if (prevFocus?.isConnected) prevFocus.focus();
+    };
+  }, []);
 
   // Rotating headline typewriter (shared pure step fn — see lib/typewriter).
   const [tw, setTw] = useState<TypewriterState>({ text: "", phraseIndex: 0, deleting: false });
@@ -94,6 +128,7 @@ export function EntryScreen({ onSubmit, onSkip }: Props) {
 
   return (
     <div
+      ref={containerRef}
       role="dialog"
       aria-modal="true"
       aria-label="Start with a conversation"

@@ -191,9 +191,15 @@ export function PromptBar({ onModule, activePageId, refineTarget, onRefineModule
         onRefineModule(updated);
         setPrompt("");
       } else if (file) {
-        const result = await api.generateModuleFromFile(file, v, activePageId);
-        if (result.modules?.length) result.modules.forEach((m) => onModule(m));
-        else if (result.module) onModule(result.module);
+        // R-223 backlog: preview-then-confirm for a file attach, mirroring the
+        // text-generation preview stack — the tools no longer land on the
+        // canvas straight away.
+        const result = await api.generateModuleFromFile(file, v, activePageId, undefined, true);
+        if (result.previews?.length) {
+          lastPromptRef.current = v || file.name;
+          setPreviews(result.previews);
+          setPlan(result.plan ?? null);
+        }
         if (result.degraded) setError(DEGRADED_NOTICE);
         setPrompt("");
         setFile(null);

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { screenToWorld, strokeBounds, worldToScreen } from "./sketchExport";
+import { rasterScale, screenToWorld, strokeBounds, worldToScreen } from "./sketchExport";
 
 describe("strokeBounds (R-221: bbox for the snap raster)", () => {
   it("bounds a multi-stroke sketch across all points", () => {
@@ -35,6 +35,35 @@ describe("strokeBounds (R-221: bbox for the snap raster)", () => {
   it("grows the box by pad on every side", () => {
     const b = strokeBounds([[{ x: 0, y: 0 }]], 24);
     expect(b).toEqual({ minX: -24, minY: -24, maxX: 24, maxY: 24, width: 48, height: 48 });
+  });
+});
+
+describe("rasterScale (Stage-2b backlog: clamp the offscreen raster to ~2048px/side)", () => {
+  it("returns 1 when the longest side is within the cap", () => {
+    expect(rasterScale({ minX: 0, minY: 0, maxX: 500, maxY: 300, width: 500, height: 300 })).toBe(1);
+  });
+
+  it("returns 1 when the longest side exactly equals the cap", () => {
+    expect(rasterScale({ minX: 0, minY: 0, maxX: 2048, maxY: 100, width: 2048, height: 100 })).toBe(1);
+  });
+
+  it("returns a <1 factor when the width exceeds the cap", () => {
+    const bounds = { minX: 0, minY: 0, maxX: 4096, maxY: 1000, width: 4096, height: 1000 };
+    const scale = rasterScale(bounds);
+    expect(scale).toBeLessThan(1);
+    expect(bounds.width * scale).toBeCloseTo(2048);
+  });
+
+  it("scales both sides down proportionally so neither exceeds the cap", () => {
+    const bounds = { minX: 0, minY: 0, maxX: 6000, maxY: 3000, width: 6000, height: 3000 };
+    const scale = rasterScale(bounds);
+    expect(bounds.width * scale).toBeLessThanOrEqual(2048 + 1e-9);
+    expect(bounds.height * scale).toBeLessThanOrEqual(2048 + 1e-9);
+  });
+
+  it("respects a custom maxSide", () => {
+    const bounds = { minX: 0, minY: 0, maxX: 1000, maxY: 1000, width: 1000, height: 1000 };
+    expect(rasterScale(bounds, 500)).toBeCloseTo(0.5);
   });
 });
 

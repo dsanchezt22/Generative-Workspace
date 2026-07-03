@@ -160,11 +160,20 @@ export const api = {
     }),
   // R-221: `hint` is the sketch snap's bounded interpretation instruction; the
   // backend folds it into the model-visible message. Omitted for plain uploads.
-  generateModuleFromFile: async (file: File, prompt: string, pageId?: string, hint?: string): Promise<GenerateResponse> => {
+  // `preview` (Stage-2b/R-223 backlog): mirrors previewModules — the caller gets
+  // `previews` back instead of the tools being inserted straight onto the canvas.
+  generateModuleFromFile: async (
+    file: File,
+    prompt: string,
+    pageId?: string,
+    hint?: string,
+    preview?: boolean,
+  ): Promise<GenerateResponse> => {
     const fd = new FormData();
     fd.append("file", file);
     fd.append("prompt", prompt);
     if (hint) fd.append("hint", hint);
+    if (preview) fd.append("preview", "true");
     const res = await fetch(`${BASE}/api/modules/generate_from_file${pageId ? `?page_id=${pageId}` : ""}`, {
       method: "POST",
       credentials: "include",

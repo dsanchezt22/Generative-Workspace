@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { api, ApiError } from "@/lib/api";
 import type { CommitModule, StoredModule } from "@/lib/types";
 import {
+  rasterScale,
   screenToWorld,
   strokeBounds,
   type Bounds,
@@ -522,8 +523,12 @@ export function Canvas({
   // the app's charcoal FIRST (so the model sees strokes-on-charcoal like the real
   // UI, not transparent), then the ink drawn on top at 1:1 world→px.
   const rasterizeSketch = (list: Stroke[], bounds: Bounds): Promise<Blob | null> => {
-    const w = Math.max(1, Math.ceil(bounds.width));
-    const h = Math.max(1, Math.ceil(bounds.height));
+    // Stage-2b backlog: clamp the offscreen raster to ~2048px/side — a sketch
+    // spanning a huge world-space bbox is downscaled (scale < 1) rather than
+    // allocating an oversized canvas; a normal-sized sketch is unaffected (scale === 1).
+    const scale = rasterScale(bounds);
+    const w = Math.max(1, Math.ceil(bounds.width * scale));
+    const h = Math.max(1, Math.ceil(bounds.height * scale));
     const off = document.createElement("canvas");
     off.width = w;
     off.height = h;
@@ -540,12 +545,14 @@ export function Canvas({
       if (s.length === 0) continue;
       ctx.beginPath();
       s.forEach((p, i) => {
-        const x = p.x - bounds.minX;
-        const y = p.y - bounds.minY;
+        const x = (p.x - bounds.minX) * scale;
+        const y = (p.y - bounds.minY) * scale;
         if (i === 0) ctx.moveTo(x, y);
         else ctx.lineTo(x, y);
       });
-      if (s.length === 1) ctx.lineTo(s[0].x - bounds.minX + 0.1, s[0].y - bounds.minY + 0.1);
+      if (s.length === 1) {
+        ctx.lineTo((s[0].x - bounds.minX) * scale + 0.1, (s[0].y - bounds.minY) * scale + 0.1);
+      }
       ctx.stroke();
     }
     return new Promise((resolve) => off.toBlob((b) => resolve(b), "image/png"));
