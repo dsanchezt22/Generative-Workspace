@@ -2,9 +2,9 @@
 
 _An AI-orchestrated personal operating system: describe what you want to organize, and the system generates the exact tool for it._
 
-**Last updated:** 2026-06-14
+**Last updated:** 2026-07-03
 **Repo:** https://github.com/dsanchezt22/Generative-Workspace
-**North star:** the exact tool you need, in the shape of your life, for the cost of a sentence — and you stay in the driver's seat the entire time.
+**Branch state:** Stage 2a complete at `b80d9c3` on `stage2a/reliability` (15 commits ahead of `main`), pending final whole-branch review and merge decision.
 
 ---
 
@@ -19,99 +19,54 @@ output instant, consistent, and impossible to break into "malformed HTML."
 prompt ──▶ Gemini (orchestrator) ──▶ ModuleConfig (JSON) ──▶ trusted components ──▶ canvas
 ```
 
-- **Backend:** Python 3.12 · FastAPI · SQLite (stdlib) · `google-genai`
+- **Backend:** Python 3.12 (Docker) · FastAPI · SQLite (stdlib) · `google-genai`
 - **Frontend:** Next.js 16 · React 19 · TypeScript · Tailwind v4
-- **Model:** `gemini-flash-latest` (key in `backend/.env`, gitignored)
-- **Quality:** 86 backend tests passing, 2 live tests opt-in (`GEMINI_LIVE=1`)
 
----
+## Stage 1 — structural blockers (shipped)
 
-## 1. Modules built (the building blocks)
+Closed the 7 cross-cutting findings from `docs/MVP-GAP-AUDIT.md` that stood between a local demo and a hostable 50-user alpha:
 
-### Backend (`backend/src/`)
-| Module | Responsibility |
+1. **One shared trust domain** → invite-claim identity (`users` table, session `uid`), per-owner scoping of the generation cache and layout library.
+2. **Event loop blocked on every model call** → LLM/vision calls moved off the async event loop; one generation no longer freezes health checks and saves for every user.
+3. **Silent degradation everywhere** → honest refusal on unreadable input, degraded/cascade output never cached or persisted as a fake success.
+4. **No schema versioning for persisted configs** → tolerant reads; one corrupt row quarantines itself instead of 500ing the whole workspace.
+5. **Zero observability** → structured logging, per-generation telemetry (`gen_events`), operator summary endpoint.
+6. **Data-loss races in the client** → single-writer module saves, rev-based optimistic-concurrency conflict detection across tabs.
+7. **Quality gates red at HEAD** → green baseline restored, coverage gate reconciled and raised, frontend test/CI job added.
+
+## Stage 2a — reliability completions (shipped)
+
+Landed the two security decisions from the Stage 1 final review plus the triaged backlog:
+
+- **Security decision A:** Origin gate on state-changing multipart endpoints (upload/import/capture) — closes the `SameSite=None` cross-site CSRF vector.
+- **Security decision B:** SSRF guard on studio `image_url` — refuses private/loopback/link-local/metadata targets and redirect bypasses; URL import off by default in prod.
+- **R-1102:** destructive actions confirmed or undoable — page delete shows a typed module-count confirm, module removal is archive-first (restorable), permanent delete is confirmed; snapshot restore is now one atomic transaction that preserves module ids (cross-module bindings survive a restore).
+- **R-211:** documents ground on every provider, not just Gemini's native multimodal path — server-side text extraction (`pypdf` + plain-text decode) feeds the normal generation path ahead of the honest-refusal fallback.
+- **R-1201/R-1202:** telemetry completions — file-upload generations carry real provenance (provider/model), ops summary reports per-user last-seen, `/api/llm/status` is trimmed in prod.
+- **R-602/R-1101 backlog:** saver hardening — 404 responses are treated as "forgotten" (no retry loop), `beforeunload` does a best-effort keepalive flush of pending edits, module commits use functional updates (no same-tick stale-closure class), the degraded-generation notice moved off the error-red channel.
+- Small-backlog batch: studio layout rows quarantine on parse failure instead of breaking the list; `requirements.txt` (runtime) split from `requirements-dev.txt` (test tooling) so the Docker image doesn't bundle pytest.
+
+## Current gates (this run, 2026-07-03, HEAD `b80d9c3`)
+
+| Gate | Result |
 |---|---|
-| `schema.py` | `ModuleConfig`, the 6 component types (discriminated union), `ModuleVersion`, `RefusalError`, `LLMError` |
-| `db.py` | SQLite layer: sessions, modules, version history; connection-time schema (self-healing) |
-| `llm.py` | Gemini call (JSON mode + system instruction); offline stub fallback when no key |
-| `services/orchestrator.py` | Prompt → ModuleConfig; template-as-seed + adapt-to-content; honest refusal |
-| `stub_templates.py` | Intent-routed offline templates (workout/calorie/budget/todo/reading/habit/mood + generic) |
-| `routes/modules.py` | The 7 HTTP endpoints (below) |
-| `main.py` | App wiring, session cookie middleware, CORS, lifespan DB init |
+| `python -m pytest -q` (repo root, coverage gate on) | **359 passed, 2 skipped**, 94.22% branch coverage (gate: 80%) |
+| `mypy backend/src` | clean, 27 source files |
+| `ruff check backend/src` | all checks passed |
+| `ruff format --check backend/src` | 27 files already formatted |
+| `cd frontend && npm test` | 1 test file, **11 passed** |
+| `npx tsc --noEmit` | clean |
+| `npm run build` | clean production build (4 static routes) |
 
-**API surface:**
-`POST /api/modules/generate` · `GET /api/modules` · `PATCH /api/modules/{id}` ·
-`DELETE /api/modules/{id}` · `POST /api/modules/{id}/refine` ·
-`POST /api/modules/{id}/undo` · `GET /api/modules/{id}/history`
+API-level smoke against a fresh local instance (claim flow, preview→insert, PATCH stale-rev 409 shape, atomic id-preserving snapshot restore, `.txt` grounded upload, `.bin` honest refusal, gated ops summary with per-user `last-seen`) — all passed; transcript in `.superpowers/sdd/stage2a-task-9-report.md`.
 
-### Frontend (`frontend/src/`)
-| Module | Responsibility |
-|---|---|
-| `app/page.tsx` | Workspace shell, module state, refine wiring |
-| `components/Canvas.tsx` | Infinite pan/zoom canvas; module drag, resize |
-| `components/Module.tsx` | Renders a ModuleConfig; collapse, edit, undo, refine, delete |
-| `components/PromptBar.tsx` | Generate + refine prompt input; refusal/error surfacing |
-| `components/primitives/` | The 6 component renderers |
-| `lib/api.ts` | Typed API client (credentials-included) |
-| `lib/summary.ts` | One-line collapsed-module summary deriver |
-| `lib/componentFactory.ts` | Default component builders for the edit palette |
-| `lib/types.ts` | Shared TS types mirroring the backend schema |
+## Docs
 
-### Component library (6 primitives)
-`text_input` · `number_input` · `checkbox` · `slider` · `progress_bar` (with reactive `bound_to`) · `list`
+- `docs/MVP-SPEC.md` — the requirements contract (R-IDs cited in commits).
+- `docs/MVP-GAP-AUDIT.md` — the audit that drove Stage 1's structural findings.
+- `docs/superpowers/plans/` — the Stage 1 and Stage 2a implementation plans, task-by-task.
+- `deploy/README.md` — hosting (Fly + Vercel), env contract, invite provisioning, post-deploy smoke test.
 
----
+## Next
 
-## 2. Feature set — status vs. the design doc (Part II)
-
-| # | Feature | Status | Notes |
-|---|---|---|---|
-| 1 | **The Canvas** | ✅ Done | Infinite pan/zoom, dotted grid, modules as first-class objects, drag + resize, reset-view |
-| 2 | **Modules (atomic unit)** | ✅ Done | Card anatomy, collapse-to-summary, skeleton-first creation |
-| 3 | **Multi-modal input** | 🟡 Partial | Text ✅. Inline clarifying question step ✅. Voice / document+image upload / drawing / ramble-to-modules ❌ |
-| 4 | **Orchestrator + component library** | ✅ Done | Config-not-code; 6 primitives (library is intentionally extensible) |
-| 5 | **Module intelligence** (cross-module rules, AI extrapolation, external data binding) | ✅ Done (core) | `metric` component aggregates values across modules; cross-module `progress_bar` binding; AI receives full module context on generate/refine; "Workspace insights" synthesizes a dashboard module. External data binding ❌ |
-| 6 | **Pages & infinite depth** | ✅ Done (core) | Named pages (Main + user-created), per-page canvases, module scoping by page_id. Nesting/embedding ❌ |
-| 7 | **Collaboration** | ❌ Not started | Single anonymous session; no sharing/real-time |
-| 8 | **History, versioning & undo** | ✅ Done (core) | Version snapshots, per-module undo, history endpoint. No snapshot-viewer UI / global undo yet |
-| 9 | **External integrations** | ❌ Not started | No calendar/API/device hooks |
-| 10 | **Manual control & escape hatches** | ✅ Done | Rename, add/remove/relabel fields, manual data entry, drag, resize |
-| 11 | **Computational hygiene & credits** | ❌ Not started | No credit model, no archive/simplify suggestions |
-| 12 | **Guardrails & boundaries** | ✅ Done (core) | Honest refusal (`{"refusal":…}` → 422); graceful LLM-failure (503). No cost pre-warning |
-
-**Part II.2.3 — module lifecycle:** Create ✅ · Populate ✅ · Iterate ✅ (refine-by-chat + manual edit + undo) · Connect ❌ · Archive ❌
-
-**Part III — the output:** config-not-code ✅ · aesthetic (calm dark theme, warm neutrals, amber accent, motion) ✅ · texture of creation (fast, visual) ✅. Missing: inline clarifying questions during creation.
-
-**Ethos (Part I):** generation-over-configuration ✅ · user-in-driver's-seat ✅ · reliability-is-the-product ✅ (tests, graceful failure, persistence) · minimal-intrusion 🟡 (no clarifying-question step yet) · consolidation — not yet exercised (depends on integrations/pages).
-
----
-
-## 3. What's left (roughly prioritized)
-
-**High value, unblocked now**
-1. ~~**Module intelligence (II.5)**~~ ✅ Done
-2. **Pages & infinite depth (II.6)** — multiple canvases (Work, Health, Finances) and embedding; the primary defense against canvas clutter.
-3. **External data binding (II.5.3)** — e.g. a calorie tracker that fetches an item's calories on the spot. The "generative UI + real functionality" moat.
-4. **Richer creation (II.3 + minimal-intrusion)** — the inline clarifying-question step; ramble-to-modules; voice and document/image upload.
-
-**Depends on the above / larger lifts**
-5. **Collaboration (II.7)** — shared pages, real-time sync, presence (needs real auth).
-6. **External integrations (II.9)** — Google Calendar, devices, generic APIs.
-7. **Computational hygiene & credits (II.11)** — cost model, archive/simplify nudges.
-8. **History UX (II.8 polish)** — snapshot viewer, global undo, change-log panel.
-
-**Platform / hardening**
-- Real authentication (currently anonymous session cookie) — prerequisite for collaboration.
-- Expand the component library beyond 6 primitives (date picker, calendar/heatmap, table, chart variants).
-- Module archive + restore.
-- Viewport spatial memory (persist pan/zoom per workspace).
-- Deployment (frontend + backend hosting, managed Postgres in place of SQLite at scale).
-
----
-
-## Known limitations / notes
-- **Persistence:** SQLite single-file DB; fine for one machine, not yet multi-instance.
-- **Auth:** anonymous per-browser session — no accounts, no cross-device sync.
-- **Offline mode:** with no/placeholder key the app falls back to fixed stub templates (intent-routed) so the pipeline still runs without spending credits.
-- **Billing:** live generation requires a funded Gemini key; failures degrade to a clean in-app message, not a crash.
+**Stage 2b: entry-as-interview, voice, sketch** (R-100, R-200 input surfaces, R-301–305) — builds on a now-finished reliability story. Plan to be written against the post-2a codebase.
