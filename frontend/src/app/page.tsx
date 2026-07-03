@@ -15,7 +15,7 @@ import { EmptyState } from "@/components/EmptyState";
 import { CommandPalette, type Action } from "@/components/CommandPalette";
 import { ShortcutsModal } from "@/components/ShortcutsModal";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
-import { IntroSplash } from "@/components/IntroSplash";
+import { EntryScreen } from "@/components/EntryScreen";
 import { InviteGate } from "@/components/InviteGate";
 import { Icon } from "@/components/Icon";
 import { api, ApiError } from "@/lib/api";
@@ -108,7 +108,13 @@ export default function Home() {
   const [focusReq, setFocusReq] = useState<{ id: string; n: number } | undefined>(undefined);
   const [fitReq, setFitReq] = useState(0);
   const [promptFocus, setPromptFocus] = useState(0);
+  // R-101: the entry-as-interview front door. `introOpen` shows it; `entrySubmit`
+  // carries a collected prompt to PromptBar's auto-submit (handoff to the normal
+  // preview flow). `introDecidedRef` pins the first-load visibility decision so a
+  // later empty canvas (e.g. archiving everything) can't re-trigger it.
   const [introOpen, setIntroOpen] = useState(false);
+  const [entrySubmit, setEntrySubmit] = useState<string | null>(null);
+  const introDecidedRef = useRef(false);
   // R-901: unclaimed sessions (prod, anon off) see the gate instead of the
   // canvas. `identityName` powers the header identity chip once claimed.
   const [gated, setGated] = useState(false);
@@ -214,14 +220,37 @@ export default function Home() {
     [saver],
   );
 
+  // Decide the entry-screen once, after the first data load settles: show it on
+  // a session's FIRST visit AND only when the workspace is empty. A returning
+  // user with content (or a freshly seeded starter) lands straight on their
+  // canvas (R-101). Deferred past `loading` so we know whether modules exist.
   useEffect(() => {
-    if (!sessionStorage.getItem("trus-intro-seen")) setIntroOpen(true);
-  }, []);
-  const dismissIntro = useCallback(() => {
+    if (loading || introDecidedRef.current) return;
+    introDecidedRef.current = true;
+    const firstVisit = !sessionStorage.getItem("trus-intro-seen");
+    // `modules` holds the active page's modules once loaded (seeded starters
+    // included), so an empty length here means a genuinely empty workspace.
+    if (firstVisit && modules.length === 0) setIntroOpen(true);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading]);
+
+  const closeEntry = useCallback(() => {
     setIntroOpen(false);
     sessionStorage.setItem("trus-intro-seen", "1");
-    setPromptFocus((n) => n + 1);
   }, []);
+  // Skip / Escape: dismiss to the canvas and focus the creation bar.
+  const handleEntrySkip = useCallback(() => {
+    closeEntry();
+    setPromptFocus((n) => n + 1);
+  }, [closeEntry]);
+  // R-101: the entry collected a prompt — hand it to PromptBar to auto-submit
+  // (produces a preview exactly like a typed prompt) and dissolve to the canvas.
+  const handleEntrySubmit = useCallback((prompt: string) => {
+    closeEntry();
+    setEntrySubmit(prompt);
+  }, [closeEntry]);
+  // R-105: re-open the entry mid-session from the EmptyState.
+  const handleStartConversation = useCallback(() => setIntroOpen(true), []);
 
   useEffect(() => {
     setSidebarCollapsed(localStorage.getItem("trus-sidebar-collapsed") === "1");
@@ -816,7 +845,9 @@ export default function Home() {
         fitRequest={fitReq}
       />
 
-      {!loading && activeModules.length === 0 && <EmptyState onPick={handlePickChip} />}
+      {!loading && activeModules.length === 0 && (
+        <EmptyState onPick={handlePickChip} onStartConversation={handleStartConversation} />
+      )}
 
       {showWelcome && (
         <div className="absolute top-[4.5rem] left-1/2 -translate-x-1/2 z-20 flex items-center gap-2.5 rounded-xl border border-[var(--border)] bg-[var(--surface)]/95 backdrop-blur px-4 py-2.5 shadow-lg max-w-[90vw] animate-pop">
@@ -844,6 +875,8 @@ export default function Home() {
         seed={seed}
         onSeedConsumed={handleSeedConsumed}
         focusSignal={promptFocus}
+        autoPrompt={entrySubmit}
+        onAutoPromptConsumed={() => setEntrySubmit(null)}
       />
 
       {convoOpen && (
@@ -923,7 +956,7 @@ export default function Home() {
         onConfirm={handleConfirmDeletePage}
         onCancel={handleCancelDeletePage}
       />
-      {introOpen && <IntroSplash onDone={dismissIntro} />}
+      {introOpen && <EntryScreen onSubmit={handleEntrySubmit} onSkip={handleEntrySkip} />}
     </div>
   );
 }

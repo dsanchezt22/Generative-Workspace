@@ -137,6 +137,10 @@ export const api = {
     request<StoredModule[]>(`/api/onboarding/seed${pageId ? `?page_id=${pageId}` : ""}`, {
       method: "POST",
     }),
+  // R-104: per-owner, usage-seeded starter prompts (owner-scoped server-side).
+  // Empty for a brand-new owner — the caller falls back to static chips.
+  suggestions: (limit?: number) =>
+    request<{ prompt: string }[]>(`/api/suggestions${limit ? `?limit=${limit}` : ""}`),
   generateModule: (prompt: string, pageId?: string, exchange?: ExchangeTurn[]) =>
     request<GenerateResponse>(`/api/modules/generate${pageId ? `?page_id=${pageId}` : ""}`, {
       method: "POST",
