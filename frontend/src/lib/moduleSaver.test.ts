@@ -143,8 +143,9 @@ describe("moduleSaver (R-602: one writer per module, no lost updates)", () => {
 
   it("flushAllKeepalive sends pending configs through patchKeepalive, skipping already-saved ids", async () => {
     // beforeunload: the normal debounced PATCH would be cancelled as the tab
-    // dies, so pending edits are re-fired through a keepalive fetch. Ids with
-    // nothing pending must be skipped (no redundant write).
+    // dies, so pending edits are re-fired through a keepalive fetch. An id
+    // whose save fully RESOLVED (nothing pending, nothing in flight) is
+    // already durable and must be skipped.
     vi.useFakeTimers();
     const patch = vi.fn(async (id: string, c: ModuleConfig) => saved(id, c));
     const patchKeepalive =
@@ -158,6 +159,44 @@ describe("moduleSaver (R-602: one writer per module, no lost updates)", () => {
     expect(patchKeepalive).toHaveBeenCalledTimes(2); // "done" skipped
     expect(patchKeepalive.mock.calls.map((c) => c[0]).sort()).toEqual(["m1", "m2"]);
     expect(patchKeepalive.mock.calls.find((c) => c[0] === "m1")?.[1].title).toBe("a");
+    vi.useRealTimers();
+  });
+
+  it("flushAllKeepalive re-fires an IN-FLIGHT save — the fetch the unload aborts is the at-risk edit", async () => {
+    // A save that is mid-flight with nothing newer pending is the edit most
+    // likely to be lost: the unload aborts its normal fetch and nothing sits
+    // in `pending` to re-fire it. The keepalive flush must cover it.
+    vi.useFakeTimers();
+    const patch = vi
+      .fn<(id: string, c: ModuleConfig) => Promise<StoredModule>>()
+      .mockImplementation(() => new Promise(() => {})); // never resolves — stays in flight
+    const patchKeepalive =
+      vi.fn<(id: string, c: ModuleConfig, rev?: number) => void>();
+    const s = createModuleSaver({ patch, patchKeepalive });
+    s.commit("m1", cfg("mid-flight"));
+    await vi.runOnlyPendingTimersAsync(); // debounce elapses → save now in flight
+    expect(patch).toHaveBeenCalledTimes(1);
+    s.flushAllKeepalive();
+    expect(patchKeepalive).toHaveBeenCalledTimes(1);
+    expect(patchKeepalive.mock.calls[0][0]).toBe("m1");
+    expect(patchKeepalive.mock.calls[0][1].title).toBe("mid-flight");
+    vi.useRealTimers();
+  });
+
+  it("flushAllKeepalive: a pending edit wins over the same id's in-flight config (newer state)", async () => {
+    vi.useFakeTimers();
+    const patch = vi
+      .fn<(id: string, c: ModuleConfig) => Promise<StoredModule>>()
+      .mockImplementation(() => new Promise(() => {})); // C1 stays in flight
+    const patchKeepalive =
+      vi.fn<(id: string, c: ModuleConfig, rev?: number) => void>();
+    const s = createModuleSaver({ patch, patchKeepalive });
+    s.commit("m1", cfg("C1"));
+    await vi.runOnlyPendingTimersAsync(); // C1 in flight
+    s.commit("m1", cfg("C2")); // newer edit made while C1 is saving
+    s.flushAllKeepalive();
+    expect(patchKeepalive).toHaveBeenCalledTimes(1); // one write per id
+    expect(patchKeepalive.mock.calls[0][1].title).toBe("C2"); // pending (newer) wins
     vi.useRealTimers();
   });
 });

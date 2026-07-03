@@ -25,8 +25,9 @@ export interface ModuleSaver {
   commit(id: string, config: ModuleConfig, delay?: number): void;
   flush(id: string): Promise<void>;
   flushAll(): Promise<void>;
-  // R-1101: synchronously re-fire every pending edit through patchKeepalive so
-  // it outlives an unloading tab (a normal debounced PATCH would be cancelled).
+  // R-1101: synchronously re-fire every not-yet-durable edit (pending AND
+  // in-flight) through patchKeepalive so it outlives an unloading tab — the
+  // unload cancels both debounced PATCHes and in-flight fetches.
   flushAllKeepalive(): void;
   status(): SaveStatus;
   subscribe(fn: () => void): () => void;
@@ -38,6 +39,9 @@ export function createModuleSaver(deps: Deps): ModuleSaver {
   const pending = new Map<string, ModuleConfig>();
   const timers = new Map<string, ReturnType<typeof setTimeout>>();
   const inFlight = new Set<string>();
+  // The config each in-flight PATCH is carrying — so flushAllKeepalive can
+  // re-fire a save whose normal fetch the unload is about to abort.
+  const inFlightConfigs = new Map<string, ModuleConfig>();
   const errored = new Set<string>();
   const listeners = new Set<() => void>();
   const retryDelay = new Map<string, number>();
@@ -54,6 +58,7 @@ export function createModuleSaver(deps: Deps): ModuleSaver {
     if (config === undefined || inFlight.has(id)) return;
     pending.delete(id);
     inFlight.add(id);
+    inFlightConfigs.set(id, config);
     notify();
     try {
       const saved = await deps.patch(id, config, knownRevs.get(id) ?? deps.getRev?.(id));
@@ -96,6 +101,7 @@ export function createModuleSaver(deps: Deps): ModuleSaver {
       }
     } finally {
       inFlight.delete(id);
+      inFlightConfigs.delete(id);
       notify();
       if (pending.has(id) && !timers.has(id)) schedule(id, 0); // follow-up for mid-flight edits
     }
@@ -123,9 +129,17 @@ export function createModuleSaver(deps: Deps): ModuleSaver {
     },
     flushAllKeepalive() {
       if (!deps.patchKeepalive) return;
-      // Only pending (unsaved) edits need re-firing; an id with nothing pending
-      // is either already persisted or in-flight — re-sending would be a
-      // redundant write. knownRevs wins over getRev for the same reason flush does.
+      // Everything not yet durable gets re-fired: pending edits AND in-flight
+      // saves — the unload aborts an in-flight save's normal fetch, making it
+      // the edit MOST at risk, not a covered one. Pending wins when both exist
+      // for an id (it's the newer state). Tradeoff: re-firing an in-flight save
+      // can double-write if the original lands anyway — harmless on unload (an
+      // idempotent full-config PATCH; a 409 is ignored by the keepalive path).
+      // knownRevs wins over getRev for the same reason flush does.
+      for (const [id, config] of inFlightConfigs) {
+        if (pending.has(id)) continue;
+        deps.patchKeepalive(id, config, knownRevs.get(id) ?? deps.getRev?.(id));
+      }
       for (const [id, config] of pending) {
         deps.patchKeepalive(id, config, knownRevs.get(id) ?? deps.getRev?.(id));
       }
@@ -140,6 +154,7 @@ export function createModuleSaver(deps: Deps): ModuleSaver {
       const t = timers.get(id);
       if (t) clearTimeout(t);
       timers.delete(id); pending.delete(id); errored.delete(id); inFlight.delete(id);
+      inFlightConfigs.delete(id);
       knownRevs.delete(id);
       notify();
     },
