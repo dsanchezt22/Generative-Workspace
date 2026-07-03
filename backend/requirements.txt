@@ -7,6 +7,9 @@ pydantic>=2.0.0
 # Lazy-imported (src/services/capture/capture.py) — the engine degrades gracefully
 # if it's absent, so it stays optional for a minimal install.
 Pillow>=10.0.0
+# R-211 document grounding: server-side PDF text extraction so non-multimodal
+# providers can still ground on uploaded documents. Lazy-imported (src/services/extract.py).
+pypdf>=4.0.0
 
 # Dev / test
 pytest>=8.0.0

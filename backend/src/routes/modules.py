@@ -165,7 +165,7 @@ def generate_from_file(
     try:
         with _track(sid, "file"):
             configs = orchestrator.generate_modules_from_file(
-                instruction, data, mime, existing_modules=existing
+                instruction, data, mime, existing_modules=existing, filename=file.filename
             )
     except ClarifyingQuestion as e:
         return GenerateResponse(question=e.question)

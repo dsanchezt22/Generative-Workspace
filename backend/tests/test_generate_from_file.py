@@ -1,8 +1,10 @@
 """POST /api/modules/generate_from_file.
 
-R-211: a file upload must be grounded in the document's actual content. When the
-active model configuration cannot read a file (offline/stub, or an openai-compat
-endpoint that can't take documents), the route refuses honestly (422) instead of
+R-211: a file upload must be grounded in the document's actual content on EVERY
+provider. When the active provider can't read a file natively (stub; openai-
+compat for non-image mimes), server-side text extraction (src.services.extract)
+grounds generation instead. Only when extraction ALSO can't read the file
+(unsupported mime, e.g. .bin) does the route refuse honestly (422) instead of
 silently degrading to a generic keyword template while claiming success.
 """
 
@@ -14,6 +16,8 @@ from src import llm
 from src.main import app
 from src.services import orchestrator
 
+from tests.conftest import fake_generate
+
 
 @pytest.fixture
 def client():
@@ -21,12 +25,15 @@ def client():
         yield c
 
 
-def test_generate_from_file_stub_mode_refuses_honestly(client):
-    """R-211: in stub mode the model never read the file, so the upload is refused
-    (422) — nothing is persisted and no 'Created …' turn is logged as a fake success."""
+def test_generate_from_file_stub_mode_unextractable_file_refuses_honestly(client):
+    """R-211: text/csv/md/pdf files now GROUND (via server-side extraction) even
+    in stub mode — see test_generate_from_file_stub_provider_txt_grounds_via_extraction
+    below. A genuinely unreadable file (unsupported mime, nothing to extract) still
+    refuses honestly (422): nothing persisted, no 'Created …' turn logged as a fake
+    success."""
     resp = client.post(
         "/api/modules/generate_from_file",
-        files={"file": ("workouts.txt", b"some file content", "text/plain")},
+        files={"file": ("data.bin", b"some binary content", "application/octet-stream")},
         data={"prompt": "track my workouts"},
     )
     assert resp.status_code == 422, resp.text
@@ -38,6 +45,103 @@ def test_generate_from_file_stub_mode_refuses_honestly(client):
     # … and no fake "Created …" assistant turn was logged.
     convo = client.get("/api/conversations").json()
     assert not any(m["text"].startswith("Created ") for m in convo if m["role"] == "assistant")
+
+
+def test_generate_from_file_stub_provider_txt_grounds_via_extraction(client, monkeypatch):
+    """R-211: the stub provider has no native way to read ANY file — but an
+    extractable file (.txt here) now grounds via server-side text extraction
+    instead of refusing. Assert the extracted document content reaches the
+    actual prompt sent to the model (not just the filename)."""
+    captured: dict = {}
+    inner = fake_generate(
+        json.dumps(
+            [{"title": "Grounded", "components": [{"id": "a", "type": "text_input", "label": "A"}]}]
+        )
+    )
+
+    def spy(*args, **kwargs):
+        captured["args"] = args
+        return inner(*args, **kwargs)
+
+    monkeypatch.setattr(llm, "generate", spy)
+
+    resp = client.post(
+        "/api/modules/generate_from_file",
+        files={"file": ("notes.txt", b"Budget line: rent $1200", "text/plain")},
+        data={"prompt": "track my rent"},
+    )
+    assert resp.status_code == 200, resp.text
+    prompt = captured["args"][0]
+    assert "Budget line: rent $1200" in prompt
+    assert "DOCUMENT CONTENT" in prompt
+
+
+def test_generate_from_file_openai_provider_csv_grounds_via_extraction(client, monkeypatch):
+    """R-211: the openai-compat provider only takes image/* natively — a .csv
+    upload must still ground via text extraction rather than refuse."""
+    monkeypatch.setenv("TRUS_LLM_PROVIDER", "openai")
+    monkeypatch.setenv("TRUS_LLM_BASE_URL", "http://localhost:11434/v1")
+    monkeypatch.setenv("TRUS_LLM_MODEL", "test-model")
+
+    captured: dict = {}
+    inner = fake_generate(
+        json.dumps(
+            [
+                {
+                    "title": "Grounded CSV",
+                    "components": [{"id": "a", "type": "text_input", "label": "A"}],
+                }
+            ]
+        )
+    )
+
+    def spy(*args, **kwargs):
+        captured["args"] = args
+        return inner(*args, **kwargs)
+
+    monkeypatch.setattr(llm, "generate", spy)
+
+    resp = client.post(
+        "/api/modules/generate_from_file",
+        files={"file": ("expenses.csv", b"Item,USD\nCoffee,4", "text/csv")},
+        data={"prompt": "turn this into a tracker"},
+    )
+    assert resp.status_code == 200, resp.text
+    prompt = captured["args"][0]
+    assert "Item,USD" in prompt
+    assert "Coffee,4" in prompt
+
+
+def test_generate_from_file_grounded_path_does_not_enter_semantic_cache(client, monkeypatch):
+    """R-903/R-1004: document content is per-upload and often sensitive — the
+    grounded (extraction) path must call _generate_validated directly and never
+    look up/store the shared semantic cache (gen_cache)."""
+    from src import db
+
+    before = db.cache_stats()["entries"]
+
+    monkeypatch.setattr(
+        llm,
+        "generate",
+        fake_generate(
+            json.dumps(
+                [
+                    {
+                        "title": "Grounded",
+                        "components": [{"id": "a", "type": "text_input", "label": "A"}],
+                    }
+                ]
+            )
+        ),
+    )
+    resp = client.post(
+        "/api/modules/generate_from_file",
+        files={"file": ("notes.txt", b"Some grounded document content here", "text/plain")},
+        data={"prompt": "make a tool"},
+    )
+    assert resp.status_code == 200, resp.text
+    after = db.cache_stats()["entries"]
+    assert after == before
 
 
 def test_generate_from_file_defaults_prompt_to_filename(client, monkeypatch):
@@ -116,8 +220,10 @@ def test_generate_from_file_non_stub_empty_sentinel_refuses(client, monkeypatch)
 
 
 def test_generate_from_file_non_stub_happy_path_persists_and_grounds(client, monkeypatch):
-    """A live model that actually reads the file returns modules grounded in it →
-    200, persisted onto the canvas, and the conversation logs the filename."""
+    """A live model that actually reads the file NATIVELY (Gemini — the only
+    provider that needs no text-extraction step, see _needs_text_extraction)
+    returns modules grounded in it → 200, persisted onto the canvas, and the
+    conversation logs the filename."""
     grounded = json.dumps(
         [
             {
@@ -133,6 +239,10 @@ def test_generate_from_file_non_stub_happy_path_persists_and_grounds(client, mon
             }
         ]
     )
+    # A non-stub-looking GEMINI_API_KEY resolves the provider to "gemini", which
+    # reads every mime natively — this exercises the multimodal path below
+    # (generate_from_file), not the text-extraction grounding path.
+    monkeypatch.setenv("GEMINI_API_KEY", "not-a-stub-key")
     monkeypatch.setattr(llm, "is_stub_mode", lambda: False)
     monkeypatch.setattr(llm, "generate_from_file", lambda *a, **k: grounded)
 

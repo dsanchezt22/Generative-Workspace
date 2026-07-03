@@ -15,6 +15,7 @@ from pydantic import ValidationError
 
 from src import llm
 from src.schema import ClarifyingQuestion, LLMError, ModuleConfig, RefusalError
+from src.services import extract
 
 _T = TypeVar("_T")
 
@@ -386,19 +387,72 @@ def generate_modules(
     return result
 
 
+def _needs_text_extraction(mime: str) -> bool:
+    """Mirrors llm.generate_from_file's provider-x-mime sentinel logic (see its
+    docstring) so we can decide, BEFORE the multimodal call, whether this
+    provider can read `mime` natively or would just bounce with the "{}"
+    sentinel: stub never reads a file natively (every mime needs extraction);
+    the openai-compat provider only takes image/* natively (everything else
+    needs extraction); gemini reads any mime natively (never needs it)."""
+    provider = llm.provider_info()["provider"]
+    if provider == "gemini":
+        return False
+    if provider == "openai":
+        return not mime.startswith("image/")
+    return True  # stub
+
+
+def _generate_modules_grounded(
+    prompt: str,
+    extracted_text: str,
+    filename: str | None,
+    existing_modules: list[ModuleConfig] | None,
+) -> list[ModuleConfig]:
+    """R-211 text-extraction grounding path: route the extracted document text
+    through the normal TEXT generation call so a provider with no (or limited)
+    multimodal input still grounds proposals in the file's actual content.
+
+    Deliberately calls _generate_validated directly instead of generate_modules()
+    — generate_modules() looks up/stores the semantic cache (gen_cache), which is
+    a shared seed pool that future unrelated prompts draw on (R-403's "seeds the
+    library" mechanism). Document content is per-upload and often sensitive
+    (R-903 owner-scoping, R-1004 no cross-user leakage) — it must never be
+    written into that shared pool, so this path skips cache lookup/store
+    entirely and always calls the model.
+    """
+    label = filename or "the uploaded file"
+    user_message = (
+        _seeded_system(prompt, existing_modules)
+        + f"\n\nDOCUMENT CONTENT (extracted from {label}):\n{extracted_text}"
+    )
+    return _generate_validated(
+        user_message, DECOMPOSE_SYSTEM_PROMPT, _parse_modules, expect_array=True
+    )
+
+
 def generate_modules_from_file(
     prompt: str,
     data: bytes,
     mime: str,
     existing_modules: list[ModuleConfig] | None = None,
+    filename: str | None = None,
 ) -> list[ModuleConfig]:
-    """Build tools shaped around an uploaded document/image (Gemini multimodal).
+    """Build tools shaped around an uploaded document/image.
 
-    R-211: this path claims to READ the uploaded document. If the active model
-    configuration can't read it (offline/stub, or an openai-compat endpoint that
-    can't take documents), llm.generate_from_file returns the "{}" sentinel and we
-    refuse honestly below — we never fall back to a generic keyword template, which
-    would fabricate a grounded-looking result from a file we never read."""
+    R-211: documents must ground on EVERY provider, not just Gemini's native
+    multimodal path. Before the multimodal call, if this provider can't read
+    `mime` natively (see _needs_text_extraction), try server-side text
+    extraction (src.services.extract) and — on success — ground generation via
+    the normal text path (_generate_modules_grounded). Extraction
+    failure/unsupported mime falls through to the native multimodal call below,
+    which refuses honestly (via the "{}" sentinel) if that can't read it either
+    — we never fabricate a generic keyword template from a file we never
+    actually read."""
+    if _needs_text_extraction(mime):
+        extracted = extract.text_from_file(data, mime, filename=filename)
+        if extracted is not None:
+            return _generate_modules_grounded(prompt, extracted, filename, existing_modules)
+
     user_message = (
         _seeded_system(prompt, existing_modules)
         + "\n\nA file is attached above. Read it and build tools shaped around its ACTUAL content — "
