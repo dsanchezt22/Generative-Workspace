@@ -3,6 +3,7 @@ from contextlib import contextmanager
 from unittest.mock import patch
 
 import pytest
+from src import db
 from src.schema import ClarifyingQuestion, RefusalError
 from src.services import orchestrator
 from src.stub_templates import pick_system
@@ -213,12 +214,124 @@ def test_recent_conversation_single_oversized_message_keeps_recent_tail():
     assert "TAIL-SENTINEL" in prompt_used
 
 
+# --- R-803: the owner's profile shapes generation context ---
+
+
+def test_profile_fact_reaches_the_model_message():
+    arr = json.dumps(
+        [{"title": "A", "components": [{"id": "x", "type": "text_input", "label": "X"}]}]
+    )
+    db.profile_add(
+        "owner-profile-reach", "fact", "a distinctive narwhal-owner fact", source="manual"
+    )
+    with _fake_llm(arr) as mock_gen:
+        orchestrator.generate_modules("plan my profile-aware prompt", owner="owner-profile-reach")
+    prompt_used = mock_gen.call_args[0][0]
+    assert "What I know about you:" in prompt_used
+    assert "a distinctive narwhal-owner fact" in prompt_used
+
+
+def test_no_profile_omits_the_profile_block():
+    arr = json.dumps(
+        [{"title": "A", "components": [{"id": "x", "type": "text_input", "label": "X"}]}]
+    )
+    with _fake_llm(arr) as mock_gen:
+        orchestrator.generate_modules("plan a trip with no profile", owner="owner-no-profile")
+    prompt_used = mock_gen.call_args[0][0]
+    assert "What I know about you:" not in prompt_used
+
+
+def test_profile_context_bounded_to_about_800_chars():
+    arr = json.dumps(
+        [{"title": "A", "components": [{"id": "x", "type": "text_input", "label": "X"}]}]
+    )
+    for i in range(20):
+        db.profile_add(
+            "owner-profile-bounded", "fact", f"profile fact number {i} " * 5, source="manual"
+        )
+    with _fake_llm(arr) as mock_gen:
+        orchestrator.generate_modules(
+            "plan my bounded profile prompt", owner="owner-profile-bounded"
+        )
+    prompt_used = mock_gen.call_args[0][0]
+    start = prompt_used.index("What I know about you:")
+    end = prompt_used.index("\n\nReturn the adapted", start)
+    block = prompt_used[start:end]
+    assert len(block) <= 800 + 100  # header + slack around the ~800-char budget
+
+
+def test_profile_never_crosses_owners_in_generation_context():
+    """R-903: owner B's fact must never reach owner A's generation prompt."""
+    db.profile_add("owner-profile-a", "fact", "owner-a-only-distinctive-fact", source="manual")
+    db.profile_add("owner-profile-b", "fact", "owner-b-only-distinctive-fact", source="manual")
+    arr = json.dumps(
+        [{"title": "A", "components": [{"id": "x", "type": "text_input", "label": "X"}]}]
+    )
+    with _fake_llm(arr) as mock_gen:
+        orchestrator.generate_modules("plan my isolation-check prompt", owner="owner-profile-a")
+    prompt_used = mock_gen.call_args[0][0]
+    assert "owner-a-only-distinctive-fact" in prompt_used
+    assert "owner-b-only-distinctive-fact" not in prompt_used
+
+
+def test_profile_not_reached_on_grounded_file_path():
+    """R-803: doc content dominates the grounded-file path — same exclusion as
+    the conversation block. generate_modules_from_file has no `owner` param at
+    all (nothing to look up), so a profile fact for "local" (the default owner
+    other callers use) must never leak into a file-grounded generation."""
+    db.profile_add("local", "fact", "a distinctive local-owner fact", source="manual")
+    grounded_arr = json.dumps(
+        [{"title": "A", "components": [{"id": "x", "type": "text_input", "label": "X"}]}]
+    )
+    captured: dict = {}
+
+    def fake_generate(prompt, system=None, *, schema=None, expect_array=False):
+        captured["prompt"] = prompt
+        result = gen_result(grounded_arr)
+        orchestrator.llm.last_call.set(result)
+        return result
+
+    with (
+        patch("src.services.orchestrator.llm.is_stub_mode", return_value=False),
+        patch("src.services.orchestrator.llm.generate", side_effect=fake_generate),
+        patch("src.services.extract.text_from_file", return_value="extracted document text"),
+    ):
+        orchestrator.generate_modules_from_file(
+            "build tools from this doc", b"data", "application/pdf"
+        )
+    assert "What I know about you:" not in captured["prompt"]
+
+
+def test_profile_clear_removes_fact_from_future_generation_context():
+    """R-804/R-1003 end-to-end: a distinctive profile string is GONE after
+    clear — not in profile_list, and not in any future generation context."""
+    owner = "owner-erasure"
+    db.profile_add(owner, "fact", "distinctive-erasure-fact-xyz", source="manual")
+    arr = json.dumps(
+        [{"title": "A", "components": [{"id": "x", "type": "text_input", "label": "X"}]}]
+    )
+    with _fake_llm(arr) as mock_gen:
+        orchestrator.generate_modules("plan my erasure-check prompt one", owner=owner)
+    assert "distinctive-erasure-fact-xyz" in mock_gen.call_args[0][0]
+
+    assert db.profile_clear(owner) == 1
+    assert db.profile_list(owner) == []
+
+    with _fake_llm(arr) as mock_gen2:
+        orchestrator.generate_modules(
+            "plan my erasure-check prompt two, totally different wording", owner=owner
+        )
+    prompt_after_clear = mock_gen2.call_args[0][0]
+    assert "distinctive-erasure-fact-xyz" not in prompt_after_clear
+    assert "What I know about you:" not in prompt_after_clear
+
+
 # --- Stage-2b backlog: composed-prompt token cap (_MAX_PROMPT_CHARS) ---
 
 
 def test_cap_composed_prompt_is_a_noop_under_budget():
-    result = orchestrator._cap_composed_prompt("h", "c", "v", "e", "t")
-    assert result == "hcvet"
+    result = orchestrator._cap_composed_prompt("h", "c", "v", "p", "e", "t")
+    assert result == "hcvpet"
 
 
 def test_cap_composed_prompt_never_truncates_head_exchange_or_tail():
@@ -227,42 +340,54 @@ def test_cap_composed_prompt_never_truncates_head_exchange_or_tail():
     exchange_block = "\n\nConversation so far:\nQ: Which city?\nA: Tokyo" * 20
     context = "C" * 20000
     convo_block = "V" * 20000
-    result = orchestrator._cap_composed_prompt(head, context, convo_block, exchange_block, tail)
+    profile_block = "P" * 20000
+    result = orchestrator._cap_composed_prompt(
+        head, context, convo_block, profile_block, exchange_block, tail
+    )
     assert len(result) <= orchestrator._MAX_PROMPT_CHARS
     assert result.startswith(head)
     assert result.endswith(tail)
     assert exchange_block in result
 
 
-def test_cap_composed_prompt_truncates_conversation_before_module_context():
+def test_cap_composed_prompt_truncates_conversation_and_profile_before_module_context():
     """When the module-context block alone fits comfortably but the
-    conversation block is oversized, the conversation is cut (or dropped)
-    first — module-context stays fully intact."""
+    conversation/profile blocks are oversized, those are cut (or dropped)
+    first — module-context stays fully intact. Conversation and profile share
+    the same lowest priority tier (R-803)."""
     head = "User request: a distinctive raw prompt\n\n"
     tail = "\n\nReturn the adapted ModuleConfig JSON array."
     exchange_block = "\n\nConversation so far:\nQ: Which city?\nA: Tokyo"
     context = "\n\nExisting modules on canvas:\n- Module: field_a, field_b"
     convo_block = "\n\nRecent conversation:\n" + ("user: filler turn. " * 2000)
-    result = orchestrator._cap_composed_prompt(head, context, convo_block, exchange_block, tail)
+    profile_block = "\n\nWhat I know about you:\n- (fact) a distinctive profile fact"
+    result = orchestrator._cap_composed_prompt(
+        head, context, convo_block, profile_block, exchange_block, tail
+    )
     assert len(result) <= orchestrator._MAX_PROMPT_CHARS
     assert context in result  # module-context untouched
     assert convo_block not in result  # conversation was cut to fit
+    assert profile_block not in result  # profile squeezed out alongside it
 
 
 def test_cap_composed_prompt_also_truncates_module_context_when_conversation_alone_is_not_enough():
-    """When even fully dropping the conversation block isn't enough, the
-    module-context detail is trimmed too (still never head/exchange/tail)."""
+    """When even fully dropping the conversation/profile blocks isn't enough,
+    the module-context detail is trimmed too (still never head/exchange/tail)."""
     head = "User request: another distinctive raw prompt\n\n"
     tail = "\n\nReturn the adapted ModuleConfig JSON array."
     exchange_block = "\n\nConversation so far:\nQ: Which city?\nA: Tokyo"
     context = "\n\nExisting modules on canvas:\n" + ("- Module: field_a, field_b\n" * 2000)
     convo_block = "\n\nRecent conversation:\nuser: hi"
-    result = orchestrator._cap_composed_prompt(head, context, convo_block, exchange_block, tail)
+    profile_block = "\n\nWhat I know about you:\n- (fact) some fact"
+    result = orchestrator._cap_composed_prompt(
+        head, context, convo_block, profile_block, exchange_block, tail
+    )
     assert len(result) <= orchestrator._MAX_PROMPT_CHARS
     assert result.startswith(head)
     assert result.endswith(tail)
     assert exchange_block in result
     assert convo_block not in result  # conversation dropped first
+    assert profile_block not in result  # profile dropped too
     assert context not in result  # and module-context also had to be trimmed
 
 
@@ -270,16 +395,19 @@ def test_cap_composed_prompt_keeps_all_protected_content_when_it_alone_exceeds_c
     """Safety-critical branch: when the PROTECTED content (head + exchange +
     tail) alone already exceeds _MAX_PROMPT_CHARS, it is STILL never truncated —
     the raw user prompt and every exchange answer survive in full — and the
-    lower-priority blocks (conversation, module-context) are dropped to zero.
-    The invariant is "never drop protected content", even at the cost of
-    overshooting the cap."""
+    lower-priority blocks (conversation, profile, module-context) are dropped
+    to zero. The invariant is "never drop protected content", even at the cost
+    of overshooting the cap."""
     user_prompt = "UP-START " + ("u" * 15000) + " UP-END"
     head = f"User request: {user_prompt}\n\n"
     exchange_block = "\n\nConversation so far:\nQ: Which city?\nA: TOKYO-ANSWER-SENTINEL"
     tail = "\n\nReturn the adapted ModuleConfig JSON array."
     context = "\n\nExisting modules on canvas:\n- Module: field_a, field_b"
     convo_block = "\n\nRecent conversation:\nuser: some earlier chatter"
-    result = orchestrator._cap_composed_prompt(head, context, convo_block, exchange_block, tail)
+    profile_block = "\n\nWhat I know about you:\n- (fact) some earlier fact"
+    result = orchestrator._cap_composed_prompt(
+        head, context, convo_block, profile_block, exchange_block, tail
+    )
     # Protected content is fully intact even though the total exceeds the cap.
     assert user_prompt in result
     assert "TOKYO-ANSWER-SENTINEL" in result
@@ -288,6 +416,7 @@ def test_cap_composed_prompt_keeps_all_protected_content_when_it_alone_exceeds_c
     assert exchange_block in result
     # The lower-priority blocks were dropped entirely to fit.
     assert convo_block not in result
+    assert profile_block not in result
     assert context not in result
     assert result == head + exchange_block + tail
     # And the composed length is exactly the protected content — nothing else.

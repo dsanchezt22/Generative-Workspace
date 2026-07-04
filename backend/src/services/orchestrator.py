@@ -15,7 +15,7 @@ from typing import TypeVar
 
 from pydantic import ValidationError
 
-from src import llm
+from src import db, llm
 from src.schema import ClarifyingQuestion, DataSource, LLMError, ModuleConfig, RefusalError
 from src.services import extract
 from src.services.live_data import ALLOWED_PROVIDERS
@@ -249,6 +249,34 @@ def _conversation_block(messages: list[dict] | None) -> str:
     return "\n\nRecent conversation:\n" + "\n".join(lines)
 
 
+# R-803: cap on the rendered "What I know about you:" block — mirrors
+# _CONVERSATION_CONTEXT_BUDGET's bounded-overall-length (not per-fact)
+# approach so an established profile never dominates the prompt.
+_PROFILE_CONTEXT_BUDGET = 800
+_PROFILE_CONTEXT_MAX_FACTS = 10
+
+
+def _profile_block(facts: list[dict] | None) -> str:
+    """Render the owner's profile (db.profile_list, most-recently-updated
+    first) as a bounded "What I know about you:" context block, so a
+    returning user's proposals are shaped by what Trus has already learned
+    about them (R-803). Mirrors _conversation_block's budgeting: only the
+    ~10 most recent facts are even considered, then bounded to ~800 chars
+    total; when it doesn't fit, the OLDEST of those ~10 (the tail of this
+    most-recent-first list) are dropped first."""
+    if not facts:
+        return ""
+    lines = [f"- ({f['kind']}) {f['text']}" for f in facts[:_PROFILE_CONTEXT_MAX_FACTS]]
+    while lines and sum(len(x) for x in lines) + len(lines) - 1 > _PROFILE_CONTEXT_BUDGET:
+        lines.pop()
+    if not lines:
+        # Even the single most recent fact alone exceeds the budget — keep its
+        # head rather than drop it entirely.
+        head = f"- ({facts[0]['kind']}) {facts[0]['text']}"
+        lines = [head[:_PROFILE_CONTEXT_BUDGET]]
+    return "\n\nWhat I know about you:\n" + "\n".join(lines)
+
+
 def _seeded_prompt(prompt: str, existing_modules: list[ModuleConfig] | None = None) -> str:
     """Ground generation with the nearest preloaded skeleton, which the model is
     told to adapt to the request. This is "preloaded templates that adjust to the
@@ -384,27 +412,38 @@ Rules:
 
 
 def _cap_composed_prompt(
-    head: str, context: str, convo_block: str, exchange_block: str, tail: str
+    head: str,
+    context: str,
+    convo_block: str,
+    profile_block: str,
+    exchange_block: str,
+    tail: str,
 ) -> str:
-    """Stage-2b backlog: bound the final composed message to `_MAX_PROMPT_CHARS`.
-    `head` (the raw user request + seed skeleton) and `exchange_block` (the
-    interview answers) are NEVER truncated — the model needs both to do the
-    job and to avoid re-asking an already-answered question. When over budget,
-    the LOWEST-priority blocks are cut first: the conversation block, then the
-    module-context detail."""
-    full = head + context + convo_block + exchange_block + tail
+    """Stage-2b backlog (extended for R-803's profile block): bound the final
+    composed message to `_MAX_PROMPT_CHARS`. `head` (the raw user request +
+    seed skeleton) and `exchange_block` (the interview answers) are NEVER
+    truncated — the model needs both to do the job and to avoid re-asking an
+    already-answered question. When over budget, the LOWEST-priority blocks
+    are cut first: conversation and profile share that lowest tier (profile
+    is no higher priority than conversation — conversation keeps the existing
+    priority within the tier when both must shrink), then the module-context
+    detail is trimmed only as a last resort."""
+    full = head + context + convo_block + profile_block + exchange_block + tail
     if len(full) <= _MAX_PROMPT_CHARS:
         return full
     protected_len = len(head) + len(exchange_block) + len(tail)
     budget = max(0, _MAX_PROMPT_CHARS - protected_len)
     if len(context) >= budget:
-        # No room left for any conversation block; module-context itself must
+        # No room left for conversation OR profile; module-context itself must
         # also be trimmed to what's left of the budget.
         convo_block = ""
+        profile_block = ""
         context = context[:budget]
     else:
-        convo_block = convo_block[: budget - len(context)]
-    return head + context + convo_block + exchange_block + tail
+        remaining = budget - len(context)
+        convo_block = convo_block[:remaining]
+        profile_block = profile_block[: max(0, remaining - len(convo_block))]
+    return head + context + convo_block + profile_block + exchange_block + tail
 
 
 def _seeded_system(
@@ -413,6 +452,7 @@ def _seeded_system(
     seed_override: list | None = None,
     exchange_context: str | None = None,
     recent_messages: list[dict] | None = None,
+    profile_facts: list[dict] | None = None,
 ) -> str:
     from src.stub_templates import pick_system
 
@@ -425,6 +465,11 @@ def _seeded_system(
     # the generate/preview routes only — never the grounded-file path, where
     # document content already dominates). Bounded, never the cache key.
     convo_block = _conversation_block(recent_messages)
+    # R-803: the owner's profile (db.profile_list(owner), fetched by
+    # generate_modules — never the grounded-file path, same exclusion as the
+    # conversation block above: document content already dominates there).
+    # Bounded, never the cache key.
+    profile_block = _profile_block(profile_facts)
     # R-102: the folded interview Q/A (built by the route from GenerateRequest.exchange)
     # reaches the model here so a multi-turn clarifying chain sees ALL prior answers —
     # never the semantic-cache key (see generate_modules — that stays the raw `prompt`).
@@ -446,7 +491,7 @@ def _seeded_system(
     tail = "\n\nReturn the adapted ModuleConfig JSON array."
     # Stage-2b backlog: cap the total composed size AFTER everything above is
     # built — see _cap_composed_prompt's truncation priority.
-    return _cap_composed_prompt(head, context, convo_block, exchange_block, tail)
+    return _cap_composed_prompt(head, context, convo_block, profile_block, exchange_block, tail)
 
 
 @dataclass
@@ -569,7 +614,15 @@ def generate_modules(
     `recent_messages` (R-302: the owner's last ~10 persisted `messages` rows for
     the current page, oldest-first — see db.recent_messages) also reaches the
     model via `_seeded_system` only, never the cache key: an identical re-prompt
-    still cache-HITs regardless of how the conversation has moved on since."""
+    still cache-HITs regardless of how the conversation has moved on since.
+    `owner`'s profile (R-803: db.profile_list(owner), the ~10 most-recently-
+    updated facts) is fetched HERE (not by the caller, unlike recent_messages —
+    `owner` is already this function's own parameter) and reaches the model via
+    `_seeded_system` only, never the cache key: an identical re-prompt still
+    cache-HITs regardless of what the owner's profile looks like. Skipped
+    entirely on a cache hit (nothing to compose) and never reached by the
+    grounded-file path (_generate_modules_grounded doesn't thread an owner
+    through at all — document content already dominates there)."""
     last_plan.set(None)
     if llm.is_stub_mode():
         from src.stub_templates import pick_system
@@ -593,12 +646,16 @@ def generate_modules(
             return [ModuleConfig.model_validate(c) for c in cached]
         except ValidationError:
             pass  # stale/incompatible cache entry → fall through and regenerate
+    # R-803: the owner's profile shapes the generation prompt (see docstring
+    # above) — fetched here, not by the route, since `owner` is already ours.
+    profile_facts = db.profile_list(owner)
     user_message = _seeded_system(
         prompt,
         existing_modules,
         seed_override=cached if mode == "seed" else None,
         exchange_context=exchange_context,
         recent_messages=recent_messages,
+        profile_facts=profile_facts,
     )
     try:
         parsed = _generate_validated(

@@ -47,5 +47,12 @@ async def delete_profile(profile_id: str, request: Request) -> None:
 
 @router.delete("/profile")
 async def clear_profile(request: Request) -> dict:
+    """R-804/R-1003: real erasure — `db.profile_clear` issues a hard SQL DELETE
+    (see db.py), not a soft/tombstone flag, so a cleared fact is gone from
+    every future read (profile_list) and generation context (orchestrator's
+    "What I know about you:" block). No full-account/data erasure path exists
+    yet (grepped routes/db — Stage 1 identity never added one); this route is
+    the erasure surface for now. A full-account erasure (revoking the user row
+    + cascading every owner-scoped table) is a Stage-4 item, not this one."""
     sid = _owner_id(request)
     return {"deleted": db.profile_clear(sid)}
