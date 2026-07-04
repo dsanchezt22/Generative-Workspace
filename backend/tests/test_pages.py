@@ -300,15 +300,16 @@ def test_page_module_counts_owner_scoped(client, client2):
     assert client2.get("/api/pages/counts").json() == {}
 
 
-def test_migration_adds_portal_columns_idempotently():
+def test_migration_adds_portal_columns_idempotently(tmp_path):
     """A legacy pages table (no portal cols) gains portal_x/portal_y on migrate,
     and a second migrate pass is a no-op (a re-ALTER would raise 'duplicate
-    column name')."""
+    column name'). Uses its OWN tmp DB (never the shared _db_path()) so it can't
+    perturb the concurrent-migration race test's isolation."""
     import sqlite3
 
     from src import db as dbmod
 
-    conn = sqlite3.connect(dbmod._db_path())
+    conn = sqlite3.connect(tmp_path / "legacy.db")
     try:
         # Simulate a pre-portal DB: pages WITHOUT the portal columns, then the
         # rest of the schema (pages' CREATE IF NOT EXISTS is skipped → stays legacy).

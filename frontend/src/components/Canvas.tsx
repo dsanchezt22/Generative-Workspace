@@ -424,18 +424,28 @@ export function Canvas({
     [],
   );
 
-  // Bounding box of all modules on the page (world coordinates).
+  // Bounding box of all modules AND child portal tiles on the page (world
+  // coordinates). Portals live in a negative-Y shelf above the modules, so
+  // including them here keeps fit-to-content framing them (otherwise the shelf
+  // sits above the viewport) — this is what makes a fresh child portal visible on
+  // an otherwise-populated parent instead of stranded off-screen.
   const contentBounds = useCallback(() => {
-    if (modules.length === 0) return null;
+    const kids = childPages ?? [];
+    if (modules.length === 0 && kids.length === 0) return null;
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
     for (const m of modules) {
       const { x, y, width } = m.config.layout;
       minX = Math.min(minX, x); minY = Math.min(minY, y);
       maxX = Math.max(maxX, x + (width || 372)); maxY = Math.max(maxY, y + heightOf(m));
     }
+    kids.forEach((p, i) => {
+      const pos = portalPosition(p, i);
+      minX = Math.min(minX, pos.x); minY = Math.min(minY, pos.y);
+      maxX = Math.max(maxX, pos.x + PORTAL_W); maxY = Math.max(maxY, pos.y + PORTAL_H);
+    });
     return { minX, minY, maxX, maxY };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [modules, heights, heightOf]);
+  }, [modules, heights, heightOf, childPages]);
 
   const fitToContent = useCallback(() => {
     const rect = containerRef.current?.getBoundingClientRect();

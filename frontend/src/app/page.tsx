@@ -355,6 +355,16 @@ export default function Home() {
           pendingFocusRef.current = null;
           setSelectedId(id);
           setFocusReq({ id, n: Date.now() });
+        } else if (
+          // R-502 discoverability: portal tiles live in a shelf ABOVE the module
+          // grid, so a raw {0,0,1} view leaves them above the viewport. On the
+          // FIRST visit of a page that has child portals (no saved view yet), defer
+          // a fit so modules + the portal shelf land framed together. A page the
+          // user has already arranged keeps its saved view (no regression).
+          pages.some((p) => (p.parent_id ?? null) === activePageId) &&
+          !localStorage.getItem(`trus-view-${activePageId}`)
+        ) {
+          window.setTimeout(() => setFitReq((n) => n + 1), 180);
         }
       })
       .catch((err) => console.error("Failed to load modules for page", err));

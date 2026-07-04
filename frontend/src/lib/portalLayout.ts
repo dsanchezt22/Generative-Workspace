@@ -9,15 +9,21 @@
 export const PORTAL_W = 210;
 export const PORTAL_H = 120;
 
-// Auto-placement grid for a child whose portal position hasn't been set yet: a
-// tidy row-wrapping stack near the world origin, clearing the fixed 56px header
-// band (Y0 mirrors the module grid's clearance) so a freshly-nested page is
-// visible at the default view. Persistence (portal_x/portal_y) overrides this the
-// moment the user drags the tile — this is only the first guess.
+// Auto-placement for a child whose portal position hasn't been set yet: a tidy
+// row-wrapping SHELF in a negative-Y band ABOVE the module grid. The module
+// auto-grid starts at (32, 96) (page.tsx) — sharing that origin put portal[0] at
+// the EXACT world point of module[0], and since modules paint on top and capture
+// the pointer, that first tile was invisible/un-clickable until the user panned.
+// Modules only ever occupy y >= 96, so a band at y <= -48 can never collide with
+// them, regardless of module count. Canvas.contentBounds includes the portal
+// shelf, so fit-to-content keeps it framed (otherwise a negative-Y tile sits above
+// the default viewport). Persistence (portal_x/portal_y) overrides this the moment
+// the user drags the tile — this is only the first guess.
 const PER_ROW = 4;
 const GAP = 24;
 const X0 = 32;
-const Y0 = 96;
+// First (bottom) shelf row: one tile-height + a clear gap above the modules.
+const Y0 = -(PORTAL_H + 48); // = -168
 
 export interface PortalPoint {
   x: number;
@@ -30,7 +36,7 @@ export function autoPlacePortal(index: number): PortalPoint {
   const row = Math.floor(index / PER_ROW);
   return {
     x: X0 + col * (PORTAL_W + GAP),
-    y: Y0 + row * (PORTAL_H + GAP),
+    y: Y0 - row * (PORTAL_H + GAP), // rows stack UPWARD, staying clear of modules
   };
 }
 

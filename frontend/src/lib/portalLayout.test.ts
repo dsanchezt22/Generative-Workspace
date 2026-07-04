@@ -1,9 +1,15 @@
 import { describe, expect, it } from "vitest";
 import { autoPlacePortal, portalPosition, PORTAL_W, PORTAL_H } from "./portalLayout";
 
-describe("autoPlacePortal (R-502: grid stack for un-placed portals)", () => {
-  it("places the first portal at the grid origin", () => {
-    expect(autoPlacePortal(0)).toEqual({ x: 32, y: 96 });
+describe("autoPlacePortal (R-502: shelf ABOVE the module grid, no collision)", () => {
+  it("places the first portal on a negative-Y shelf, clear of the module lane", () => {
+    // The module auto-grid starts at (32, 96); the portal shelf must NOT share
+    // that origin (portal[0] would be occluded under module[0]).
+    expect(autoPlacePortal(0)).toEqual({ x: 32, y: -168 });
+  });
+
+  it("never lands in the module band (y >= 96)", () => {
+    for (let i = 0; i < 12; i++) expect(autoPlacePortal(i).y).toBeLessThan(96);
   });
 
   it("advances along a row before wrapping", () => {
@@ -13,10 +19,10 @@ describe("autoPlacePortal (R-502: grid stack for un-placed portals)", () => {
     expect(second.x).toBe(first.x + PORTAL_W + 24); // one tile + gap to the right
   });
 
-  it("wraps to a new row after PER_ROW (4) tiles", () => {
+  it("wraps UPWARD to a new row after PER_ROW (4) tiles", () => {
     const fourth = autoPlacePortal(4); // 5th tile → row 1, col 0
     expect(fourth.x).toBe(autoPlacePortal(0).x); // back to the first column
-    expect(fourth.y).toBe(autoPlacePortal(0).y + PORTAL_H + 24); // one row down
+    expect(fourth.y).toBe(autoPlacePortal(0).y - (PORTAL_H + 24)); // one row up (away from modules)
   });
 
   it("is deterministic (same index → same point)", () => {

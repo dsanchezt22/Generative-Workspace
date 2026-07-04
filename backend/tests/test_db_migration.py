@@ -42,10 +42,18 @@ def test_conn_sets_busy_timeout_and_wal(monkeypatch, tmp_path):
 
 def test_concurrent_migration_on_stale_db_does_not_double_alter(monkeypatch, tmp_path):
     """F8(b): several threads hitting a stale DB at once must not each run ALTER
-    TABLE. A widened migration window (sleep) makes the race deterministic."""
+    TABLE. A widened migration window (sleep) makes the race deterministic.
+
+    De-flaked (surfaced across stages under CI load): the workers used to ALSO
+    race on the one-time ``PRAGMA journal_mode = WAL`` switch — that mode-switch
+    contention (not the migration lock under test) is what raised spurious
+    'database is locked'. Pre-enabling WAL on the stale file removes it, so the
+    assertion depends only on the OUTCOME (no double-ALTER / no error), which the
+    double-checked _schema_lock guarantees regardless of thread interleaving."""
     dbfile = tmp_path / "stale.db"
     conn = sqlite3.connect(dbfile)
     conn.executescript(_STALE)
+    conn.execute("PRAGMA journal_mode = WAL")  # pre-switch so workers don't race the mode change
     conn.commit()
     conn.close()
 
@@ -55,7 +63,7 @@ def test_concurrent_migration_on_stale_db_does_not_double_alter(monkeypatch, tmp
     real_migrate = db._migrate
 
     def slow_migrate(c):
-        time.sleep(0.05)  # widen the race window so an unguarded migration collides
+        time.sleep(0.1)  # widen the race window so an unguarded migration reliably collides
         return real_migrate(c)
 
     monkeypatch.setattr(db, "_migrate", slow_migrate)
