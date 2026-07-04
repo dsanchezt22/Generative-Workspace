@@ -116,8 +116,20 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ name, icon, parent_id: parentId ?? null }),
     }),
-  updatePage: (id: string, patch: { name?: string; icon?: string | null; parent_id?: string | null }) =>
-    request<Page>(`/api/pages/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
+  updatePage: (
+    id: string,
+    patch: {
+      name?: string;
+      icon?: string | null;
+      parent_id?: string | null;
+      // R-504: dragging a child's portal tile persists its world placement.
+      portal_x?: number | null;
+      portal_y?: number | null;
+    },
+  ) => request<Page>(`/api/pages/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
+  // R-502: live module count per page for the portal tiles' cheap "N tools"
+  // preview (one grouped COUNT server-side — no child module configs loaded).
+  pageModuleCounts: () => request<Record<string, number>>("/api/pages/counts"),
   renamePage: (id: string, name: string) =>
     request<Page>(`/api/pages/${id}`, { method: "PATCH", body: JSON.stringify({ name }) }),
   reorderPages: (orderedIds: string[]) =>

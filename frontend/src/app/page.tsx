@@ -98,6 +98,9 @@ export default function Home() {
   const [archived, setArchived] = useState<StoredModule[]>([]);
   const [snapshotsOpen, setSnapshotsOpen] = useState(false);
   const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
+  // R-502: live module count per page, for the child-page portal tiles' cheap
+  // "N tools" preview. One grouped COUNT server-side — never loads child configs.
+  const [childCounts, setChildCounts] = useState<Record<string, number>>({});
   // R-801: the "remembers you" profile surface. ProfilePanel fetches + owns its
   // own facts state; page.tsx only toggles visibility and keeps it mutually
   // exclusive with the other right-hand panels.
@@ -276,6 +279,12 @@ export default function Home() {
     api.listConversation(pageId).then(setMessages).catch(() => {});
   }, []);
 
+  // R-502: refresh the per-page module counts for the portal tiles. Cheap
+  // (grouped COUNT), so it's fine to re-fetch on navigation and after generation.
+  const refreshChildCounts = useCallback(() => {
+    api.pageModuleCounts().then(setChildCounts).catch(() => {});
+  }, []);
+
   // Check invite-claim status first (R-901): an unclaimed session (prod, anon
   // off) gets the gate instead of the canvas, before any workspace data loads.
   // Then load pages, then modules + conversation for the first page. The
@@ -353,6 +362,14 @@ export default function Home() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activePageId]);
 
+  // R-502: keep the portal tiles' "N tools" counts fresh — refetch when the
+  // active page changes (incl. first load once activePageId resolves, and when
+  // returning to a parent after building in a child).
+  useEffect(() => {
+    if (!activePageId) return;
+    refreshChildCounts();
+  }, [activePageId, refreshChildCounts]);
+
   const handleNewModule = useCallback((m: StoredModule) => {
     setModules((prev) => {
       // The model/stub doesn't pick good canvas coordinates (it tends to emit
@@ -428,6 +445,18 @@ export default function Home() {
   const handleSelectPage = useCallback((id: string) => {
     setActivePageId(id);
     setRefineTarget(null);
+  }, []);
+
+  // R-504: dragging a child's portal tile persists its placement on the page row
+  // (owner-scoped server-side). Optimistic — the tile stays where the user dropped
+  // it while the PATCH lands; a failure logs but doesn't yank it back.
+  const handlePortalMove = useCallback(async (pageId: string, x: number, y: number) => {
+    setPages((prev) => prev.map((p) => (p.id === pageId ? { ...p, portal_x: x, portal_y: y } : p)));
+    try {
+      await api.updatePage(pageId, { portal_x: x, portal_y: y });
+    } catch (err) {
+      console.error("Failed to persist portal position", err);
+    }
   }, []);
 
   const handleCreatePage = useCallback(async (parentId?: string | null) => {
@@ -512,7 +541,13 @@ export default function Home() {
     }
     setModules((prev) => prev.filter((m) => m.page_id !== req.page.id));
     setPages((prev) => {
-      const remaining = prev.filter((p) => p.id !== req.page.id);
+      // R-503: mirror the server's reparent-not-orphan — the deleted page's
+      // direct children move up to its own parent (grandparent, or root), so the
+      // sidebar tree stays correct without a reload instead of orphaning them.
+      const grandparent = req.page.parent_id ?? null;
+      const remaining = prev
+        .filter((p) => p.id !== req.page.id)
+        .map((p) => ((p.parent_id ?? null) === req.page.id ? { ...p, parent_id: grandparent } : p));
       setActivePageId((cur) => (cur === req.page.id ? remaining[remaining.length - 1]?.id ?? null : cur));
       return remaining;
     });
@@ -686,6 +721,11 @@ export default function Home() {
   }, [selectedId, toggleSidebar, handleDuplicateModule, handleUndoModule]);
 
   const activeModules = modules.filter((m) => !m.page_id || m.page_id === activePageId);
+  // R-502: this page's direct children render as enterable portal tiles on its canvas.
+  const childPages = useMemo(
+    () => pages.filter((p) => (p.parent_id ?? null) === (activePageId ?? null)),
+    [pages, activePageId],
+  );
   const activePage = pages.find((p) => p.id === activePageId) ?? null;
   const inspectorModule = activeModules.find((m) => m.id === inspectorId) ?? null;
   const detailModule = activeModules.find((m) => m.id === detailId) ?? null;
@@ -864,6 +904,10 @@ export default function Home() {
         focusRequest={focusReq}
         fitRequest={fitReq}
         onSketchModules={(mods) => mods.forEach(handleNewModule)}
+        childPages={childPages}
+        childCounts={childCounts}
+        onEnterPortal={handleSelectPage}
+        onPortalMove={handlePortalMove}
       />
 
       {!loading && activeModules.length === 0 && (

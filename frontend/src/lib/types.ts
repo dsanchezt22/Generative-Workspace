@@ -284,6 +284,10 @@ export interface Page {
   icon?: string | null;
   parent_id?: string | null;
   position: number;
+  /** R-502/R-504: this child page's portal placement (world coords) on its
+   * parent's canvas. Null until dragged — the frontend then auto-places it. */
+  portal_x?: number | null;
+  portal_y?: number | null;
   created_at: string;
 }
 

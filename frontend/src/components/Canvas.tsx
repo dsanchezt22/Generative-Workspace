@@ -2,7 +2,8 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, ApiError } from "@/lib/api";
-import type { CommitModule, StoredModule } from "@/lib/types";
+import type { CommitModule, Page, StoredModule } from "@/lib/types";
+import { resolveIconName } from "@/lib/theme";
 import {
   rasterScale,
   screenToWorld,
@@ -11,6 +12,7 @@ import {
   type Point,
   type Stroke,
 } from "@/lib/sketchExport";
+import { PORTAL_H, PORTAL_W, portalPosition } from "@/lib/portalLayout";
 import { Icon } from "./Icon";
 import { Module } from "./Module";
 
@@ -53,6 +55,15 @@ interface Props {
   // parent's normal new-module path (placement + fit). Optional so Canvas renders
   // without it (the Sketch toggle simply won't reach generation).
   onSketchModules?: (modules: StoredModule[]) => void;
+  // R-502/R-504: child pages (parent_id === activePageId) render as enterable
+  // world-coord portal tiles BELOW the module layer. `childCounts` feeds each
+  // tile's cheap "N tools" preview; enter switches to that page; a drag persists
+  // the tile's placement (portal_x/portal_y). All optional so Canvas renders
+  // without portal wiring.
+  childPages?: Page[];
+  childCounts?: Record<string, number>;
+  onEnterPortal?: (pageId: string) => void;
+  onPortalMove?: (pageId: string, x: number, y: number) => void;
 }
 
 interface View {
@@ -112,6 +123,10 @@ export function Canvas({
   focusRequest,
   fitRequest,
   onSketchModules,
+  childPages,
+  childCounts,
+  onEnterPortal,
+  onPortalMove,
 }: Props) {
   const [view, setView] = useState<View>({ x: 0, y: 0, zoom: 1 });
   const [draggingModule, setDraggingModule] = useState<string | null>(null);
@@ -307,6 +322,75 @@ export function Canvas({
       beginGesture(e);
     },
     [beginGesture],
+  );
+
+  // ---------------------------------------------------------- portals (R-502) -
+  // Child-page portal tiles are world-coord objects on a layer BELOW the modules
+  // (rendered first → modules paint on top; a module drag always wins where they
+  // overlap). Drag/enter mirror the module gesture: WINDOW listeners for the
+  // gesture's life (reliable regardless of zoom/re-render, can never trigger a
+  // canvas pan). A pointerdown that moves past a small threshold is a DRAG (persists
+  // portal_x/portal_y on drop); one that doesn't is a CLICK (enter the page).
+  const [portalDrag, setPortalDrag] = useState<{ id: string; x: number; y: number } | null>(null);
+  const portalDragRef = useRef<{
+    pageId: string;
+    startClient: { x: number; y: number };
+    startPos: { x: number; y: number };
+    cur: { x: number; y: number };
+    moved: boolean;
+  } | null>(null);
+  // Latched props so the window-scoped up handler never fires a stale callback.
+  const onEnterPortalRef = useRef(onEnterPortal);
+  const onPortalMoveRef = useRef(onPortalMove);
+  useEffect(() => { onEnterPortalRef.current = onEnterPortal; }, [onEnterPortal]);
+  useEffect(() => { onPortalMoveRef.current = onPortalMove; }, [onPortalMove]);
+
+  const portalWinMove = useCallback((e: PointerEvent) => {
+    const ref = portalDragRef.current;
+    if (!ref) return;
+    const z = viewZoomRef.current || 1;
+    if (Math.abs(e.clientX - ref.startClient.x) > 3 || Math.abs(e.clientY - ref.startClient.y) > 3) {
+      ref.moved = true;
+    }
+    ref.cur = {
+      x: ref.startPos.x + (e.clientX - ref.startClient.x) / z,
+      y: ref.startPos.y + (e.clientY - ref.startClient.y) / z,
+    };
+    setPortalDrag({ id: ref.pageId, x: ref.cur.x, y: ref.cur.y });
+  }, []);
+
+  // One handler for pointerup AND pointercancel (self-referencing removal, same
+  // shape as the module winUp above): a settled drag persists the new placement;
+  // a no-move pointerup enters the page; a cancel never enters.
+  const portalWinUp = useCallback((e: PointerEvent) => {
+    window.removeEventListener("pointermove", portalWinMove);
+    window.removeEventListener("pointerup", portalWinUp);
+    window.removeEventListener("pointercancel", portalWinUp);
+    const ref = portalDragRef.current;
+    portalDragRef.current = null;
+    setPortalDrag(null);
+    if (!ref) return;
+    if (ref.moved) onPortalMoveRef.current?.(ref.pageId, ref.cur.x, ref.cur.y);
+    else if (e.type !== "pointercancel") onEnterPortalRef.current?.(ref.pageId);
+  }, [portalWinMove]);
+
+  const startPortalDrag = useCallback(
+    (e: React.PointerEvent, pageId: string, pos: { x: number; y: number }) => {
+      // Stop the canvas from panning / a module from reacting to this pointer.
+      e.stopPropagation();
+      e.preventDefault();
+      portalDragRef.current = {
+        pageId,
+        startClient: { x: e.clientX, y: e.clientY },
+        startPos: pos,
+        cur: { ...pos },
+        moved: false,
+      };
+      window.addEventListener("pointermove", portalWinMove);
+      window.addEventListener("pointerup", portalWinUp);
+      window.addEventListener("pointercancel", portalWinUp);
+    },
+    [portalWinMove, portalWinUp],
   );
 
   const ZOOM_MIN = 0.3, ZOOM_MAX = 2;
@@ -632,6 +716,62 @@ export function Canvas({
           pointerEvents: "none",
         }}
       >
+        {/* R-502/R-504: portal tiles for child pages — a world-coord layer BELOW
+            modules (rendered first → modules paint on top; a module drag wins any
+            overlap). R-1305: a matte, dashed "place you can enter", distinct from a
+            solid module card. R-1306: each tile is focusable + Enter/Space enters. */}
+        {childPages && childPages.length > 0 && (
+          <div style={{ pointerEvents: "auto" }} className="relative">
+            {childPages.map((page, i) => {
+              const dragging = portalDrag?.id === page.id;
+              const pos = dragging ? portalDrag : portalPosition(page, i);
+              const count = childCounts?.[page.id] ?? 0;
+              return (
+                <div
+                  key={page.id}
+                  role="button"
+                  tabIndex={0}
+                  aria-label={`Enter ${page.name}, ${count} ${count === 1 ? "tool" : "tools"}`}
+                  title={`Enter ${page.name}`}
+                  onPointerDown={(e) => startPortalDrag(e, page.id, portalPosition(page, i))}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      onEnterPortal?.(page.id);
+                    }
+                  }}
+                  className={`portal-tile group absolute flex flex-col justify-between select-none rounded-xl border border-dashed p-3 backdrop-blur-sm bg-[var(--surface-elevated)]/40 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] transition ${
+                    dragging
+                      ? "border-[var(--accent)] cursor-grabbing shadow-lg"
+                      : "border-[var(--border)] cursor-pointer hover:border-[var(--accent)]"
+                  }`}
+                  style={{ left: pos.x, top: pos.y, width: PORTAL_W, height: PORTAL_H }}
+                >
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span className="grid place-items-center w-8 h-8 shrink-0 rounded-lg bg-[var(--surface)] text-[var(--accent)]">
+                      <Icon name={resolveIconName(page.icon, page.name)} size={18} />
+                    </span>
+                    <span className="min-w-0">
+                      <span className="block truncate text-sm font-medium text-[var(--foreground)]">
+                        {page.name}
+                      </span>
+                      <span className="block text-[11px] text-[var(--muted)]">
+                        {count} {count === 1 ? "tool" : "tools"}
+                      </span>
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between text-[10px] uppercase tracking-wide text-[var(--muted)]">
+                    <span aria-hidden>Page</span>
+                    <span className="flex items-center gap-0.5 normal-case tracking-normal text-[11px] text-[var(--muted)] group-hover:text-[var(--accent)] group-focus-visible:text-[var(--accent)] transition">
+                      Enter <Icon name="chevronRight" size={12} />
+                    </span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
         <div style={{ pointerEvents: "auto" }} className="relative">
           {modules.map((m, i) => (
             <Module
