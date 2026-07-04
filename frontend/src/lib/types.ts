@@ -49,6 +49,18 @@ export interface DataSource {
   label?: string | null;
 }
 
+/** The `GET /api/live/{provider}` response shape (R-701/R-704, `routes/live.py`).
+ * `as_of` stays snake_case to match the wire payload exactly — `useLiveValue`
+ * maps it to `asOf`. */
+export interface LiveValuePayload {
+  value: number | null;
+  unit: string | null;
+  as_of: string | null;
+  source: string;
+  stale: boolean;
+  error: string | null;
+}
+
 export interface TextInput extends ComponentBase {
   type: "text_input";
   placeholder?: string | null;

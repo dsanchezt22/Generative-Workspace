@@ -1,4 +1,5 @@
-import type { Message, ModuleConfig, Page, Snapshot, StoredModule, StudioLayout, StudioUseCase } from "./types";
+import type { DataSource, LiveValuePayload, Message, ModuleConfig, Page, Snapshot, StoredModule, StudioLayout, StudioUseCase } from "./types";
+import { buildLiveQueryParams } from "./liveFormat";
 
 const BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";
 
@@ -249,6 +250,13 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ prompt }),
     }),
+  // R-701/R-704: the live-value refresh hook's fetch (`useLiveValue.ts`). GET,
+  // owner-gated via the session cookie (request() already sends
+  // credentials:"include"); query→params built by the shared, tested builder
+  // (weather: place OR lat+lon; nutrition: food).
+  liveValue: (provider: DataSource["provider"], query: DataSource["query"], refreshSecs: number) =>
+    request<LiveValuePayload>(`/api/live/${provider}?${buildLiveQueryParams(provider, query, refreshSecs)}`),
+
   workspaceInsights: (pageId?: string) =>
     request<GenerateResponse>(
       `/api/workspace/insights${pageId ? `?page_id=${pageId}` : ""}`,
