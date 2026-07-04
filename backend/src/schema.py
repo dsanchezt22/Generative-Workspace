@@ -454,6 +454,10 @@ class GenerateResponse(BaseModel):
 class InsertModulesRequest(BaseModel):
     configs: list[ModuleConfig]
     prompt: str | None = None
+    # R-802: the clarifying interview that produced these accepted tools, if any.
+    # Accretion fires HERE (on a confirmed insert), not on preview/generate — so a
+    # discarded draft never enters the profile. Same shape/cap as GenerateRequest.
+    exchange: list[ExchangeTurn] | None = Field(default=None, max_length=6)
 
 
 class PatchRequest(BaseModel):

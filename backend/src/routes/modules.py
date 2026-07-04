@@ -57,11 +57,11 @@ _PROFILE_GOAL_WORDS = ("want", "goal", "track")
 
 
 def _accrete_profile_facts(sid: str, exchange: list[ExchangeTurn] | None) -> None:
-    """Fires on a generate/preview call that RESOLVES an exchange into modules —
-    i.e. is called only after the orchestrator call below succeeds (no
-    ClarifyingQuestion/RefusalError/LLMError raised), so an unresolved interview
-    (still being asked follow-ups, or a refusal/error) never accretes anything.
-    Best-effort: a profile write must never break the generation response."""
+    """Fires on a CONFIRMED insert (POST /api/modules) that carries the exchange
+    which produced the accepted tools — so only a proposal the user actually
+    accepted accretes anything; a discarded preview draft never does. (Preview/
+    generate deliberately do NOT accrete: the user hasn't committed there yet.)
+    Best-effort: a profile write must never break the insert response."""
     if not exchange:
         return
     for turn in exchange[:3]:
@@ -157,7 +157,6 @@ def generate_module(
     except LLMError as e:
         raise HTTPException(status_code=503, detail=_llm_error_detail(e)) from None
     plan = orchestrator.last_plan.get()
-    _accrete_profile_facts(sid, body.exchange)
     stored = [db.insert_module(sid, c, page_id=page_id) for c in configs]
     _log(sid, "user", prompt, page_id=stored[0].page_id)
     for s in stored:
@@ -206,7 +205,6 @@ def preview_modules(
     except LLMError as e:
         raise HTTPException(status_code=503, detail=_llm_error_detail(e)) from None
     plan = orchestrator.last_plan.get()
-    _accrete_profile_facts(sid, body.exchange)
     deg = llm.last_call.get()
     return GenerateResponse(previews=configs, degraded=bool(deg and deg.degraded), plan=plan)
 
@@ -220,6 +218,9 @@ async def insert_modules(
     """Persist accepted preview tools onto the canvas."""
     sid = _owner_id(request)
     stored = [db.insert_module(sid, c, page_id=page_id) for c in body.configs]
+    # R-802: accrete profile facts from the interview that produced these tools —
+    # only now, on a confirmed accept, so discarded drafts never enter the profile.
+    _accrete_profile_facts(sid, body.exchange)
     if stored and body.prompt:
         _log(sid, "user", body.prompt, page_id=stored[0].page_id)
     for s in stored:

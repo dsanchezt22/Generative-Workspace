@@ -268,26 +268,24 @@ def test_profile_routes_require_owner_when_anon_disabled(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Accretion (R-802): a generate/preview call that resolves an exchange into
-# modules creates a visible, owner-scoped interview fact.
+# Accretion (R-802): accretion fires on the CONFIRMED insert (POST /api/modules)
+# that carries the interview exchange — not on preview/generate. So a discarded
+# draft never enters the profile; only a proposal the user actually accepted does.
 # ---------------------------------------------------------------------------
 
-
-@pytest.fixture(autouse=True)
-def _force_non_stub():
-    """These tests mock orchestrator.llm.generate to assert real-path behavior."""
-    with patch("src.services.orchestrator.llm.is_stub_mode", return_value=False):
-        yield
+CONFIG = {
+    "title": "Workout Log",
+    "components": [{"id": "exercise", "type": "text_input", "label": "Exercise"}],
+}
 
 
-def test_generate_with_exchange_accretes_an_interview_fact(client):
+def test_insert_with_exchange_accretes_an_interview_fact(client):
     exchange = [{"question": "What's your goal?", "answer": "I want to lose 10 pounds"}]
-    with patch("src.services.orchestrator.llm.generate", return_value=_gr(VALID_RAW)):
-        resp = client.post(
-            "/api/modules/generate",
-            json={"prompt": "track my weight", "exchange": exchange},
-        )
-    assert resp.status_code == 200, resp.text
+    resp = client.post(
+        "/api/modules",
+        json={"configs": [CONFIG], "prompt": "track my weight", "exchange": exchange},
+    )
+    assert resp.status_code == 201, resp.text
     profile = client.get("/api/profile").json()
     assert len(profile) == 1
     assert profile[0]["source"] == "interview"
@@ -295,14 +293,13 @@ def test_generate_with_exchange_accretes_an_interview_fact(client):
     assert profile[0]["kind"] == "goal"  # heuristic: "want"/"goal" → goal
 
 
-def test_preview_with_exchange_accretes_an_interview_fact(client):
+def test_insert_with_exchange_accretes_a_fact_kind(client):
     exchange = [{"question": "Where do you live?", "answer": "Austin, Texas"}]
-    with patch("src.services.orchestrator.llm.generate", return_value=_gr(VALID_RAW)):
-        resp = client.post(
-            "/api/modules/preview",
-            json={"prompt": "plan my week", "exchange": exchange},
-        )
-    assert resp.status_code == 200, resp.text
+    resp = client.post(
+        "/api/modules",
+        json={"configs": [CONFIG], "prompt": "plan my week", "exchange": exchange},
+    )
+    assert resp.status_code == 201, resp.text
     profile = client.get("/api/profile").json()
     assert len(profile) == 1
     assert profile[0]["source"] == "interview"
@@ -310,30 +307,58 @@ def test_preview_with_exchange_accretes_an_interview_fact(client):
     assert profile[0]["kind"] == "fact"  # no goal/want/track keyword
 
 
-def test_generate_without_exchange_does_not_accrete(client):
-    with patch("src.services.orchestrator.llm.generate", return_value=_gr(VALID_RAW)):
-        resp = client.post("/api/modules/generate", json={"prompt": "track my weight"})
+def test_insert_without_exchange_does_not_accrete(client):
+    resp = client.post("/api/modules", json={"configs": [CONFIG], "prompt": "track my weight"})
+    assert resp.status_code == 201, resp.text
+    assert client.get("/api/profile").json() == []
+
+
+def test_preview_does_not_accrete(client):
+    """The accretion seam moved OFF preview — a preview draft the user may still
+    discard must never touch the profile (R-802)."""
+    exchange = [{"question": "Where do you live?", "answer": "Austin, Texas"}]
+    with (
+        patch("src.services.orchestrator.llm.is_stub_mode", return_value=False),
+        patch("src.services.orchestrator.llm.generate", return_value=_gr(VALID_RAW)),
+    ):
+        resp = client.post(
+            "/api/modules/preview",
+            json={"prompt": "plan my week", "exchange": exchange},
+        )
     assert resp.status_code == 200, resp.text
     assert client.get("/api/profile").json() == []
 
 
-def test_accretion_is_bounded_to_three_facts(client):
-    exchange = [{"question": f"Q{i}?", "answer": f"Answer {i}"} for i in range(1, 5)]
-    with patch("src.services.orchestrator.llm.generate", return_value=_gr(VALID_RAW)):
+def test_generate_does_not_accrete(client):
+    """The accretion seam also moved OFF generate (the direct-build path)."""
+    exchange = [{"question": "What's your goal?", "answer": "I want to lose 10 pounds"}]
+    with (
+        patch("src.services.orchestrator.llm.is_stub_mode", return_value=False),
+        patch("src.services.orchestrator.llm.generate", return_value=_gr(VALID_RAW)),
+    ):
         resp = client.post(
             "/api/modules/generate",
-            json={"prompt": "plan my trip", "exchange": exchange},
+            json={"prompt": "track my weight", "exchange": exchange},
         )
     assert resp.status_code == 200, resp.text
+    assert client.get("/api/profile").json() == []
+
+
+def test_insert_accretion_is_bounded_to_three_facts(client):
+    exchange = [{"question": f"Q{i}?", "answer": f"Answer {i}"} for i in range(1, 5)]
+    resp = client.post(
+        "/api/modules",
+        json={"configs": [CONFIG], "prompt": "plan my trip", "exchange": exchange},
+    )
+    assert resp.status_code == 201, resp.text
     assert len(client.get("/api/profile").json()) == 3
 
 
-def test_accretion_is_owner_scoped(client, second_client):
+def test_insert_accretion_is_owner_scoped(client, second_client):
     exchange = [{"question": "Goal?", "answer": "I want to run a marathon"}]
-    with patch("src.services.orchestrator.llm.generate", return_value=_gr(VALID_RAW)):
-        client.post(
-            "/api/modules/generate",
-            json={"prompt": "track my training", "exchange": exchange},
-        )
+    client.post(
+        "/api/modules",
+        json={"configs": [CONFIG], "prompt": "track my training", "exchange": exchange},
+    )
     # second_client is a different (anonymous) owner — never sees client's accreted fact.
     assert second_client.get("/api/profile").json() == []
