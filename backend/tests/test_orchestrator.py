@@ -136,6 +136,62 @@ def test_refine_module_stub_raises_llm_error(monkeypatch):
         orchestrator.refine_module(_make_config(), "add a rest day checkbox")
 
 
+# --- R-705: the refine/single-module parse path strips a bad data_source too ---
+
+
+def test_refine_module_keeps_valid_data_source():
+    """REFINE_SYSTEM_PROMPT hands the model a ModuleConfig that may already carry
+    a valid data_source; a refine that preserves it keeps the binding intact."""
+    refined = json.dumps(
+        {
+            "title": "Calorie Tracker",
+            "components": [
+                {"id": "food", "type": "text_input", "label": "Food"},
+                {
+                    "id": "calories",
+                    "type": "kpi",
+                    "label": "Calories",
+                    "unit": "kcal",
+                    "data_source": {"provider": "nutrition", "query": {"food": "banana"}},
+                },
+            ],
+        }
+    )
+    with _fake_llm(refined):
+        config = orchestrator.refine_module(_make_config(), "keep the live calorie value")
+    kpi = config.components[1]
+    assert kpi.type == "kpi"
+    assert kpi.data_source is not None
+    assert kpi.data_source.provider == "nutrition"
+
+
+def test_refine_module_strips_corrupted_data_source_and_survives():
+    """If the model corrupts the nested data_source during a refine (out-of-domain
+    provider), the binding is stripped and the WHOLE module still validates —
+    same 'one bad nested field never kills the module' guarantee as decompose."""
+    refined = json.dumps(
+        {
+            "title": "Tracker",
+            "components": [
+                {"id": "food", "type": "text_input", "label": "Food"},
+                {
+                    "id": "price",
+                    "type": "kpi",
+                    "label": "Price",
+                    "data_source": {"provider": "stocks", "query": {"ticker": "AAPL"}},
+                },
+            ],
+        }
+    )
+    with _fake_llm(refined):
+        config = orchestrator.refine_module(_make_config(), "make it a stock price")
+    assert config.title == "Tracker"
+    assert len(config.components) == 2  # module survived intact
+    kpi = config.components[1]
+    assert kpi.type == "kpi"
+    assert kpi.data_source is None  # only the bad binding was dropped
+
+
 # --- context injection tests ---
 
 

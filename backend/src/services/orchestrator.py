@@ -276,6 +276,12 @@ def _parse_module_config(raw: str) -> ModuleConfig:
         raise RefusalError(str(data["refusal"]))
     if isinstance(data, dict) and "question" in data and len(data) == 1:
         raise ClarifyingQuestion(str(data["question"]))
+    # R-705: same strip-defense as _parse_modules — a corrupted/out-of-domain
+    # data_source (REFINE_SYSTEM_PROMPT hands the model a config that may already
+    # carry a valid one) is stripped before validation so it never kills the
+    # whole module; the component survives as manual entry.
+    if isinstance(data, dict):
+        _sanitize_module_data_sources(data)
     try:
         return ModuleConfig.model_validate(data)
     except ValidationError as e:

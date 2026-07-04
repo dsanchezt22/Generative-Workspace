@@ -482,3 +482,27 @@ def test_generate_modules_valid_weather_data_source_survives():
     metric = mods[0].components[0]
     assert metric.data_source is not None
     assert metric.data_source.provider == "weather"
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "not-a-dict",  # a bare string
+        [1, 2, 3],  # a list
+        42,  # an int
+        {"query": {"food": "banana"}},  # a dict missing `provider`
+        {"provider": "stocks", "query": {}},  # a well-formed out-of-domain provider
+    ],
+)
+def test_sanitize_data_source_strips_garbage_without_crashing(bad):
+    """Pin the sanitizer against non-dict and malformed data_source values: each
+    is stripped to None in place, never raising."""
+    component = {"id": "x", "type": "kpi", "label": "X", "data_source": bad}
+    orchestrator._sanitize_data_source(component)
+    assert component["data_source"] is None
+
+
+def test_sanitize_data_source_leaves_none_untouched():
+    component = {"id": "x", "type": "kpi", "label": "X"}
+    orchestrator._sanitize_data_source(component)
+    assert component.get("data_source") is None
