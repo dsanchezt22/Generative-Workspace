@@ -16,8 +16,9 @@ from typing import TypeVar
 from pydantic import ValidationError
 
 from src import llm
-from src.schema import ClarifyingQuestion, LLMError, ModuleConfig, RefusalError
+from src.schema import ClarifyingQuestion, DataSource, LLMError, ModuleConfig, RefusalError
 from src.services import extract
+from src.services.live_data import ALLOWED_PROVIDERS
 
 _T = TypeVar("_T")
 
@@ -341,6 +342,24 @@ HOW MANY TOOLS:
   • "my semester" → [Class Schedule (calendar), Assignment Tracker (table), GPA (kpi), Study Habits (calendar)]
   • "moving house" → [Moving Checklist (list), Budget (chart), Address Change (table), Timeline (calendar)]
 
+LIVE DATA BINDINGS (R-701/R-702/R-705): Metric, Kpi, Ring, Gauge, and ProgressBar MAY carry an
+optional "data_source" field — but ONLY when the user's intent clearly falls into one of these
+TWO launched domains. There are no others:
+- Calorie/food/nutrition intent → "data_source": {{"provider": "nutrition", "query": {{"food": "<item>"}}}}
+- Weather/trip/run/hike/outdoor intent → "data_source": {{"provider": "weather", "query": {{"place": "<city>"}}}}
+  (lat/lon also accepted: {{"lat": <num>, "lon": <num>}})
+Example — a calorie tracker's Kpi "Calories":
+  {{ "id": "calories", "type": "kpi", "label": "Calories", "unit": "kcal",
+     "data_source": {{"provider": "nutrition", "query": {{"food": "banana"}}}} }}
+Example — a trip planner's Metric "Saturday Forecast":
+  {{ "id": "forecast", "type": "metric", "label": "Saturday Forecast", "formula": "avg",
+     "source_component_id": "forecast",
+     "data_source": {{"provider": "weather", "query": {{"place": "Tokyo"}}}} }}
+For ANY other domain — stocks, flights, sports scores, currency rates, news, or anything else not
+listed above — do NOT emit a data_source, even if the user asks for "live" or "real-time" data.
+Leave the component as plain manual entry instead. Never fabricate a live binding for a source we
+don't actually have (R-705) — an unlaunched domain gets no live badge, not a fake one.
+
 Rules:
 1. Only the component types listed above. Pick the ones that make each tool LOOK right.
 2. Give EACH module a DISTINCT icon and accent so the system reads as a colour-coded set.
@@ -353,6 +372,8 @@ Rules:
    {{ "question": "<one short, specific question>" }}
 7. If illicit or impossible, output exactly: {{ "refusal": "<one-sentence reason>" }}
 8. Do not narrate. Output ONLY the JSON object above (or the single refusal/question object).
+9. Only bind "data_source" for the two launched domains above (nutrition, weather) — see
+   LIVE DATA BINDINGS. Every other domain stays manual entry, no data_source.
 """
 
 
@@ -431,6 +452,42 @@ class _Decomposition:
     modules: list[ModuleConfig]
 
 
+def _sanitize_data_source(component: dict) -> None:
+    """R-705 defense-in-depth: strip an invalid or out-of-domain `data_source`
+    from a raw (pre-Pydantic) component dict, in place.
+
+    `DataSource.provider` is a strict `Literal["weather", "nutrition"]`, so a
+    well-formed-but-wrong-domain value (e.g. "stocks") — or any other malformed
+    shape (an out-of-bounds `refresh_secs`, an oversized `query`, wrong value
+    types) — would otherwise fail `ModuleConfig.model_validate()` for the WHOLE
+    module, dropping every other component in it too. Sanitizing the raw dict
+    BEFORE that validation call means the model's mistake costs only the
+    live-data binding: the component keeps validating and renders as ordinary
+    manual entry (never a whole-module rejection)."""
+    raw = component.get("data_source")
+    if raw is None:
+        return
+    if not isinstance(raw, dict):
+        component["data_source"] = None
+        return
+    try:
+        validated = DataSource.model_validate(raw)
+    except ValidationError:
+        component["data_source"] = None
+        return
+    if validated.provider not in ALLOWED_PROVIDERS:
+        component["data_source"] = None
+
+
+def _sanitize_module_data_sources(item: dict) -> None:
+    components = item.get("components")
+    if not isinstance(components, list):
+        return
+    for component in components:
+        if isinstance(component, dict):
+            _sanitize_data_source(component)
+
+
 def _parse_modules(raw: str) -> _Decomposition:
     cleaned = _strip_codefence(raw)
     try:
@@ -457,6 +514,10 @@ def _parse_modules(raw: str) -> _Decomposition:
     for item in data:
         if not isinstance(item, dict) or "refusal" in item:
             continue
+        # R-705: strip any invalid/out-of-domain data_source BEFORE Pydantic
+        # validation, so the model fabricating a bad live binding costs only
+        # that binding (component survives as manual entry), not the module.
+        _sanitize_module_data_sources(item)
         try:
             out.append(ModuleConfig.model_validate(item))
         except ValidationError:

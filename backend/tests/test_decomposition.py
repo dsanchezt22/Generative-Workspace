@@ -342,3 +342,143 @@ def test_new_component_types_validate():
         "calendar",
         "chart",
     ]
+
+
+# --- R-701/R-702/R-705: orchestrator emits live-data bindings, never fabricates
+# an out-of-domain one ---
+
+
+def test_decompose_prompt_documents_the_two_launched_domains():
+    """Pin the prompt contract: nutrition + weather are the only two domains the
+    model may bind, with a concrete example for each."""
+    prompt = orchestrator.DECOMPOSE_SYSTEM_PROMPT
+    assert '"provider": "nutrition"' in prompt
+    assert '"provider": "weather"' in prompt
+    assert "calorie" in prompt.lower()
+    assert "weather" in prompt.lower()
+
+
+def test_decompose_prompt_forbids_out_of_domain_fabrication():
+    """R-705: the prompt must explicitly rule out any domain besides the two
+    launched ones — no fabricated live badge for stocks/flights/etc."""
+    prompt = orchestrator.DECOMPOSE_SYSTEM_PROMPT
+    assert "do not emit a data_source" in prompt.lower() or "never fabricate" in prompt.lower()
+    assert "stocks" in prompt.lower() or "flights" in prompt.lower()
+
+
+def test_generate_modules_keeps_valid_nutrition_data_source():
+    arr = json.dumps(
+        [
+            {
+                "title": "Calorie Tracker",
+                "components": [
+                    {"id": "food", "type": "text_input", "label": "Food"},
+                    {
+                        "id": "calories",
+                        "type": "kpi",
+                        "label": "Calories",
+                        "unit": "kcal",
+                        "data_source": {
+                            "provider": "nutrition",
+                            "query": {"food": "banana"},
+                        },
+                    },
+                ],
+            }
+        ]
+    )
+    with _fake_llm(arr):
+        mods = orchestrator.generate_modules("track calories for a banana")
+    assert len(mods) == 1
+    kpi = mods[0].components[1]
+    assert kpi.type == "kpi"
+    assert kpi.data_source is not None
+    assert kpi.data_source.provider == "nutrition"
+    assert kpi.data_source.query == {"food": "banana"}
+
+
+def test_generate_modules_strips_out_of_domain_data_source():
+    """A well-formed but out-of-domain provider (e.g. "stocks") must NOT drop
+    the whole module — it is stripped so the component survives as manual
+    entry (R-705)."""
+    arr = json.dumps(
+        [
+            {
+                "title": "Stock Tracker",
+                "components": [
+                    {
+                        "id": "price",
+                        "type": "kpi",
+                        "label": "Share Price",
+                        "data_source": {"provider": "stocks", "query": {"ticker": "AAPL"}},
+                    },
+                ],
+            }
+        ]
+    )
+    with _fake_llm(arr):
+        mods = orchestrator.generate_modules("track a stock price")
+    assert len(mods) == 1
+    kpi = mods[0].components[0]
+    assert kpi.type == "kpi"
+    assert kpi.data_source is None
+
+
+def test_generate_modules_strips_malformed_data_source():
+    """A recognized provider with an out-of-bounds field (refresh_secs below the
+    schema's 60s floor) is still malformed — stripped, not module-fatal."""
+    arr = json.dumps(
+        [
+            {
+                "title": "Hike Planner",
+                "components": [
+                    {
+                        "id": "forecast",
+                        "type": "metric",
+                        "label": "Forecast",
+                        "formula": "avg",
+                        "source_component_id": "forecast",
+                        "data_source": {
+                            "provider": "weather",
+                            "query": {"place": "Tokyo"},
+                            "refresh_secs": 5,
+                        },
+                    },
+                ],
+            }
+        ]
+    )
+    with _fake_llm(arr):
+        mods = orchestrator.generate_modules("plan my Tokyo hike")
+    assert len(mods) == 1
+    metric = mods[0].components[0]
+    assert metric.type == "metric"
+    assert metric.data_source is None
+
+
+def test_generate_modules_valid_weather_data_source_survives():
+    arr = json.dumps(
+        [
+            {
+                "title": "Trip Planner",
+                "components": [
+                    {
+                        "id": "forecast",
+                        "type": "metric",
+                        "label": "Saturday Forecast",
+                        "formula": "avg",
+                        "source_component_id": "forecast",
+                        "data_source": {
+                            "provider": "weather",
+                            "query": {"place": "Boulder"},
+                        },
+                    },
+                ],
+            }
+        ]
+    )
+    with _fake_llm(arr):
+        mods = orchestrator.generate_modules("plan my Saturday hike")
+    metric = mods[0].components[0]
+    assert metric.data_source is not None
+    assert metric.data_source.provider == "weather"
