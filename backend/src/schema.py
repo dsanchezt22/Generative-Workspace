@@ -366,6 +366,10 @@ class Page(BaseModel):
     icon: str | None = None
     parent_id: str | None = None
     position: int
+    # R-502/R-504: a child page's portal placement (world coords) on its parent's
+    # canvas. Null until the tile is dragged — the frontend then auto-places it.
+    portal_x: float | None = None
+    portal_y: float | None = None
     created_at: str
 
 
@@ -379,6 +383,9 @@ class RenamePageRequest(BaseModel):
     name: str | None = None
     icon: str | None = None
     parent_id: str | None = None
+    # R-504: dragging a child's portal tile persists its placement here.
+    portal_x: float | None = None
+    portal_y: float | None = None
 
 
 class ReorderPagesRequest(BaseModel):

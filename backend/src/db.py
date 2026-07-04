@@ -48,6 +48,10 @@ CREATE TABLE IF NOT EXISTS pages (
     icon        TEXT,
     parent_id   TEXT,
     position    INTEGER NOT NULL DEFAULT 0,
+    -- R-502/R-504: a CHILD page's placement (world coords) on its PARENT's
+    -- canvas as an enterable portal tile. Nullable → auto-placed until dragged.
+    portal_x    REAL,
+    portal_y    REAL,
     created_at  TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_pages_session
@@ -214,6 +218,11 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE pages ADD COLUMN icon TEXT")
     if "parent_id" not in pcols:
         conn.execute("ALTER TABLE pages ADD COLUMN parent_id TEXT")
+    # R-502/R-504: portal placement of a child page on its parent's canvas.
+    if "portal_x" not in pcols:
+        conn.execute("ALTER TABLE pages ADD COLUMN portal_x REAL")
+    if "portal_y" not in pcols:
+        conn.execute("ALTER TABLE pages ADD COLUMN portal_y REAL")
     # Screenshot-capture metadata on layout_library (all nullable; image never stored).
     lcols = {r[1] for r in conn.execute("PRAGMA table_info(layout_library)").fetchall()}
     for col, decl in (
@@ -366,7 +375,7 @@ def adopt_session_data(old_owner: str, user_id: str) -> None:
 # Pages
 # ---------------------------------------------------------------------------
 
-_PAGE_COLS = "id, name, icon, parent_id, position, created_at"
+_PAGE_COLS = "id, name, icon, parent_id, position, portal_x, portal_y, created_at"
 
 
 def _page_from_row(r, session_id: str) -> Page:
@@ -376,6 +385,8 @@ def _page_from_row(r, session_id: str) -> Page:
         icon=r["icon"],
         parent_id=r["parent_id"],
         position=r["position"],
+        portal_x=r["portal_x"],
+        portal_y=r["portal_y"],
         session_id=session_id,
         created_at=r["created_at"],
     )
@@ -410,6 +421,20 @@ def list_pages(session_id: str) -> list[Page]:
     return [_page_from_row(r, session_id) for r in rows]
 
 
+def page_module_counts(session_id: str) -> dict[str, int]:
+    """Live (non-archived) module count per page for this owner — one grouped
+    COUNT, so the portal tiles (R-502) can show a cheap "N tools" preview
+    WITHOUT loading any child page's module configs. Owner-scoped."""
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT page_id, COUNT(*) AS n FROM modules"
+            " WHERE session_id = ? AND archived = 0 AND page_id IS NOT NULL"
+            " GROUP BY page_id",
+            (session_id,),
+        ).fetchall()
+    return {r["page_id"]: r["n"] for r in rows}
+
+
 def create_page(
     session_id: str, name: str, icon: str | None = None, parent_id: str | None = None
 ) -> Page:
@@ -441,7 +466,13 @@ _UNSET = object()
 
 
 def update_page(
-    session_id: str, page_id: str, name=_UNSET, icon=_UNSET, parent_id=_UNSET
+    session_id: str,
+    page_id: str,
+    name=_UNSET,
+    icon=_UNSET,
+    parent_id=_UNSET,
+    portal_x=_UNSET,
+    portal_y=_UNSET,
 ) -> Page | None:
     sets, params = [], []
     if name is not _UNSET:
@@ -453,6 +484,14 @@ def update_page(
     if parent_id is not _UNSET:
         sets.append("parent_id = ?")
         params.append(parent_id)
+    # R-504: portal placement persists on the page row (owner-scoped by the WHERE
+    # below), so a child's arrangement on its parent's canvas survives across devices.
+    if portal_x is not _UNSET:
+        sets.append("portal_x = ?")
+        params.append(portal_x)
+    if portal_y is not _UNSET:
+        sets.append("portal_y = ?")
+        params.append(portal_y)
     if not sets:
         return get_page(session_id, page_id)
     params += [page_id, session_id]
@@ -492,13 +531,33 @@ def rename_page(session_id: str, page_id: str, name: str) -> Page | None:
 
 
 def delete_page(session_id: str, page_id: str) -> bool:
-    """Delete a page and all its modules. Refuses to delete the last page."""
+    """Delete a page and all its modules. Refuses to delete the last page.
+
+    R-503 (orphan fix): parent_id is a bare column with NO FK cascade, so a
+    naive delete would leave this page's direct children pointing at a deleted
+    row — the sidebar tree renders from root, so an orphaned child vanishes.
+    Before deleting, REPARENT this page's direct children to its OWN parent
+    (grandparent, or NULL/root when this page was top-level): children move up
+    one level, never disappear. Owner-scoped by every WHERE clause. The child
+    pages and their modules are untouched — only this page's own modules cascade.
+    """
     with _conn() as c:
         count = c.execute(
             "SELECT COUNT(*) FROM pages WHERE session_id = ?", (session_id,)
         ).fetchone()[0]
         if count <= 1:
             return False
+        row = c.execute(
+            "SELECT parent_id FROM pages WHERE id = ? AND session_id = ?",
+            (page_id, session_id),
+        ).fetchone()
+        if row is None:
+            return False
+        grandparent = row["parent_id"]
+        c.execute(
+            "UPDATE pages SET parent_id = ? WHERE parent_id = ? AND session_id = ?",
+            (grandparent, page_id, session_id),
+        )
         cur = c.execute("DELETE FROM pages WHERE id = ? AND session_id = ?", (page_id, session_id))
         return cur.rowcount > 0
 
