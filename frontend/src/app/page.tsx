@@ -6,6 +6,7 @@ import { Canvas } from "@/components/Canvas";
 import { ConversationPanel } from "@/components/ConversationPanel";
 import { ArchivedPanel } from "@/components/ArchivedPanel";
 import { SnapshotsPanel } from "@/components/SnapshotsPanel";
+import { ProfilePanel } from "@/components/ProfilePanel";
 import { Inspector } from "@/components/Inspector";
 import { DetailView } from "@/components/DetailView";
 import { Sidebar } from "@/components/Sidebar";
@@ -97,6 +98,10 @@ export default function Home() {
   const [archived, setArchived] = useState<StoredModule[]>([]);
   const [snapshotsOpen, setSnapshotsOpen] = useState(false);
   const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
+  // R-801: the "remembers you" profile surface. ProfilePanel fetches + owns its
+  // own facts state; page.tsx only toggles visibility and keeps it mutually
+  // exclusive with the other right-hand panels.
+  const [profileOpen, setProfileOpen] = useState(false);
   // R-1102: page delete is the most destructive action (cascades every module
   // on the page) — always confirmed, stating the module count. Holds the page
   // plus its real module ids: `modules` state only covers the ACTIVE page,
@@ -410,6 +415,7 @@ export default function Home() {
     setConvoOpen(false);
     setArchivedOpen(false);
     setSnapshotsOpen(false);
+    setProfileOpen(false);
   }, []);
 
   const handleRefinedModule = useCallback((updated: StoredModule) => {
@@ -552,6 +558,7 @@ export default function Home() {
     setInspectorId(null);
     setConvoOpen(false);
     setSnapshotsOpen(false);
+    setProfileOpen(false);
     try { setArchived(await api.listArchived()); } catch { setArchived([]); }
     setArchivedOpen(true);
   }, []);
@@ -578,9 +585,21 @@ export default function Home() {
     setInspectorId(null);
     setConvoOpen(false);
     setArchivedOpen(false);
+    setProfileOpen(false);
     try { setSnapshots(await api.listSnapshots(activePageId)); } catch { setSnapshots([]); }
     setSnapshotsOpen(true);
   }, [activePageId]);
+
+  // Profile opens like the others (mutually exclusive with the right-hand
+  // panels). The panel fetches its own facts on mount, so this just toggles it.
+  const openProfile = useCallback(() => {
+    setSelectedId(null);
+    setInspectorId(null);
+    setConvoOpen(false);
+    setArchivedOpen(false);
+    setSnapshotsOpen(false);
+    setProfileOpen(true);
+  }, []);
 
   const handleSaveSnapshot = useCallback(async () => {
     if (!activePageId) return;
@@ -656,7 +675,7 @@ export default function Home() {
       if (mod && e.key === "/") { e.preventDefault(); setPromptFocus((n) => n + 1); return; }
       if (mod && e.key.toLowerCase() === "d" && selectedId) { e.preventDefault(); handleDuplicateModule(selectedId); return; }
       if (mod && e.key.toLowerCase() === "z" && selectedId && !typing) { e.preventDefault(); handleUndoModule(selectedId); return; }
-      if (e.key === "Escape") { setCmdOpen(false); setShortcutsOpen(false); setArchivedOpen(false); setSnapshotsOpen(false); setDetailId(null); setSelectedId(null); setInspectorId(null); setConvoOpen(false); return; }
+      if (e.key === "Escape") { setCmdOpen(false); setShortcutsOpen(false); setArchivedOpen(false); setSnapshotsOpen(false); setProfileOpen(false); setDetailId(null); setSelectedId(null); setInspectorId(null); setConvoOpen(false); return; }
       if (!typing && !mod) {
         if (e.key === "?" || (e.shiftKey && e.key === "/")) setShortcutsOpen(true);
         else if (e.key.toLowerCase() === "f") setFitReq((n) => n + 1);
@@ -708,6 +727,7 @@ export default function Home() {
         onReorder={handleReorderPages}
         onOpenArchived={openArchived}
         onOpenSnapshots={openSnapshots}
+        onOpenProfile={openProfile}
       />
       <main className="flex-1 flex flex-col relative min-w-0">
       <header className="absolute top-0 inset-x-0 z-20 h-14 px-4 sm:px-5 flex items-center gap-3 border-b border-[var(--border)] bg-[var(--background)]/85 backdrop-blur">
@@ -749,7 +769,7 @@ export default function Home() {
 
         <button
           type="button"
-          onClick={() => setConvoOpen((v) => { const n = !v; if (n) { setSelectedId(null); setInspectorId(null); setArchivedOpen(false); setSnapshotsOpen(false); } return n; })}
+          onClick={() => setConvoOpen((v) => { const n = !v; if (n) { setSelectedId(null); setInspectorId(null); setArchivedOpen(false); setSnapshotsOpen(false); setProfileOpen(false); } return n; })}
           className={`shrink-0 flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs transition ${
             convoOpen
               ? "border-[var(--accent)] text-[var(--foreground)]"
@@ -833,8 +853,8 @@ export default function Home() {
         modules={activeModules}
         activePageId={activePageId ?? undefined}
         selectedId={selectedId}
-        onModuleSelect={(id) => { setSelectedId(id); setInspectorId(null); if (id) { setConvoOpen(false); setArchivedOpen(false); setSnapshotsOpen(false); } }}
-        onModuleEdit={(id) => { setSelectedId(id); setInspectorId(id); setConvoOpen(false); setArchivedOpen(false); setSnapshotsOpen(false); }}
+        onModuleSelect={(id) => { setSelectedId(id); setInspectorId(null); if (id) { setConvoOpen(false); setArchivedOpen(false); setSnapshotsOpen(false); setProfileOpen(false); } }}
+        onModuleEdit={(id) => { setSelectedId(id); setInspectorId(id); setConvoOpen(false); setArchivedOpen(false); setSnapshotsOpen(false); setProfileOpen(false); }}
         onModuleExpand={handleExpand}
         onModuleChange={handleModuleChange}
         onModuleCommit={commitModule}
@@ -935,6 +955,8 @@ export default function Home() {
           onDelete={handleDeleteSnapshot}
         />
       )}
+
+      {profileOpen && <ProfilePanel onClose={() => setProfileOpen(false)} />}
       </main>
 
       <CommandPalette

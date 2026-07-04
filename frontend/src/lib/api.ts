@@ -1,4 +1,4 @@
-import type { DataSource, LiveValuePayload, Message, ModuleConfig, Page, Snapshot, StoredModule, StudioLayout, StudioUseCase } from "./types";
+import type { DataSource, LiveValuePayload, Message, ModuleConfig, Page, ProfileKind, Snapshot, StoredModule, StudioLayout, StudioUseCase, UserProfileEntry } from "./types";
 import { buildLiveQueryParams } from "./liveFormat";
 
 const BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";
@@ -154,10 +154,14 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ prompt, exchange, build_now: buildNow }),
     }),
-  insertModules: (configs: ModuleConfig[], prompt?: string, pageId?: string) =>
+  // R-802: `exchange` carries the clarifying interview that produced these
+  // accepted tools, so the backend accretes profile facts HERE (on a confirmed
+  // accept) rather than on the discardable preview. Omitted for a fresh (no-
+  // interview) proposal — a plain build accretes nothing.
+  insertModules: (configs: ModuleConfig[], prompt?: string, pageId?: string, exchange?: ExchangeTurn[]) =>
     request<StoredModule[]>(`/api/modules${pageId ? `?page_id=${pageId}` : ""}`, {
       method: "POST",
-      body: JSON.stringify({ configs, prompt }),
+      body: JSON.stringify({ configs, prompt, exchange }),
     }),
   // R-221: `hint` is the sketch snap's bounded interpretation instruction; the
   // backend folds it into the model-visible message. Omitted for plain uploads.
@@ -276,6 +280,25 @@ export const api = {
     request<void>(`/api/conversations${pageId ? `?page_id=${pageId}` : ""}`, {
       method: "DELETE",
     }),
+
+  // R-801: the "remembers you" profile surface — owner-gated CRUD over the
+  // facts Trus has learned about the caller (ProfilePanel). All owner-scoped
+  // server-side; request() already sends credentials:"include".
+  profileList: () => request<UserProfileEntry[]>("/api/profile"),
+  profileAdd: (kind: ProfileKind, text: string) =>
+    request<UserProfileEntry>("/api/profile", {
+      method: "POST",
+      body: JSON.stringify({ kind, text }),
+    }),
+  profileUpdate: (id: string, text: string) =>
+    request<UserProfileEntry>(`/api/profile/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ text }),
+    }),
+  profileDelete: (id: string) =>
+    request<void>(`/api/profile/${id}`, { method: "DELETE" }),
+  // R-804/R-1003: real erasure — the backend hard-DELETEs every fact for this owner.
+  profileClear: () => request<{ deleted: number }>("/api/profile", { method: "DELETE" }),
 
   // Layout Studio
   studioUseCases: () => request<StudioUseCase[]>("/api/studio/use-cases"),

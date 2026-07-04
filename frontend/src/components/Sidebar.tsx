@@ -19,11 +19,12 @@ interface Props {
   onReorder: (orderedIds: string[]) => void;
   onOpenArchived: () => void;
   onOpenSnapshots: () => void;
+  onOpenProfile: () => void;
 }
 
 export function Sidebar({
   pages, activePageId, collapsed, onToggleCollapse,
-  onSelect, onCreate, onRename, onSetIcon, onDelete, onReorder, onOpenArchived, onOpenSnapshots,
+  onSelect, onCreate, onRename, onSetIcon, onDelete, onReorder, onOpenArchived, onOpenSnapshots, onOpenProfile,
 }: Props) {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editValue, setEditValue] = useState("");
@@ -229,6 +230,14 @@ export function Sidebar({
           className="w-full flex items-center gap-2 rounded-lg px-2 py-1.5 text-sm text-[var(--muted)] hover:text-[var(--foreground)] hover:bg-[var(--surface-elevated)] transition"
         >
           <Icon name="archive" size={16} /> Archived
+        </button>
+        <button
+          type="button"
+          onClick={onOpenProfile}
+          className="w-full flex items-center gap-2 rounded-lg px-2 py-1.5 text-sm text-[var(--muted)] hover:text-[var(--foreground)] hover:bg-[var(--surface-elevated)] transition"
+          title="What Trus remembers about you"
+        >
+          <Icon name="user" size={16} /> Profile
         </button>
       </div>
     </div>

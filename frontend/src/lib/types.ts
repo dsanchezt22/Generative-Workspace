@@ -304,6 +304,19 @@ export interface Snapshot {
   created_at: string;
 }
 
+// The "remembers you" profile store (R-801). Mirrors backend UserProfileEntry.
+export type ProfileKind = "goal" | "preference" | "pattern" | "fact";
+
+export interface UserProfileEntry {
+  id: string;
+  owner: string;
+  kind: ProfileKind;
+  text: string;
+  source: "interview" | "prompt" | "activity" | "manual";
+  created_at: string;
+  updated_at: string;
+}
+
 // Layout Studio — a use-case-indexed library of candidate layouts.
 export interface StudioUseCase {
   key: string;
