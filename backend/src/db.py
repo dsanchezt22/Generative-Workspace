@@ -145,6 +145,19 @@ CREATE TABLE IF NOT EXISTS live_cache (
     fetched_at   TEXT NOT NULL,
     PRIMARY KEY (provider, query_hash)
 );
+-- Evolving user profile store (R-801/R-802): per-owner facts Trus has learned
+-- ("remembers you"). owner is the same _owner_id key as every other per-owner
+-- store (R-903) — a claimed uid, or (dev only) the anonymous sid.
+CREATE TABLE IF NOT EXISTS user_profile (
+    id          TEXT PRIMARY KEY,
+    owner       TEXT NOT NULL,
+    kind        TEXT NOT NULL,       -- goal | preference | pattern | fact
+    text        TEXT NOT NULL,
+    source      TEXT NOT NULL,       -- interview | prompt | activity | manual
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_user_profile_owner ON user_profile(owner, updated_at);
 """
 
 # Tracks which db file has had its schema ensured this process, so we re-run the
@@ -1298,3 +1311,103 @@ def last_seen_by_user(days: int = 30) -> list[dict]:
         }
         for r in rows
     ]
+
+
+# ── Evolving user profile store (R-801/R-802) ───────────────────────────────
+
+# ≤50 facts/owner — self-curating: an add past the cap prunes the single
+# oldest-by-updated_at row rather than refusing the new (presumably more
+# recent/relevant) one.
+_PROFILE_CAP = 50
+_PROFILE_COLS = "id, owner, kind, text, source, created_at, updated_at"
+
+
+def _profile_from_row(r: sqlite3.Row) -> dict:
+    return {
+        "id": r["id"],
+        "owner": r["owner"],
+        "kind": r["kind"],
+        "text": r["text"],
+        "source": r["source"],
+        "created_at": r["created_at"],
+        "updated_at": r["updated_at"],
+    }
+
+
+def profile_list(owner: str) -> list[dict]:
+    """This owner's profile facts, most-recently-updated first (R-903: WHERE-scoped
+    to `owner` — another owner's facts can never appear)."""
+    with _conn() as c:
+        rows = c.execute(  # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
+            f"SELECT {_PROFILE_COLS} FROM user_profile WHERE owner = ? ORDER BY updated_at DESC",
+            (owner,),
+        ).fetchall()
+    return [_profile_from_row(r) for r in rows]
+
+
+def profile_add(owner: str, kind: str, text: str, source: str) -> dict:
+    """Add a profile fact (R-801/R-802), owner-scoped.
+
+    Dedup: a case-insensitive exact match of `text` within this owner+kind is
+    NOT re-added — the existing row is returned untouched (a repeated
+    observation isn't a "new" fact, so updated_at is not bumped).
+
+    Cap: ≤50 facts/owner. On the 51st add, the single OLDEST row (by
+    updated_at) for this owner is pruned first, so the profile self-curates
+    instead of ever refusing a legitimate new fact.
+    """
+    with _conn() as c:
+        dup = c.execute(  # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
+            f"SELECT {_PROFILE_COLS} FROM user_profile"
+            " WHERE owner = ? AND kind = ? AND lower(text) = lower(?)",
+            (owner, kind, text),
+        ).fetchone()
+        if dup:
+            return _profile_from_row(dup)
+        count = c.execute("SELECT COUNT(*) FROM user_profile WHERE owner = ?", (owner,)).fetchone()[
+            0
+        ]
+        if count >= _PROFILE_CAP:
+            oldest = c.execute(
+                "SELECT id FROM user_profile WHERE owner = ? ORDER BY updated_at ASC LIMIT 1",
+                (owner,),
+            ).fetchone()
+            if oldest:
+                c.execute("DELETE FROM user_profile WHERE id = ?", (oldest["id"],))
+        pid = str(uuid.uuid4())
+        now = _now()
+        c.execute(
+            "INSERT INTO user_profile (id, owner, kind, text, source, created_at, updated_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (pid, owner, kind, text, source, now, now),
+        )
+        row = c.execute(  # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
+            f"SELECT {_PROFILE_COLS} FROM user_profile WHERE id = ?", (pid,)
+        ).fetchone()
+    return _profile_from_row(row)
+
+
+def profile_update(owner: str, profile_id: str, text: str) -> dict | None:
+    with _conn() as c:
+        cur = c.execute(
+            "UPDATE user_profile SET text = ?, updated_at = ? WHERE id = ? AND owner = ?",
+            (text, _now(), profile_id, owner),
+        )
+        if cur.rowcount == 0:
+            return None
+        row = c.execute(  # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
+            f"SELECT {_PROFILE_COLS} FROM user_profile WHERE id = ?", (profile_id,)
+        ).fetchone()
+    return _profile_from_row(row)
+
+
+def profile_delete(owner: str, profile_id: str) -> bool:
+    with _conn() as c:
+        cur = c.execute("DELETE FROM user_profile WHERE id = ? AND owner = ?", (profile_id, owner))
+        return cur.rowcount > 0
+
+
+def profile_clear(owner: str) -> int:
+    with _conn() as c:
+        cur = c.execute("DELETE FROM user_profile WHERE owner = ?", (owner,))
+        return cur.rowcount

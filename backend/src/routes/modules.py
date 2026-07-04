@@ -49,6 +49,30 @@ def _fold_exchange(exchange: list[ExchangeTurn] | None) -> str | None:
     return "\n\n".join(lines)
 
 
+# R-802 accretion, "without forms": the user's own interview answers become
+# visible profile facts — verbatim (Option A: no extra model call, so nothing
+# enters the profile the user didn't literally type/say). A light keyword
+# heuristic tags "goal" vs "fact"; bounded to the first 3 answered turns.
+_PROFILE_GOAL_WORDS = ("want", "goal", "track")
+
+
+def _accrete_profile_facts(sid: str, exchange: list[ExchangeTurn] | None) -> None:
+    """Fires on a generate/preview call that RESOLVES an exchange into modules —
+    i.e. is called only after the orchestrator call below succeeds (no
+    ClarifyingQuestion/RefusalError/LLMError raised), so an unresolved interview
+    (still being asked follow-ups, or a refusal/error) never accretes anything.
+    Best-effort: a profile write must never break the generation response."""
+    if not exchange:
+        return
+    for turn in exchange[:3]:
+        answer = turn.answer.strip()
+        if not answer:
+            continue
+        kind = "goal" if any(w in answer.lower() for w in _PROFILE_GOAL_WORDS) else "fact"
+        with contextlib.suppress(Exception):
+            db.profile_add(sid, kind, answer[:500], source="interview")
+
+
 def _log(
     sid: str,
     role: Literal["user", "assistant"],
@@ -133,6 +157,7 @@ def generate_module(
     except LLMError as e:
         raise HTTPException(status_code=503, detail=_llm_error_detail(e)) from None
     plan = orchestrator.last_plan.get()
+    _accrete_profile_facts(sid, body.exchange)
     stored = [db.insert_module(sid, c, page_id=page_id) for c in configs]
     _log(sid, "user", prompt, page_id=stored[0].page_id)
     for s in stored:
@@ -181,6 +206,7 @@ def preview_modules(
     except LLMError as e:
         raise HTTPException(status_code=503, detail=_llm_error_detail(e)) from None
     plan = orchestrator.last_plan.get()
+    _accrete_profile_facts(sid, body.exchange)
     deg = llm.last_call.get()
     return GenerateResponse(previews=configs, degraded=bool(deg and deg.degraded), plan=plan)
 

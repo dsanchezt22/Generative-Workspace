@@ -461,6 +461,31 @@ class PatchRequest(BaseModel):
     rev: int | None = None
 
 
+class UserProfileEntry(BaseModel):
+    """One fact the "remembers you" profile store holds about an owner (R-801).
+    Always owner-scoped in the DB layer — this is just the wire shape."""
+
+    id: str
+    owner: str
+    kind: Literal["goal", "preference", "pattern", "fact"]
+    text: str
+    source: Literal["interview", "prompt", "activity", "manual"]
+    created_at: str
+    updated_at: str
+
+
+class ProfileAddRequest(BaseModel):
+    """Manual "add a fact" (POST /api/profile). source is always "manual" —
+    the route sets it; it isn't caller-controlled."""
+
+    kind: Literal["goal", "preference", "pattern", "fact"]
+    text: str = Field(max_length=500)
+
+
+class ProfileUpdateRequest(BaseModel):
+    text: str = Field(max_length=500)
+
+
 class RefusalError(Exception):
     """Honest refusal: request is out of scope or over-complex (Part II.12)."""
 

@@ -8,7 +8,17 @@ from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 
 from src import db, llm
-from src.routes import auth, conversations, live, modules, pages, studio, suggestions, transcribe
+from src.routes import (
+    auth,
+    conversations,
+    live,
+    modules,
+    pages,
+    profile,
+    studio,
+    suggestions,
+    transcribe,
+)
 from src.routes.deps import _parse_cors_origins
 
 logging.basicConfig(
@@ -87,6 +97,7 @@ app.include_router(studio.router, prefix="/api")
 app.include_router(suggestions.router, prefix="/api")
 app.include_router(transcribe.router, prefix="/api")
 app.include_router(live.router, prefix="/api")
+app.include_router(profile.router, prefix="/api")
 
 
 @app.get("/api/health")
