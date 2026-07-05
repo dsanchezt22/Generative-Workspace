@@ -49,6 +49,8 @@ interface Props {
   onModuleCommit: CommitModule;
   // R-1102: the card's ✕ archives (undoable), not a hard delete.
   onModuleArchive: (id: string) => void;
+  // R-1306: keyboard Delete on a focused card — parent confirms, then archives.
+  onModuleArchiveRequest?: (id: string) => void;
   onModuleUndo: (id: string) => void;
   onModuleSelectForRefine: (id: string) => void;
   selectedId?: string | null;
@@ -120,6 +122,7 @@ export function Canvas({
   onModuleChange,
   onModuleCommit,
   onModuleArchive,
+  onModuleArchiveRequest,
   onModuleUndo,
   onModuleSelectForRefine,
   selectedId,
@@ -835,6 +838,7 @@ export function Canvas({
               selected={m.id === selectedId}
               onCommit={onModuleCommit}
               onArchive={onModuleArchive}
+              onArchiveRequest={onModuleArchiveRequest}
               onUndo={onModuleUndo}
               onSelectForRefine={onModuleSelectForRefine}
               onSelect={onModuleSelect}

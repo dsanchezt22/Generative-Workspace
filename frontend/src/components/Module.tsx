@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { CommitModule, Component, ModuleConfig, StoredModule } from "@/lib/types";
 import { runAssembly } from "@/lib/assembly";
+import { arrowNudgeDelta } from "@/lib/a11y";
 import { deriveSummary } from "@/lib/summary";
 import { resolveAccent, resolveIconName } from "@/lib/theme";
 import { Icon } from "./Icon";
@@ -54,6 +55,9 @@ interface Props {
   onCommit?: CommitModule;
   // R-1102: the card's ✕ is undoable (archive), not a hard delete.
   onArchive: (id: string) => void;
+  // R-1306: keyboard Delete/Backspace requests an archive through the parent's
+  // ConfirmDialog (a key press is easier to fat-finger than the ✕ button).
+  onArchiveRequest?: (id: string) => void;
   onUndo: (id: string) => void;
   onSelectForRefine: (id: string) => void;
   onSelect: (id: string) => void;
@@ -68,7 +72,7 @@ interface Props {
 
 export function Module({
   module, crossModuleValues, selected,
-  onChange, onCommit, onArchive, onUndo, onSelectForRefine, onSelect, onEdit, onDragStart, onResizeStart,
+  onChange, onCommit, onArchive, onArchiveRequest, onUndo, onSelectForRefine, onSelect, onEdit, onDragStart, onResizeStart,
   onExpand, variant = "canvas", index = 0, onMeasure,
 }: Props) {
   const isCanvas = variant === "canvas";
@@ -258,12 +262,55 @@ export function Module({
     if (r.when === "under" && v < (r.when_value ?? 0)) flagged.add(r.then_id);
   }
 
+  // R-1306: keyboard access for a focused canvas card. Guarded to fire only
+  // when the CARD ITSELF holds focus (target === currentTarget) — Enter in a
+  // text field, arrows in an input, or Delete while typing all belong to the
+  // inner field and must pass through untouched.
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.target !== e.currentTarget) return;
+    if (e.key === "Enter" || e.key === " ") {
+      // Same affordance as the header double-click: open the full-page detail
+      // view (falling back to the inspector's edit if no expand is wired).
+      e.preventDefault();
+      e.stopPropagation();
+      if (onExpand) onExpand(module.id);
+      else (onEdit ?? onSelect)(module.id);
+      return;
+    }
+    if (e.key === "Delete" || e.key === "Backspace") {
+      // Archives through the parent's ConfirmDialog — never a raw delete.
+      e.preventDefault();
+      e.stopPropagation();
+      onArchiveRequest?.(module.id);
+      return;
+    }
+    const delta = arrowNudgeDelta(e.key, e.shiftKey);
+    if (delta && onCommit) {
+      // Nudge + persist through the SAME saver path a drag settle uses (the
+      // updater form chains off the freshest config). stopPropagation so the
+      // arrows can never also pan/scroll the canvas; the card keeps focus.
+      e.preventDefault();
+      e.stopPropagation();
+      onCommit(module.id, (cfg) => ({
+        ...cfg,
+        layout: { ...cfg.layout, x: cfg.layout.x + delta.dx, y: cfg.layout.y + delta.dy },
+      }));
+    }
+  };
+
   return (
     <div
       ref={rootRef}
       onMouseDown={isCanvas ? () => onSelect(module.id) : undefined}
+      // R-1306: a canvas card is a first-class keyboard citizen — Tab reaches
+      // it, SRs announce it by title, and the focus ring reuses the portal
+      // tiles' existing accent ring (R-1305: no new visual language).
+      tabIndex={isCanvas ? 0 : undefined}
+      role={isCanvas ? "group" : undefined}
+      aria-label={isCanvas ? title : undefined}
+      onKeyDown={isCanvas ? handleKeyDown : undefined}
       className={`rounded-2xl border bg-[var(--surface)] flex flex-col ${
-        isCanvas ? "absolute shadow-lg shadow-black/30 transition-[transform,box-shadow] duration-200 hover:shadow-xl hover:shadow-black/40 hover:-translate-y-0.5 will-change-transform" : "relative w-full shadow-none"
+        isCanvas ? "absolute shadow-lg shadow-black/30 transition-[transform,box-shadow] duration-200 hover:shadow-xl hover:shadow-black/40 hover:-translate-y-0.5 will-change-transform focus-visible:ring-2 focus-visible:ring-[var(--accent)]" : "relative w-full shadow-none"
       }`}
       style={!isCanvas ? ({
         ["--accent" as string]: theme.accent,

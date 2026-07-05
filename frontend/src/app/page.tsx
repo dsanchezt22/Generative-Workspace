@@ -110,6 +110,11 @@ export default function Home() {
   // plus its real module ids: `modules` state only covers the ACTIVE page,
   // but any sidebar row can be deleted, so the ids are fetched per-page.
   const [pageDeleteConfirm, setPageDeleteConfirm] = useState<{ page: Page; moduleIds: string[]; archivedCount: number } | null>(null);
+  // R-1306: keyboard Delete on a focused module asks first (ConfirmDialog) —
+  // a key press is easier to fat-finger than the card's ✕ button. On confirm,
+  // focus moves to the canvas <main> (the card is gone), never lost to <body>.
+  const [archiveConfirm, setArchiveConfirm] = useState<StoredModule | null>(null);
+  const mainRef = useRef<HTMLElement | null>(null);
   const [cmdOpen, setCmdOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [allModules, setAllModules] = useState<StoredModule[]>([]);
@@ -624,6 +629,23 @@ export default function Home() {
     try { await api.archiveModule(id); } catch (err) { console.error("Failed to archive", err); }
   }, [saver]);
 
+  // R-1306: keyboard-initiated archive — open the confirm, don't act yet.
+  const handleRequestArchive = useCallback((id: string) => {
+    const m = modulesRef.current.find((x) => x.id === id);
+    if (m) setArchiveConfirm(m);
+  }, []);
+
+  const handleConfirmArchive = useCallback(() => {
+    const m = archiveConfirm;
+    setArchiveConfirm(null);
+    if (!m) return;
+    handleArchiveModule(m.id);
+    // The focused card is gone, so ConfirmDialog's restore-to-opener finds a
+    // disconnected node and skips — land focus on the canvas <main> instead
+    // (after React commits the dialog's cleanup, hence the timeout).
+    window.setTimeout(() => mainRef.current?.focus(), 0);
+  }, [archiveConfirm, handleArchiveModule]);
+
   const openArchived = useCallback(async () => {
     setSelectedId(null);
     setInspectorId(null);
@@ -805,7 +827,16 @@ export default function Home() {
         onOpenSnapshots={openSnapshots}
         onOpenProfile={openProfile}
       />
-      <main className="flex-1 flex flex-col relative min-w-0">
+      {/* R-1306: the canvas landmark. tabIndex={-1} makes it a programmatic
+          focus target (skip link, post-archive focus) without joining Tab order;
+          outline-none because landing here is a hand-off, not a highlight. */}
+      <main
+        ref={mainRef}
+        id="canvas-main"
+        tabIndex={-1}
+        aria-label="Canvas"
+        className="flex-1 flex flex-col relative min-w-0 focus:outline-none"
+      >
       {/* R-1304: tighter gap/padding below `sm` so the icon-only header row
           (labels are `hidden sm:inline`) fits a 375px phone without forcing a
           horizontal PAGE scroll; desktop keeps gap-3 / px-5. */}
@@ -938,6 +969,7 @@ export default function Home() {
         onModuleChange={handleModuleChange}
         onModuleCommit={commitModule}
         onModuleArchive={handleArchiveModule}
+        onModuleArchiveRequest={handleRequestArchive}
         onModuleUndo={handleUndoModule}
         onModuleSelectForRefine={handleSelectForRefine}
         focusRequest={focusReq}
@@ -1061,6 +1093,15 @@ export default function Home() {
         confirmLabel="Delete"
         onConfirm={handleConfirmDeletePage}
         onCancel={handleCancelDeletePage}
+      />
+      {/* R-1306: keyboard Delete → confirm → archive (undoable, never a raw delete). */}
+      <ConfirmDialog
+        open={archiveConfirm !== null}
+        title={`Archive "${archiveConfirm?.config.title ?? ""}"?`}
+        body="It leaves the canvas but stays restorable from Archived."
+        confirmLabel="Archive"
+        onConfirm={handleConfirmArchive}
+        onCancel={() => setArchiveConfirm(null)}
       />
       {introOpen && <EntryScreen onSubmit={handleEntrySubmit} onSkip={handleEntrySkip} />}
     </div>
