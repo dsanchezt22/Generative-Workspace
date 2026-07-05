@@ -292,6 +292,11 @@ export interface Page {
    * parent's canvas. Null until dragged — the frontend then auto-places it. */
   portal_x?: number | null;
   portal_y?: number | null;
+  /** R-504 completion: the page's own saved viewport (pan offset + zoom), so
+   * the view resumes across devices. Null until first saved. */
+  view_x?: number | null;
+  view_y?: number | null;
+  view_zoom?: number | null;
   created_at: string;
 }
 

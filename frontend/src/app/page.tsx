@@ -21,6 +21,7 @@ import { InviteGate } from "@/components/InviteGate";
 import { Icon } from "@/components/Icon";
 import { api, ApiError } from "@/lib/api";
 import { createModuleSaver, type SaveStatus } from "@/lib/moduleSaver";
+import { serverViewOf, type ViewState } from "@/lib/viewPersist";
 import { useAppearance } from "@/lib/appearance";
 import { resolveIconName } from "@/lib/theme";
 import type { CommitModule, Message, Page, Snapshot, StoredModule } from "@/lib/types";
@@ -375,11 +376,13 @@ export default function Home() {
         } else if (
           // R-502 discoverability: portal tiles live in a shelf ABOVE the module
           // grid, so a raw {0,0,1} view leaves them above the viewport. On the
-          // FIRST visit of a page that has child portals (no saved view yet), defer
-          // a fit so modules + the portal shelf land framed together. A page the
-          // user has already arranged keeps its saved view (no regression).
+          // FIRST visit of a page that has child portals (no saved view yet —
+          // neither local nor server-side, R-504), defer a fit so modules + the
+          // portal shelf land framed together. A page the user has already
+          // arranged keeps its saved view (no regression).
           pages.some((p) => (p.parent_id ?? null) === activePageId) &&
-          !localStorage.getItem(`trus-view-${activePageId}`)
+          !localStorage.getItem(`trus-view-${activePageId}`) &&
+          serverViewOf(pages.find((p) => p.id === activePageId)) === null
         ) {
           window.setTimeout(() => setFitReq((n) => n + 1), 180);
         }
@@ -499,6 +502,23 @@ export default function Home() {
       flashNotice("Couldn't save the tile's new spot — moved it back.");
     }
   }, [flashNotice]);
+
+  // R-504 completion: Canvas's debounced view save → persist this page's pan/zoom
+  // on its row (owner-scoped server-side) so the view resumes on another device.
+  // localStorage (written by Canvas on the same tick) stays the instant offline
+  // fallback, so a failed PATCH is logged, never surfaced — the local view holds.
+  // `pages` is refreshed in place so returning to this page mid-session reloads
+  // the view just saved, not the stale value fetched at startup.
+  const handleViewSave = useCallback(async (pageId: string, v: ViewState) => {
+    try {
+      await api.updatePage(pageId, { view_x: v.x, view_y: v.y, view_zoom: v.zoom });
+      setPages((prev) =>
+        prev.map((p) => (p.id === pageId ? { ...p, view_x: v.x, view_y: v.y, view_zoom: v.zoom } : p)),
+      );
+    } catch (err) {
+      console.error("Failed to persist page viewport", err);
+    }
+  }, []);
 
   const handleCreatePage = useCallback(async (parentId?: string | null) => {
     try {
@@ -989,6 +1009,8 @@ export default function Home() {
         childCounts={childCounts}
         onEnterPortal={handleSelectPage}
         onPortalMove={handlePortalMove}
+        serverView={serverViewOf(pages.find((p) => p.id === activePageId))}
+        onViewSave={handleViewSave}
       />
 
       {!loading && activeModules.length === 0 && (

@@ -20,6 +20,7 @@ import {
   zoomTowardPoint,
 } from "@/lib/pinchZoom";
 import { PORTAL_H, PORTAL_W, portalPosition } from "@/lib/portalLayout";
+import { resolveInitialView, viewChanged, type ViewState } from "@/lib/viewPersist";
 import { Icon } from "./Icon";
 import { Module } from "./Module";
 
@@ -73,6 +74,11 @@ interface Props {
   childCounts?: Record<string, number>;
   onEnterPortal?: (pageId: string) => void;
   onPortalMove?: (pageId: string, x: number, y: number) => void;
+  // R-504 completion: the active page's server-saved viewport (null when it has
+  // none) and the debounced persist callback — pan/zoom resumes cross-device.
+  // Optional so Canvas renders without the wiring (localStorage still applies).
+  serverView?: ViewState | null;
+  onViewSave?: (pageId: string, v: ViewState) => void;
 }
 
 interface View {
@@ -137,6 +143,8 @@ export function Canvas({
   childCounts,
   onEnterPortal,
   onPortalMove,
+  serverView,
+  onViewSave,
 }: Props) {
   const [view, setView] = useState<View>({ x: 0, y: 0, zoom: 1 });
   const [draggingModule, setDraggingModule] = useState<string | null>(null);
@@ -255,25 +263,43 @@ export function Canvas({
     return () => ro.disconnect();
   }, []);
 
-  // Remember pan/zoom per page across reloads and tab switches (PRD 6.2).
+  // Remember pan/zoom per page across reloads and tab switches (PRD 6.2), and —
+  // R-504 completion — across DEVICES: the server-saved view (pages.view_x/y/zoom)
+  // wins on load, localStorage stays the instant offline fallback. serverView and
+  // onViewSave are latched in refs so the [activePageId] load effect reads the
+  // freshest values without re-running (and resetting the view) when the pages
+  // list refreshes after a save.
   const latestViewRef = useRef(view);
   useEffect(() => { latestViewRef.current = view; }, [view]);
+  const serverViewRef = useRef(serverView);
+  useEffect(() => { serverViewRef.current = serverView; }, [serverView]);
+  const onViewSaveRef = useRef(onViewSave);
+  useEffect(() => { onViewSaveRef.current = onViewSave; }, [onViewSave]);
+  // The last view persisted (or just loaded) for the current page — the guard
+  // that stops the save effect echoing a freshly-loaded view back as a PATCH.
+  const lastSavedViewRef = useRef<{ pid: string; v: View } | null>(null);
   const currentPageRef = useRef<string | undefined>(activePageId);
   useEffect(() => {
     currentPageRef.current = activePageId;
     if (!activePageId) return;
-    try {
-      const raw = localStorage.getItem(`trus-view-${activePageId}`);
-      setView(raw ? (JSON.parse(raw) as View) : { x: 0, y: 0, zoom: 1 });
-    } catch {
-      setView({ x: 0, y: 0, zoom: 1 });
-    }
+    let raw: string | null = null;
+    try { raw = localStorage.getItem(`trus-view-${activePageId}`); } catch {}
+    const v = resolveInitialView(serverViewRef.current ?? null, raw);
+    lastSavedViewRef.current = { pid: activePageId, v };
+    setView(v);
   }, [activePageId]);
   useEffect(() => {
     const pid = currentPageRef.current;
     if (!pid) return;
     const t = setTimeout(() => {
       try { localStorage.setItem(`trus-view-${pid}`, JSON.stringify(view)); } catch {}
+      // Cross-device persist (R-504), same debounce tick. Skipped when the view
+      // is exactly what was loaded/saved last — no echo PATCH on page open.
+      const last = lastSavedViewRef.current;
+      if (!last || last.pid !== pid || viewChanged(last.v, view)) {
+        lastSavedViewRef.current = { pid, v: view };
+        onViewSaveRef.current?.(pid, view);
+      }
     }, 300);
     return () => clearTimeout(t);
   }, [view]);
