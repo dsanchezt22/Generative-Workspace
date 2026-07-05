@@ -484,6 +484,41 @@ def test_rate_limiter_evicts_idle_keys():
     assert all(hits for hits in limiter._hits.values())  # never an empty list
 
 
+def test_rate_limiter_parallel_same_key_evictions_never_raise():
+    """/transcribe and /live are sync (threadpool) routes and /live fires several
+    parallel same-owner calls on page load. The eviction step used to `del
+    self._hits[key]` on a shared dict — two callers racing the check-then-del
+    could KeyError → 500. With `pop(key, None)` under a lock the shared
+    read-modify-write is atomic, so hammering parallel same-key calls that expire
+    the window every iteration must never surface an exception."""
+    import threading
+
+    from src.routes.transcribe import _RateLimiter
+
+    limiter = _RateLimiter(max_calls=1, window_secs=10)
+    errors: list[Exception] = []
+    start = threading.Barrier(16)
+
+    def worker() -> None:
+        start.wait()  # release all threads at once to maximize interleaving
+        try:
+            for t in range(200):
+                # Each call's `now` jumps a full window past the last, so every
+                # call trims the shared list to empty and hits the evict branch.
+                limiter.allow("shared", now=float(t * 100))
+        except Exception as e:  # a raced KeyError would land here
+            errors.append(e)
+
+    threads = [threading.Thread(target=worker) for _ in range(16)]
+    for th in threads:
+        th.start()
+    for th in threads:
+        th.join()
+
+    assert not errors, f"eviction raced into an error: {errors[:3]}"
+    assert all(hits for hits in limiter._hits.values())  # never an empty list
+
+
 def test_transcribe_21st_call_in_window_is_429(client, monkeypatch):
     _configure_stt(monkeypatch)
     monkeypatch.setattr(llm, "transcribe", lambda data, mime, filename: "ok")

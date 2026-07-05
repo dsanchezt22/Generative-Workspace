@@ -461,6 +461,49 @@ def test_live_route_owner_gated_401_when_anon_off(client, monkeypatch):
     assert resp.status_code == 401, resp.text
 
 
+def test_live_cache_is_owner_free_two_owners_share_one_fetch(monkeypatch):
+    """R-903 safety half: the live cache is public/owner-free by construction, so
+    two DIFFERENT owners requesting the SAME provider+query share ONE cache row
+    (one upstream fetch serves both) and the stored row carries NO owner data.
+
+    Two separate TestClients = two separate anonymous sessions = two owners. We
+    mock the network boundary (urlopen) so the REAL `live_data.fetch` runs and
+    actually populates `live_cache`; a shared row means the second owner's
+    request performs no second upstream fetch."""
+    upstream_calls = {"n": 0}
+
+    def fake_urlopen(req, timeout=None):
+        upstream_calls["n"] += 1
+        return _FakeResp(_forecast_payload())
+
+    monkeypatch.setattr(live_data.urllib.request, "urlopen", fake_urlopen)
+
+    params = {"lat": 48.85, "lon": 2.35}
+    with TestClient(app) as owner_a, TestClient(app) as owner_b:
+        r_a = owner_a.get("/api/live/weather", params=params)
+        r_b = owner_b.get("/api/live/weather", params=params)
+
+    assert r_a.status_code == 200, r_a.text
+    assert r_b.status_code == 200, r_b.text
+    assert r_a.json()["value"] == r_b.json()["value"] == 21.5
+    # The crux: owner B was served from the row owner A populated — one fetch, not
+    # two. If the cache were owner-scoped, B would have missed and refetched.
+    assert upstream_calls["n"] == 1
+
+    # And the shared row carries no owner-identifying data: the live_cache table
+    # has no owner column at all (structurally impossible to owner-scope), and
+    # the cached payload has only the public data fields.
+    with db._conn() as c:
+        cols = {row["name"] for row in c.execute("PRAGMA table_info(live_cache)").fetchall()}
+    assert cols == {"provider", "query_hash", "payload_json", "fetched_at"}
+    assert not any("owner" in col or "session" in col or "uid" in col for col in cols)
+
+    qhash = live_data._query_hash({"lat": 48.85, "lon": 2.35})
+    cached = db.live_cache_get("weather", qhash)
+    assert cached is not None
+    assert set(cached["payload"].keys()) == {"value", "unit", "as_of", "source", "stale", "error"}
+
+
 def test_live_route_rate_limited_429(client, monkeypatch):
     _mock_fetch_ok(monkeypatch)
     for _ in range(60):
