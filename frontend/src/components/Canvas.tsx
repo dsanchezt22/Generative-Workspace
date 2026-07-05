@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, ApiError } from "@/lib/api";
-import type { CommitModule, Page, StoredModule } from "@/lib/types";
+import type { CommitModule, ModuleConfig, Page, StoredModule } from "@/lib/types";
 import { resolveIconName } from "@/lib/theme";
 import {
   rasterScale,
@@ -61,10 +61,11 @@ interface Props {
   activePageId?: string;
   focusRequest?: { id: string; n: number };
   fitRequest?: number;
-  // R-221-223: snapped sketch → generated modules land on the canvas via the
-  // parent's normal new-module path (placement + fit). Optional so Canvas renders
-  // without it (the Sketch toggle simply won't reach generation).
-  onSketchModules?: (modules: StoredModule[]) => void;
+  // R-221-223: a snapped sketch produces a PREVIEW STACK the user confirms or
+  // dismisses in the PromptBar — the same preview→confirm path a typed prompt or
+  // file attach takes — never tools landing straight on the canvas. Optional so
+  // Canvas renders without it (the Sketch toggle simply won't reach generation).
+  onSketchPreviews?: (configs: ModuleConfig[], plan: string | null) => void;
   // R-502/R-504: child pages (parent_id === activePageId) render as enterable
   // world-coord portal tiles BELOW the module layer. `childCounts` feeds each
   // tile's cheap "N tools" preview; enter switches to that page; a drag persists
@@ -138,7 +139,7 @@ export function Canvas({
   activePageId,
   focusRequest,
   fitRequest,
-  onSketchModules,
+  onSketchPreviews,
   childPages,
   childCounts,
   onEnterPortal,
@@ -732,22 +733,23 @@ export function Canvas({
       const blob = await rasterizeSketch(strokesRef.current, bounds);
       if (!blob) throw new Error("Could not rasterize the sketch.");
       const file = new File([blob], "sketch.png", { type: "image/png" });
-      // The EXISTING image path — prompt "" + the sketch HINT — feeds the same
-      // proposal loop a file upload uses. On a non-vision provider it refuses
-      // honestly (422) instead of degrading to a template.
-      const result = await api.generateModuleFromFile(file, "", activePageId, SKETCH_HINT);
-      const mods = result.modules?.length ? result.modules : result.module ? [result.module] : [];
-      if (result.question || mods.length === 0) {
+      // The EXISTING image path — prompt "" + the sketch HINT — with preview:true,
+      // so the snap feeds the SAME preview→confirm stack a file attach uses
+      // (nothing lands on the canvas until the user accepts). On a non-vision
+      // provider it refuses honestly (422) instead of degrading to a template.
+      const result = await api.generateModuleFromFile(file, "", activePageId, SKETCH_HINT, true);
+      const configs = result.previews ?? [];
+      if (result.question || configs.length === 0) {
         // A clarifying question OR an empty result means the snap produced nothing
-        // to place. Surface it and KEEP the ink — exitSketch would wipe the strokes,
+        // to propose. Surface it and KEEP the ink — exitSketch would wipe the strokes,
         // silently destroying the user's drawing with no way to retry/adjust.
         setSketchError(
           result.question ?? "The model couldn't read this sketch — add labels and try again.",
         );
         return; // strokes persist; overlay stays open (finally still clears `snapping`)
       }
-      onSketchModules?.(mods);
-      exitSketch(); // R-223: sketch consumed on success → clear ink + leave mode
+      onSketchPreviews?.(configs, result.plan ?? null);
+      exitSketch(); // R-223: sketch consumed into a proposal → clear ink + leave mode
     } catch (err) {
       const msg =
         err instanceof ApiError && err.refusal
@@ -759,7 +761,7 @@ export function Canvas({
     } finally {
       setSnapping(false);
     }
-  }, [snapping, activePageId, onSketchModules, exitSketch]);
+  }, [snapping, activePageId, onSketchPreviews, exitSketch]);
 
   // Keyboard: `s` toggles sketch (not while typing / with a modifier); Escape
   // cancels an active sketch. Registered on window so it works anywhere on canvas.

@@ -24,7 +24,7 @@ import { createModuleSaver, type SaveStatus } from "@/lib/moduleSaver";
 import { serverViewOf, type ViewState } from "@/lib/viewPersist";
 import { useAppearance } from "@/lib/appearance";
 import { resolveIconName } from "@/lib/theme";
-import type { CommitModule, Message, Page, Snapshot, StoredModule } from "@/lib/types";
+import type { CommitModule, Message, ModuleConfig, Page, Snapshot, StoredModule } from "@/lib/types";
 
 function HeaderInsights({
   activePageId,
@@ -102,6 +102,13 @@ export default function Home() {
   // R-502: live module count per page, for the child-page portal tiles' cheap
   // "N tools" preview. One grouped COUNT server-side — never loads child configs.
   const [childCounts, setChildCounts] = useState<Record<string, number>>({});
+  // R-221-223 unification: a snapped sketch's proposed tools, in flight from
+  // Canvas to the PromptBar's preview→confirm stack. `n` distinguishes re-snaps.
+  const [sketchPreviews, setSketchPreviews] = useState<{
+    configs: ModuleConfig[];
+    plan: string | null;
+    n: number;
+  } | null>(null);
   // R-801: the "remembers you" profile surface. ProfilePanel fetches + owns its
   // own facts state; page.tsx only toggles visibility and keeps it mutually
   // exclusive with the other right-hand panels.
@@ -1004,7 +1011,7 @@ export default function Home() {
         onModuleSelectForRefine={handleSelectForRefine}
         focusRequest={focusReq}
         fitRequest={fitReq}
-        onSketchModules={(mods) => mods.forEach(handleNewModule)}
+        onSketchPreviews={(configs, plan) => setSketchPreviews({ configs, plan, n: Date.now() })}
         childPages={childPages}
         childCounts={childCounts}
         onEnterPortal={handleSelectPage}
@@ -1045,6 +1052,8 @@ export default function Home() {
         focusSignal={promptFocus}
         autoPrompt={entrySubmit}
         onAutoPromptConsumed={() => setEntrySubmit(null)}
+        sketchPreviews={sketchPreviews}
+        onSketchPreviewsConsumed={() => setSketchPreviews(null)}
       />
 
       {convoOpen && (

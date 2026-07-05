@@ -26,6 +26,12 @@ interface Props {
   // then cleared via onAutoPromptConsumed.
   autoPrompt?: string | null;
   onAutoPromptConsumed?: () => void;
+  // R-221-223 unification: a snapped sketch's proposed tools, handed over from
+  // Canvas to land in THIS preview stack (confirm/dismiss like a typed prompt or
+  // file attach). `n` makes a re-snap with identical configs still ingest; cleared
+  // via onSketchPreviewsConsumed so it can never re-fire.
+  sketchPreviews?: { configs: ModuleConfig[]; plan: string | null; n: number } | null;
+  onSketchPreviewsConsumed?: () => void;
 }
 
 interface ExchangeTurnState {
@@ -44,7 +50,7 @@ interface Exchange {
 
 const SKIP_ANSWER = "just build it — use your best judgment";
 
-export function PromptBar({ onModule, activePageId, refineTarget, onRefineModule, onClearRefine, seed, onSeedConsumed, focusSignal, autoPrompt, onAutoPromptConsumed }: Props) {
+export function PromptBar({ onModule, activePageId, refineTarget, onRefineModule, onClearRefine, seed, onSeedConsumed, focusSignal, autoPrompt, onAutoPromptConsumed, sketchPreviews, onSketchPreviewsConsumed }: Props) {
   const [prompt, setPrompt] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -271,6 +277,27 @@ export function PromptBar({ onModule, activePageId, refineTarget, onRefineModule
   // submit closes over current state; we intentionally run only on autoPrompt change.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autoPrompt]);
+
+  // R-221-223 unification: a snapped sketch arrives as a proposal for THIS
+  // preview stack — confirmed/dismissed exactly like a typed-prompt or file
+  // proposal, never landing straight on the canvas. Interfering state is cleared
+  // first (same rationale as the R-105 fresh handoff above), then the stack is
+  // filled. Accepting flows through the normal addConfigs → insertModules path.
+  useEffect(() => {
+    if (!sketchPreviews || sketchPreviews.configs.length === 0) return;
+    setExchange(null);
+    setFile(null);
+    onClearRefine?.();
+    lastPromptRef.current = "hand-drawn sketch"; // honest origin for the convo log / refine joins
+    setPreviews(sketchPreviews.configs);
+    setPlan(sketchPreviews.plan);
+    setPreviewExchange(null); // sketch-derived — no interview to accrete
+    setPrompt("");
+    setError(null);
+    onSketchPreviewsConsumed?.();
+  // Consume exactly once per snap; the other setters are stable state setters.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sketchPreviews]);
 
   const addConfigs = async (configs: ModuleConfig[], exchange?: ExchangeTurnState[] | null) => {
     try {
