@@ -48,6 +48,11 @@ def get_live_value(
             "as_of": None,
             "source": provider,
             "stale": False,
+            # `disabled` is the structured off-mode signal the frontend keys on
+            # (R-701 hardening); the human-readable `error` string is kept for
+            # back-compat but nothing should string-match it — it's free to be
+            # reworded.
+            "disabled": True,
             "error": "Live data is disabled",
         }
     if provider not in live_data.ALLOWED_PROVIDERS:

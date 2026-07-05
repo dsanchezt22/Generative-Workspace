@@ -141,7 +141,8 @@ CREATE INDEX IF NOT EXISTS idx_gen_events_owner_day ON gen_events (owner, create
 -- Live external-data cache (R-701/R-704): per-provider+query (NOT per-owner —
 -- weather/nutrition lookups are public data), bounding outbound fetches to the
 -- caller-supplied refresh_secs TTL (enforced in services/live_data.py against
--- fetched_at, not stored here).
+-- fetched_at, not stored here). Row count is capped on write (live_cache_set
+-- prunes the oldest by fetched_at past TRUS_LIVE_CACHE_MAX, default 5000).
 CREATE TABLE IF NOT EXISTS live_cache (
     provider     TEXT NOT NULL,
     query_hash   TEXT NOT NULL,
@@ -1368,6 +1369,22 @@ def live_cache_get(provider: str, query_hash: str) -> dict | None:
     return {"payload": json.loads(row["payload_json"]), "fetched_at": row["fetched_at"]}
 
 
+_LIVE_CACHE_MAX_DEFAULT = 5000
+
+
+def _live_cache_max() -> int:
+    """Row cap for the public live_cache table (R-701 hardening). Every distinct
+    provider+query is a permanent row, so without a bound the table grows forever.
+    Optional TRUS_LIVE_CACHE_MAX overrides the default; unparseable or < 1 falls
+    back to the default rather than disabling the bound."""
+    raw = os.environ.get("TRUS_LIVE_CACHE_MAX", "").strip()
+    try:
+        v = int(raw) if raw else _LIVE_CACHE_MAX_DEFAULT
+    except ValueError:
+        return _LIVE_CACHE_MAX_DEFAULT
+    return v if v >= 1 else _LIVE_CACHE_MAX_DEFAULT
+
+
 def live_cache_set(provider: str, query_hash: str, payload_json: str, fetched_at: str) -> None:
     with _conn() as c:
         c.execute(
@@ -1375,6 +1392,16 @@ def live_cache_set(provider: str, query_hash: str, payload_json: str, fetched_at
             "ON CONFLICT (provider, query_hash) DO UPDATE SET"
             " payload_json = excluded.payload_json, fetched_at = excluded.fetched_at",
             (provider, query_hash, payload_json, fetched_at),
+        )
+        # Bound the table on every write (R-701 hardening): one cheap statement —
+        # deletes nothing while under the cap (LIMIT 0), prunes the oldest
+        # rows-over-cap by fetched_at once exceeded. max(0, …) matters: a negative
+        # LIMIT means "no limit" in SQLite, which would wipe the whole table.
+        c.execute(
+            "DELETE FROM live_cache WHERE rowid IN ("
+            " SELECT rowid FROM live_cache ORDER BY fetched_at ASC, rowid ASC"
+            " LIMIT max(0, (SELECT COUNT(*) FROM live_cache) - ?))",
+            (_live_cache_max(),),
         )
 
 

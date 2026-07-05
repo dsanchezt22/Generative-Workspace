@@ -411,7 +411,17 @@ def test_live_route_disabled_returns_marker(client, monkeypatch):
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["value"] is None
+    # R-701 hardening: the STRUCTURED flag is the off-mode signal the frontend
+    # keys on; the human-readable string stays for back-compat only.
+    assert body["disabled"] is True
     assert body["error"] == "Live data is disabled"
+
+
+def test_live_route_enabled_payload_has_no_disabled_flag(client, monkeypatch):
+    _mock_fetch_ok(monkeypatch)
+    resp = client.get("/api/live/weather", params={"lat": 52.5, "lon": 13.4})
+    assert resp.status_code == 200, resp.text
+    assert not resp.json().get("disabled")
 
 
 def test_live_route_bad_provider_422(client):
@@ -511,3 +521,65 @@ def test_live_route_rate_limited_429(client, monkeypatch):
         assert resp.status_code == 200, resp.text
     resp = client.get("/api/live/weather", params={"lat": 1, "lon": 2})
     assert resp.status_code == 429, resp.text
+
+
+# ---------------------------------------------------------------------------
+# live_cache eviction (R-701 hardening): the public cache is bounded
+# ---------------------------------------------------------------------------
+
+
+def _seed_cache_rows(n: int) -> None:
+    """Insert n distinct rows with strictly increasing fetched_at (hash-00000
+    oldest … hash-{n-1} newest)."""
+    base = datetime(2026, 7, 1, tzinfo=timezone.utc)
+    for i in range(n):
+        db.live_cache_set(
+            "weather",
+            f"hash-{i:05d}",
+            json.dumps({"value": i}),
+            (base + timedelta(seconds=i)).isoformat(),
+        )
+
+
+def _cache_row_count() -> int:
+    with db._conn() as c:
+        return int(c.execute("SELECT COUNT(*) FROM live_cache").fetchone()[0])
+
+
+def test_live_cache_set_evicts_oldest_over_cap(monkeypatch):
+    """Inserting cap+K distinct rows leaves exactly cap: the K oldest (by
+    fetched_at) are pruned on write, the newest survive."""
+    monkeypatch.setenv("TRUS_LIVE_CACHE_MAX", "10")
+    _seed_cache_rows(13)
+
+    assert _cache_row_count() == 10
+    # The 3 oldest are gone…
+    for i in range(3):
+        assert db.live_cache_get("weather", f"hash-{i:05d}") is None
+    # …and everything newer survived, newest included.
+    assert db.live_cache_get("weather", "hash-00003") is not None
+    assert db.live_cache_get("weather", "hash-00012") is not None
+
+
+def test_live_cache_upsert_same_key_does_not_evict(monkeypatch):
+    """Refreshing an existing provider+query row (the common case) doesn't grow
+    the table, so it never triggers eviction of an innocent row."""
+    monkeypatch.setenv("TRUS_LIVE_CACHE_MAX", "3")
+    _seed_cache_rows(3)
+    now = datetime.now(timezone.utc).isoformat()
+    db.live_cache_set("weather", "hash-00001", json.dumps({"value": 99}), now)
+
+    assert _cache_row_count() == 3
+    refreshed = db.live_cache_get("weather", "hash-00001")
+    assert refreshed is not None
+    assert refreshed["payload"]["value"] == 99
+
+
+def test_live_cache_cap_defaults_to_5000_and_survives_bad_env(monkeypatch):
+    assert db._live_cache_max() == 5000
+    monkeypatch.setenv("TRUS_LIVE_CACHE_MAX", "not-a-number")
+    assert db._live_cache_max() == 5000
+    monkeypatch.setenv("TRUS_LIVE_CACHE_MAX", "0")
+    assert db._live_cache_max() == 5000
+    monkeypatch.setenv("TRUS_LIVE_CACHE_MAX", "250")
+    assert db._live_cache_max() == 250
