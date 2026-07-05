@@ -19,13 +19,18 @@ python -m src.backup restore <file>   # swap a backup in (see "Restoring" — st
 | Var | Default | Meaning |
 |---|---|---|
 | `TRUS_BACKUP_DIR` | `/data/backups` | Where snapshots land. On Fly this sits on the same `/data` volume as the DB — see the caveat below. |
-| `TRUS_BACKUP_KEEP` | `7` | Retention: `backup` keeps the newest N `trus-*.db` snapshots and prints what it pruned. `pre-restore-*.db` safety snapshots are never auto-pruned. |
+| `TRUS_BACKUP_KEEP` | `7` | Retention: `backup` keeps the newest N `trus-*.db` snapshots and prints what it pruned. `pre-restore-*.db` safety snapshots are never auto-pruned (see note below). |
 | `TRUS_DB_PATH` | `/data/trus.db` (prod image) | The live database being backed up / restored. |
 
 ## Scheduling (RPO ≤ 24h)
 
 The alpha's recovery point objective is **≤ 24 hours of data loss** — one backup
 per day meets it. Keep the default retention (7) → a week of daily restore points.
+
+> **Note:** each `restore` writes a `pre-restore-*.db` safety snapshot that
+> retention never auto-prunes (by design — it's your undo). They accumulate, so
+> periodically review and delete old `pre-restore-*.db` files you no longer need
+> (`python -m src.backup list` shows them alongside the `trus-*.db` snapshots).
 
 **Cron (any Docker host / VM):**
 

@@ -5,6 +5,7 @@ TRUS_BACKUP_DIR — never the real database. Timestamps are injected (`now=`)
 wherever a test needs a deterministic filename.
 """
 
+import os
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
@@ -109,6 +110,16 @@ def test_retention_env_default_and_cli_logs_pruned(backup_dir, monkeypatch, caps
     assert not (backup_dir / "trus-20260705T120000Z.db").exists()
 
 
+def test_retention_keep_zero_prunes_all(backup_dir):
+    """keep=0 must prune everything, not no-op on the [:-0] == [:0] slice bug."""
+    db.create_user("Keeper")
+    backup.create_backup(now=T0)
+    backup.create_backup(now=T1)
+    pruned = backup.prune(keep=0)
+    assert len(pruned) == 2
+    assert list(backup_dir.glob("trus-*.db")) == []
+
+
 def test_retention_ignores_pre_restore_snapshots(backup_dir):
     db.create_user("Keeper")
     backup.create_backup(now=T0)
@@ -153,6 +164,30 @@ def test_restore_clears_stale_wal_sidecars(backup_dir):
     assert _user_names(live) == ["Backup Era"]
 
 
+def test_restore_swap_is_atomic_via_os_replace(backup_dir, monkeypatch):
+    """The swap must be crash-safe: copy to a temp in the live dir, then os.replace
+    (atomic on the same fs). If os.replace never runs, the live db must be intact."""
+    db.create_user("Backup Era")
+    snap = backup.create_backup(now=T0)
+    db.create_user("Current Era")
+    live = db._db_path()
+    before = live.read_bytes()
+
+    calls: list[tuple[str, str]] = []
+
+    def _boom(src, dst, *a, **k):
+        calls.append((str(src), str(dst)))
+        raise OSError("simulated crash before replace")
+
+    monkeypatch.setattr(os, "replace", _boom)
+    with pytest.raises(OSError):
+        backup.restore(snap, now=T1)
+
+    assert calls and calls[0][1] == str(live)  # the swap targeted the live path via os.replace
+    assert live.read_bytes() == before  # crash before replace → live db untouched
+    assert not list(live.parent.glob(f"{live.name}.restore-*"))  # temp cleaned up
+
+
 def test_restore_refuses_non_sqlite_file(backup_dir, tmp_path, capsys):
     db.create_user("Untouched")
     junk = tmp_path / "junk.db"
@@ -175,6 +210,41 @@ def test_restore_refuses_live_db_onto_itself(backup_dir):
     db.create_user("Self")
     with pytest.raises(backup.BackupError, match="itself"):
         backup.restore(db._db_path())
+
+
+def test_restore_refuses_zero_byte_file(backup_dir, tmp_path, capsys):
+    """A 0-byte file IS a valid *empty* SQLite DB (schema_version 0, integrity ok).
+    Restoring it must NOT wipe the live db — refuse, nonzero exit, db byte-identical."""
+    db.create_user("Untouched")
+    live = db._db_path()
+    before = live.read_bytes()
+    empty = tmp_path / "zero.db"
+    empty.touch()
+    assert empty.stat().st_size == 0
+
+    rc = backup.main(["restore", str(empty)])
+
+    assert rc == 1
+    assert "error" in capsys.readouterr().err
+    assert live.read_bytes() == before  # byte-identical: not wiped, not touched
+    assert list(backup_dir.glob("pre-restore-*.db")) == []  # refused BEFORE snapshotting
+
+
+def test_restore_refuses_valid_sqlite_that_isnt_trus(backup_dir, tmp_path):
+    """A perfectly valid SQLite DB with a foreign schema is not a Trus backup —
+    restoring it would swap in a structurally-wrong db. Refuse it."""
+    db.create_user("Untouched")
+    live = db._db_path()
+    before = live.read_bytes()
+    foreign = tmp_path / "other.db"
+    conn = sqlite3.connect(foreign)
+    conn.execute("CREATE TABLE widgets (id INTEGER PRIMARY KEY)")
+    conn.commit()
+    conn.close()
+
+    with pytest.raises(backup.BackupError, match="Trus"):
+        backup.restore(foreign)
+    assert live.read_bytes() == before  # untouched
 
 
 # ---------------------------------------------------------------------------

@@ -70,21 +70,36 @@ def _snapshot(src: Path, dest: Path) -> None:
         src_conn.close()
 
 
+# Tables every Trus database has (see db._SCHEMA). Requiring these rejects both a
+# 0-byte file (a valid but EMPTY SQLite DB — schema_version 0, integrity "ok") and
+# any valid-but-foreign SQLite DB, either of which would otherwise silently replace
+# the live DB with structurally-wrong data.
+_REQUIRED_TABLES = ("sessions", "users")
+
+
 def _validate_sqlite(path: Path) -> None:
-    """Refuse anything that isn't a readable, intact SQLite database."""
+    """Refuse anything that isn't a readable, intact Trus SQLite database."""
     if not path.is_file():
         raise BackupError(f"not a file: {path}")
+    if path.stat().st_size == 0:
+        raise BackupError(f"empty file (a 0-byte SQLite DB has no data): {path}")
     try:
         conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
         try:
             conn.execute("PRAGMA schema_version").fetchone()
             verdict = conn.execute("PRAGMA integrity_check").fetchone()[0]
+            tables = {
+                r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+            }
         finally:
             conn.close()
     except sqlite3.Error as exc:
         raise BackupError(f"not a readable SQLite database: {path} ({exc})") from exc
     if str(verdict).lower() != "ok":
         raise BackupError(f"integrity check failed for {path}: {verdict}")
+    missing = [t for t in _REQUIRED_TABLES if t not in tables]
+    if missing:
+        raise BackupError(f"not a Trus backup (missing tables {missing}): {path}")
 
 
 def create_backup(now: datetime | None = None) -> Path:
@@ -108,7 +123,8 @@ def prune(keep: int | None = None) -> list[Path]:
     """
     n = _keep_n() if keep is None else keep
     backups = sorted(_backup_dir().glob("trus-*.db"))
-    doomed = backups[:-n] if n < len(backups) else []
+    # keep<=0 prunes everything; guard the [:-0] == [:0] (empty) slice footgun.
+    doomed = backups[:] if n <= 0 else backups[:-n] if n < len(backups) else []
     for path in doomed:
         path.unlink()
     return doomed
@@ -120,10 +136,11 @@ def restore(backup_file: Path, now: datetime | None = None) -> Path | None:
 
     Order matters: validate first (a bad file must leave everything untouched),
     then safety-snapshot the current DB (a bad restore is itself recoverable),
-    then remove the live DB *and its -wal/-shm sidecars* (a stale WAL must not
-    shadow the restored data), then copy the backup into place — a plain file
-    copy is safe here because the backup file is cold. Run this with the app
-    stopped; see deploy/BACKUP.md.
+    then stage the backup into a temp file in the LIVE db's directory, clear the
+    -wal/-shm sidecars (a stale WAL must not shadow the restored data), and finally
+    `os.replace(tmp, live)` — atomic on the same filesystem, so a crash mid-restore
+    (OOM, machine-stop timeout, power loss) leaves the OLD live db intact rather
+    than a truncated/missing one. Run this with the app stopped; see deploy/BACKUP.md.
     """
     backup_file = Path(backup_file)
     _validate_sqlite(backup_file)
@@ -138,9 +155,16 @@ def restore(backup_file: Path, now: datetime | None = None) -> Path | None:
         safety = backup_dir / f"pre-restore-{_stamp(now)}.db"
         _snapshot(live, safety)
 
-    for suffix in ("", "-wal", "-shm"):
-        Path(str(live) + suffix).unlink(missing_ok=True)
-    shutil.copy2(backup_file, live)
+    live.parent.mkdir(parents=True, exist_ok=True)
+    tmp = live.parent / f"{live.name}.restore-{os.getpid()}.tmp"
+    try:
+        shutil.copy2(backup_file, tmp)  # cold copy of a validated file, off to the side
+        # Clear sidecars BEFORE the swap so a stale WAL can't shadow restored data.
+        for suffix in ("-wal", "-shm"):
+            Path(str(live) + suffix).unlink(missing_ok=True)
+        os.replace(tmp, live)  # atomic same-fs swap; the old live db survives any crash before this
+    finally:
+        tmp.unlink(missing_ok=True)  # no-op after a successful replace
     return safety
 
 
