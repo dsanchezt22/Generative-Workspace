@@ -208,12 +208,21 @@ export function Canvas({
     setView((prev) => ({ ...prev, x: vx + (e.clientX - x), y: vy + (e.clientY - y) }));
   }, []);
 
-  // Any tracked pointer ending — one lifted mid-pinch, or the single pan
-  // finger — exits whatever gesture is active cleanly rather than trying to
-  // resume a pan from a stale reference point (which would jump the canvas).
+  // A tracked pointer ending. Remove it, then decide by how many remain:
+  //  - exactly 2 left (a 3rd incidental touch lifted mid-pinch) → RE-SEED the
+  //    pinch distance from the two survivors so the gesture resumes seamlessly
+  //    instead of dying until a full restart;
+  //  - fewer than 2 left → exit any gesture cleanly (clear pinch AND pan), so a
+  //    lifted pinch finger never strands a stale pan reference that would jump
+  //    the canvas on the next move.
   const onPointerUp = useCallback((e: React.PointerEvent) => {
     (e.currentTarget as Element).releasePointerCapture?.(e.pointerId);
     activePointersRef.current.delete(e.pointerId);
+    if (activePointersRef.current.size === 2) {
+      const [p1, p2] = Array.from(activePointersRef.current.values());
+      pinchDistRef.current = pointerDistance(p1, p2);
+      return;
+    }
     pinchDistRef.current = null;
     panRef.current = null;
   }, []);

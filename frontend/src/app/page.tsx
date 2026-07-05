@@ -261,15 +261,18 @@ export default function Home() {
   const handleStartConversation = useCallback(() => setIntroOpen(true), []);
 
   useEffect(() => {
-    const stored = localStorage.getItem("trus-sidebar-collapsed");
-    if (stored !== null) {
-      setSidebarCollapsed(stored === "1");
-    } else if (typeof window !== "undefined" && window.innerWidth < 640) {
-      // R-1304: no explicit preference yet, and the viewport is narrow (below
-      // Tailwind `sm`) — default to collapsed so the ~224px expanded sidebar
-      // doesn't squeeze the canvas to a sliver on first mobile visit. A user
-      // who explicitly expands it (localStorage set) keeps that choice.
+    const isNarrow = typeof window !== "undefined" && window.innerWidth < 640;
+    // R-1304: below Tailwind `sm` the 224px expanded sidebar squeezes the canvas
+    // to a sliver AND pushes the header past the viewport (a real horizontal page
+    // scroll). Always start collapsed on a narrow viewport, overriding even a
+    // stored (desktop) expand preference — the contract is "the sidebar collapses
+    // rather than squeezing the canvas to nothing." Desktop keeps honoring the
+    // stored choice unchanged.
+    if (isNarrow) {
       setSidebarCollapsed(true);
+    } else {
+      const stored = localStorage.getItem("trus-sidebar-collapsed");
+      if (stored !== null) setSidebarCollapsed(stored === "1");
     }
   }, []);
   const toggleSidebar = useCallback(() => {
@@ -803,7 +806,10 @@ export default function Home() {
         onOpenProfile={openProfile}
       />
       <main className="flex-1 flex flex-col relative min-w-0">
-      <header className="absolute top-0 inset-x-0 z-20 h-14 px-4 sm:px-5 flex items-center gap-3 border-b border-[var(--border)] bg-[var(--background)]/85 backdrop-blur">
+      {/* R-1304: tighter gap/padding below `sm` so the icon-only header row
+          (labels are `hidden sm:inline`) fits a 375px phone without forcing a
+          horizontal PAGE scroll; desktop keeps gap-3 / px-5. */}
+      <header className="absolute top-0 inset-x-0 z-20 h-14 px-2 sm:px-5 flex items-center gap-1.5 sm:gap-3 border-b border-[var(--border)] bg-[var(--background)]/85 backdrop-blur">
         <div className="flex items-center gap-1.5 min-w-0">
           {trail.map((p, i) => (
             <span key={p.id} className="flex items-center gap-1.5 min-w-0">

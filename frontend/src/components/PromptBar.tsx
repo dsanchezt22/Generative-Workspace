@@ -479,7 +479,11 @@ export function PromptBar({ onModule, activePageId, refineTarget, onRefineModule
             onKeyDown={handleKeyDown}
             disabled={loading}
             placeholder={placeholder}
-            className="flex-1 bg-transparent text-sm placeholder:text-[var(--muted)] focus:outline-none disabled:opacity-50"
+            // R-1304: min-w-0 lets the input shrink below its UA default (~170px)
+            // so the submit button never gets pushed past the card's
+            // overflow-hidden edge on a 375px phone (esp. with the 44px touch
+            // targets on the mic/attach buttons to its left).
+            className="flex-1 min-w-0 bg-transparent text-sm placeholder:text-[var(--muted)] focus:outline-none disabled:opacity-50"
             autoFocus
           />
           <button
