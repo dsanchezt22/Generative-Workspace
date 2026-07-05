@@ -4,7 +4,7 @@ _An AI-orchestrated personal operating system: describe what you want to organiz
 
 **Last updated:** 2026-07-05
 **Repo:** https://github.com/dsanchezt22/Generative-Workspace
-**Branch state:** Stage 1 + 2a + 2b are merged into `main` (merge commit `24f22e3`). Stage 3 (`stage3/differentiators`) branches off that merged main, now complete at `89f70d6`; final whole-branch review and merge decision remain open.
+**Branch state:** Stage 1 + 2a + 2b are merged into `main` (merge commit `24f22e3`). Stage 3 (`stage3/differentiators`) is complete at `89f70d6`; final whole-branch review and merge decision remain open. Stage 4 (`stage4/hosted-alpha`, branched off `main` at `5ece326`) is now at `75445c0` with this exit task's evidence recorded below; final whole-branch review and merge decision remain open.
 
 ---
 
@@ -71,7 +71,36 @@ Ships the three things that make Trus more than a reliable generator — last-mi
 
 New env: `TRUS_LIVE_DATA` (default `on`; `off` disables live fetches and every `data_source`-capable component falls back to plain manual entry) — documented in `.env.example` and the conftest isolation list.
 
-## Current gates (this run, 2026-07-05, HEAD `89f70d6`)
+## Stage 4 — hosted-alpha polish (shipped)
+
+Turns "runs on a laptop" into "50 Stanford students can use it daily" — touch-viable mobile, the accessibility floor, per-user cost/rate limits, a backup+restore story, and deploy readiness, plus the carried Stage-3 backlog:
+
+- **R-1202 completion — generate-route rate limiting + cost ceiling:** a shared per-owner `_RateLimiter` now sits in front of all 5 LLM-backed handlers in `routes/modules.py` (generate, preview, generate_from_file, refine, insights) — the last unmetered-spend surface the Stage-1 audit flagged (transcribe/live already had their own) — 429 with an honest "too many generations" message past `TRUS_GEN_RATE_MAX`/`TRUS_GEN_RATE_WINDOW`. An optional per-owner **daily cost cap** (`db.owner_cost_today` off `gen_events`) 429s "reached today's usage budget" once `TRUS_DAILY_COST_CAP_USD` is set and crossed (cap unset, cap=0, or $0 token rates all correctly never block). `/api/ops/summary` now carries a per-user tokens/cost rollup alongside the existing last-seen data.
+- **R-1304 — touch-viable mobile:** pinch-zoom (two-pointer gesture, distance-ratio zoom toward the midpoint, reuses the existing zoom clamp; pure gesture math extracted to a lib + vitest), a viewport meta tag (`width=device-width, initial-scale=1`, deliberately no `maximum-scale=1` so browser accessibility zoom still works), and responsive panels/prompt-bar/entry-screen/module-card legibility at 375px (no clipped text, no horizontal page scroll) — plus a fix-round pass (PromptBar `min-w-0`, pinch-resume-on-third-touch-lift, header no-overflow at 375px).
+- **R-1306 — accessibility floor:** modules are keyboard-focusable (tabIndex, Enter/Space opens detail, arrow keys nudge position, Delete archives with the existing confirm, a visible focus ring); dialog semantics (`role="dialog"`/`aria-modal`, Escape-to-close, focus-trap, focus-restore-on-close) landed on the 9 overlays that lacked them (DetailView, CommandPalette, ShortcutsModal, ConversationPanel, Inspector, AppearanceMenu, SnapshotsPanel, ProfilePanel, ArchivedPanel — ConfirmDialog/EntryScreen already had the pattern from Stage 2b/3); skip-to-content + landmark roles (main/nav/complementary) let a keyboard/screen-reader user reach the canvas without tabbing the whole sidebar.
+- **R-1106 — backup + restore:** `python -m src.backup {backup|list|restore}` — WAL-checkpoints (`PRAGMA wal_checkpoint(TRUNCATE)`) then copies `TRUS_DB_PATH` to a timestamped file under `TRUS_BACKUP_DIR`, retaining the last `TRUS_BACKUP_KEEP` (default 7); `restore` takes an atomic temp-file-then-replace swap and rejects empty/non-Trus DBs outright (nonzero exit, nothing touched) after a follow-up fix hardened the original swap; a safety snapshot of the pre-restore state is written before every restore. `deploy/BACKUP.md` documents the RPO≤24h target, cron scheduling, and the "exercise a restore once before the alpha" operator checklist item.
+- **R-802 completion — prompt + activity profile accretion:** on a confirmed `POST /api/modules` insert, a goal/preference-stating prompt (whole-word `want`/`goal`/`track`/`prefer` or a `trying to` phrase — a fix-round pass tightened this to whole-word matching so build prompts like "add a tracking field" don't seed noise) yields a `source="prompt"` fact, and an inserted tool whose title matches a known domain (nutrition/workouts/budget/habits/sleep/reading/mood) yields a `source="activity"` fact — both ≤1/insert, same cap-50/dedup/owner-scoped store as the Stage-3 interview facts.
+- **Live-data hardening:** `live_cache` now evicts oldest-by-`fetched_at` past a row cap (`TRUS_LIVE_CACHE_MAX`, default 5000); `/api/live` carries a structured `disabled: true` flag that the frontend reads directly instead of string-matching a message; `useLiveValue` clears its poll interval once it learns `disabled` (no wasted budget with `TRUS_LIVE_DATA=off`); GaugeField now shows a loading shimmer instead of a blank center number.
+- **R-503/R-504 completion — spatial backlog:** page create/PATCH validates `parent_id` is an owned, existing page (422 otherwise — closes the dangling-parent-makes-page-invisible surface the Stage-3 review flagged); per-page viewport (`view_x`/`view_y`/`view_zoom`) now persists server-side, owner-scoped, so a user's pan/zoom resumes across devices instead of living only in `localStorage`. (The sketch-preview-confirm unification landed too, ahead of schedule — see Stage 3's note; sketch snaps now route through the same preview→confirm stack as a file attach.)
+- **R-906 pre-flight — deploy readiness:** `backend/Dockerfile` + `deploy/fly.toml.example` carry every env var introduced since Stage 1 with sane prod defaults; `deploy/README.md` is a complete runbook (secrets, the `/data` volume incl. backups, CORS/PUBLIC_URL pairing, invite provisioning, backup cron, the R-906 phone-over-cellular smoke test, the Fly-volume-ownership gotcha); a new `deploy/PREFLIGHT.md` is the operator's pre-invite checklist. No live deploy — that's Task 10, the operator checkpoint.
+
+New env: `TRUS_GEN_RATE_MAX` / `TRUS_GEN_RATE_WINDOW` (generate-route rate limit, default 30/300s), `TRUS_DAILY_COST_CAP_USD` (optional per-owner daily $ cap), `TRUS_TOKEN_COST_IN` / `TRUS_TOKEN_COST_OUT` (per-1k-token $ for the cost estimate; default 0 → cost shown as tokens only), `TRUS_BACKUP_DIR` / `TRUS_BACKUP_KEEP` (backup destination + retention count, default `/data/backups` / 7), `TRUS_LIVE_CACHE_MAX` (live_cache row cap, default 5000).
+
+## Current gates (this run, 2026-07-05, HEAD `75445c0`, branch `stage4/hosted-alpha`)
+
+| Gate | Result |
+|---|---|
+| `python -m pytest -q` (repo root, coverage gate on) — run 3× | **657 passed, 2 skipped**, 94.97% coverage (gate: 80%) — identical on all three runs; the known intermittent flake in `test_gen_rate_limit.py` did **not** recur across any of the three runs |
+| `mypy backend/src` | clean, 33 source files |
+| `ruff check backend/src` | all checks passed |
+| `ruff format --check backend/src` | 33 files already formatted |
+| `cd frontend && npm test` | 10 test files, **122 passed** |
+| `npx tsc --noEmit` | clean |
+| `npm run build` | clean production build (4 static routes) |
+
+API-level smoke against a fresh backend on a spare port (8121, isolated `TRUS_DB_PATH` in a temp dir — the user's `:8000`/`:3000` and live `trus.db` were never touched), `TRUS_LLM_PROVIDER=stub`, `TRUS_GEN_RATE_MAX=3`: two invite-claims (Alice/Bob) both 200 and `/api/auth/me` confirms each; Alice's 4th `preview` call in-window → 429 "too many generations"; Bob's spend seeded directly via `db.add_gen_event` (mirroring the unit-test pattern) past a `TRUS_DAILY_COST_CAP_USD=0.001` cap → the next `preview` call 429s "reached today's usage budget"; `GET /api/ops/summary?token=...` shows the per-user cost/token rollup (Bob $0.20, Alice $0 on stub generations) and 401s on a wrong token; `POST /api/pages` with a nonexistent `parent_id` → 422 "Parent page not found", a valid create → 201; `PATCH` a page's `view_x`/`view_y`/`view_zoom` → `GET /api/pages` reads them back; a confirmed `POST /api/modules` insert with a goal-stating prompt ("I want to track my reading habit…") and a "Reading Log" tool → `GET /api/profile` shows both a `source="prompt"` goal fact and a `source="activity"` pattern fact; `python -m src.backup backup` against the live in-use DB writes a valid timestamped copy, `list` shows it, `restore` round-trips (both profile facts intact after restore) with an automatic pre-restore safety snapshot, and a 0-byte file is refused with a nonzero exit; `live_cache` eviction is covered by its own unit tests (`test_live_cache_set_evicts_oldest_over_cap` et al., part of the pytest run above) rather than re-driven over HTTP. Server killed and temp dir removed after; transcript in `.superpowers/sdd/stage4-task-9-report.md`.
+
+## Stage 3 exit gates (previous run, 2026-07-05, HEAD `89f70d6`)
 
 | Gate | Result |
 |---|---|
@@ -89,9 +118,11 @@ API-level smoke against a fresh backend on a spare port (8120, isolated `TRUS_DB
 
 - `docs/MVP-SPEC.md` — the requirements contract (R-IDs cited in commits).
 - `docs/MVP-GAP-AUDIT.md` — the audit that drove Stage 1's structural findings.
-- `docs/superpowers/plans/` — the Stage 1, Stage 2a, Stage 2b, and Stage 3 implementation plans, task-by-task.
+- `docs/superpowers/plans/` — the Stage 1, Stage 2a, Stage 2b, Stage 3, and Stage 4 implementation plans, task-by-task.
 - `deploy/README.md` — hosting (Fly + Vercel), env contract, invite provisioning, post-deploy smoke test.
+- `deploy/BACKUP.md` — SQLite backup+restore runbook (R-1106).
+- `deploy/PREFLIGHT.md` — operator pre-invite checklist (R-906).
 
 ## Next
 
-**Stage 4** (hosted-alpha polish — mobile touch R-1304, a11y R-1306, backups R-1106, cost/rate limits, deploy; viewport-per-page cross-device persistence (R-504); prompt + workspace-activity profile accretion (R-802)) + the deferred backlog.
+Stage 4 remaining = **Task 10, OPERATOR DEPLOY** (needs Janus's Fly/Railway + Vercel accounts, not agent-executable) + the carried Stage-4-tail backlog. Stage 3's and Stage 4's final whole-branch reviews and merge decisions remain open.
