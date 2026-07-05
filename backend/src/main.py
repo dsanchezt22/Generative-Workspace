@@ -136,8 +136,10 @@ async def llm_status() -> dict:
 
 @app.get("/api/ops/summary")
 def ops_summary(token: str = Query(default="")) -> dict:
-    """Gated operator surface (R-1201/R-1203): generation volume/outcomes + DAU +
-    per-user last-seen ("which of the 50 used it yesterday")."""
+    """Gated operator surface (R-1201/R-1202/R-1203): generation volume/outcomes
+    + DAU + per-user last-seen + token/cost rollup ("which of the 50 used it
+    yesterday, and what did it cost") — the per-user cost/token fields come from
+    db.last_seen_by_user's own rollup (R-1202 completion)."""
     expected = os.environ.get("TRUS_OPS_TOKEN", "")
     if not expected or token != expected:
         raise HTTPException(status_code=401, detail="ops token required")

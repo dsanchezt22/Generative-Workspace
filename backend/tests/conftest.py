@@ -95,6 +95,14 @@ def _isolate_llm_env(monkeypatch):
         # suite's expectations are deterministic; test_live_data.py opts into
         # "off" explicitly.
         "TRUS_LIVE_DATA",
+        # Generate-route rate limit + per-owner daily cost cap (R-1202 completion)
+        # — a developer's local .env must not leak a custom rate/cap/token-price
+        # into tests that assert the code defaults (30/300s, cap unset, $0 rates).
+        "TRUS_GEN_RATE_MAX",
+        "TRUS_GEN_RATE_WINDOW",
+        "TRUS_DAILY_COST_CAP_USD",
+        "TRUS_TOKEN_COST_IN",
+        "TRUS_TOKEN_COST_OUT",
     ):
         monkeypatch.delenv(k, raising=False)
 

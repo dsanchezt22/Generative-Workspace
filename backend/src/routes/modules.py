@@ -1,11 +1,12 @@
 import contextlib
+import os
 import time
 from typing import Literal
 
 from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile
 
 from src import db, llm
-from src.routes.deps import _llm_error_detail, _owner_id, _require_trusted_origin
+from src.routes.deps import _llm_error_detail, _owner_id, _RateLimiter, _require_trusted_origin
 from src.schema import (
     ClarifyingQuestion,
     CreateSnapshotRequest,
@@ -26,6 +27,41 @@ from src.services import orchestrator
 from src.stub_templates import pick_template
 
 router = APIRouter()
+
+
+# R-1202 completion: a SHARED per-owner limiter across all 5 LLM-backed handlers
+# below (generate/preview/generate_from_file/refine/insights) — a preview and a
+# generate count toward the same owner's budget. Its own instance (NOT
+# transcribe.py's or live.py's), so a chatty voice/live session never eats a
+# user's generation budget or vice versa. Closes the last unmetered-spend
+# surface the Stage-1 audit flagged (transcribe/live already had their own).
+def _gen_rate_max() -> int:
+    return int(os.environ.get("TRUS_GEN_RATE_MAX", "30"))
+
+
+def _gen_rate_window() -> float:
+    return float(os.environ.get("TRUS_GEN_RATE_WINDOW", "300"))
+
+
+_gen_limiter = _RateLimiter(max_calls=30, window_secs=300)
+
+
+def _check_gen_budget(sid: str) -> None:
+    """Rate limit + optional per-owner daily cost cap (R-1202 completion) — call
+    this right after `_owner_id` resolves and BEFORE any orchestrator call, so
+    an over-budget request never spends a token (fail fast, no spend). Shared
+    across all 5 LLM handlers via the module-level `_gen_limiter`."""
+    if not _gen_limiter.allow(sid, max_calls=_gen_rate_max(), window_secs=_gen_rate_window()):
+        raise HTTPException(
+            status_code=429,
+            detail="Too many generations — please wait a few minutes and try again.",
+        )
+    cap_raw = os.environ.get("TRUS_DAILY_COST_CAP_USD", "").strip()
+    if cap_raw:
+        cap = float(cap_raw)
+        if cap > 0 and db.owner_cost_today(sid)["cost_usd"] >= cap:
+            raise HTTPException(status_code=429, detail="You've reached today's usage budget.")
+
 
 # R-102: once 4 questions in a chain have been answered, the route (not just the
 # system prompt) forces the model to stop asking and build its best interpretation.
@@ -130,6 +166,7 @@ def generate_module(
     if not prompt:
         raise HTTPException(status_code=422, detail="Prompt cannot be empty")
     sid = _owner_id(request)
+    _check_gen_budget(sid)
     existing = [m.config for m in db.list_modules(sid)]
     exchange_context = _fold_exchange(body.exchange)
     # R-302: the owner's recent conversation on this page feeds generation
@@ -178,6 +215,7 @@ def preview_modules(
     if not prompt:
         raise HTTPException(status_code=422, detail="Prompt cannot be empty")
     sid = _owner_id(request)
+    _check_gen_budget(sid)
     existing = [m.config for m in db.list_modules(sid)]
     exchange_context = _fold_exchange(body.exchange)
     # R-302: the owner's recent conversation on this page feeds generation
@@ -239,6 +277,7 @@ def generate_from_file(
 ) -> GenerateResponse:
     _require_trusted_origin(request)
     sid = _owner_id(request)
+    _check_gen_budget(sid)
     # Cap the read before materializing the whole upload in memory: read one byte
     # past the limit so the size check below still fires for oversized files.
     data = file.file.read(15 * 1024 * 1024 + 1)
@@ -397,6 +436,7 @@ def refine_module(module_id: str, body: RefineRequest, request: Request) -> Stor
     if not prompt:
         raise HTTPException(status_code=422, detail="Prompt cannot be empty")
     sid = _owner_id(request)
+    _check_gen_budget(sid)
     existing = db.get_module(sid, module_id)
     if existing is None:
         raise HTTPException(status_code=404, detail="Module not found")
@@ -487,6 +527,7 @@ def workspace_insights(
 ) -> GenerateResponse:
     _require_trusted_origin(request)
     sid = _owner_id(request)
+    _check_gen_budget(sid)
     modules = db.list_modules(sid, page_id=page_id)
     if not modules:
         raise HTTPException(status_code=422, detail="No modules on canvas to synthesize.")

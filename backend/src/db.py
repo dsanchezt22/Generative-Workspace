@@ -1255,6 +1255,21 @@ def layout_counts(owner: str = "local") -> dict[str, int]:
 # ── Generation telemetry (R-1201/R-1202) ─────────────────────────────────────
 
 
+def _token_cost_rates() -> tuple[float, float]:
+    return (
+        float(os.environ.get("TRUS_TOKEN_COST_IN", "0")),
+        float(os.environ.get("TRUS_TOKEN_COST_OUT", "0")),
+    )
+
+
+def _cost_usd(tokens_in: int, tokens_out: int) -> float:
+    """$ estimate for a token count, per TRUS_TOKEN_COST_IN/OUT (per-1k-token $,
+    both default 0). Unset/zero rates → 0 cost while the token counts stay real
+    (I-1: never show a fake cost derived from unset pricing)."""
+    cost_in, cost_out = _token_cost_rates()
+    return (tokens_in * cost_in + tokens_out * cost_out) / 1000
+
+
 def add_gen_event(
     owner: str,
     kind: str,
@@ -1283,6 +1298,29 @@ def add_gen_event(
                 _now(),
             ),
         )
+
+
+def owner_cost_today(owner: str) -> dict:
+    """This owner's token usage + cost estimate for the current UTC calendar
+    day — feeds the generate routes' optional TRUS_DAILY_COST_CAP_USD gate
+    (R-1202 completion). Scoped to `owner` AND today only: a different owner's
+    spend, or this owner's spend on a prior day, never counts toward it."""
+    day_start = (
+        datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+    )
+    with _conn() as c:
+        row = c.execute(
+            "SELECT SUM(COALESCE(tokens_in,0)) tin, SUM(COALESCE(tokens_out,0)) tout"
+            " FROM gen_events WHERE owner = ? AND created_at >= ?",
+            (owner, day_start),
+        ).fetchone()
+    tokens_in = row["tin"] or 0
+    tokens_out = row["tout"] or 0
+    return {
+        "tokens_in": tokens_in,
+        "tokens_out": tokens_out,
+        "cost_usd": _cost_usd(tokens_in, tokens_out),
+    }
 
 
 def gen_stats(days: int = 7) -> dict:
@@ -1348,13 +1386,19 @@ def last_seen_by_user(days: int = 30) -> list[dict]:
     session id. INNER JOINing against users means an anonymous sid (which has
     no matching users row) is silently excluded: this view only ever shows
     activity attributable to a named person, by construction of the JOIN.
+
+    R-1202 completion: also rolls up tokens_in/tokens_out/cost_usd over the
+    same `days` window, for /api/ops/summary's per-user cost surface — reuses
+    this shape rather than a parallel query (same JOIN, same window).
     """
     cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
     cutoff_7d = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
     with _conn() as c:
         rows = c.execute(
             "SELECT u.id AS user_id, u.name AS name, MAX(g.created_at) AS last_seen,"
-            " COUNT(CASE WHEN g.created_at >= ? THEN 1 END) AS generations_7d"
+            " COUNT(CASE WHEN g.created_at >= ? THEN 1 END) AS generations_7d,"
+            " SUM(COALESCE(g.tokens_in,0)) AS tokens_in,"
+            " SUM(COALESCE(g.tokens_out,0)) AS tokens_out"
             " FROM gen_events g JOIN users u ON g.owner = u.id"
             " WHERE g.created_at >= ?"
             " GROUP BY u.id, u.name"
@@ -1367,6 +1411,9 @@ def last_seen_by_user(days: int = 30) -> list[dict]:
             "name": r["name"],
             "last_seen": r["last_seen"],
             "generations_7d": r["generations_7d"],
+            "tokens_in": r["tokens_in"] or 0,
+            "tokens_out": r["tokens_out"] or 0,
+            "cost_usd": _cost_usd(r["tokens_in"] or 0, r["tokens_out"] or 0),
         }
         for r in rows
     ]

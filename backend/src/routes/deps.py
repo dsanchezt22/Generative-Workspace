@@ -2,6 +2,8 @@
 
 import logging
 import os
+import threading
+import time
 
 from fastapi import HTTPException, Request
 
@@ -9,6 +11,64 @@ from src import db
 from src.schema import LLMError
 
 _logger = logging.getLogger(__name__)
+
+
+class _RateLimiter:
+    """A per-key, in-memory sliding-window limiter: at most `max_calls` calls
+    per `window_secs` for a given key (both overridable per-`allow()` call —
+    see below). Deliberately generic (not hardcoded to "owner"). Process-local
+    only (fine for the MVP's single-instance deployment; a multi-instance
+    deploy would need a shared store instead).
+
+    Lives here (not in one specific route file) because three route modules
+    now share it: transcribe.py (Stage 2b, where this was first built), live.py
+    (Stage 3), and modules.py (Stage 4's generate-route limiter, R-1202)."""
+
+    def __init__(self, max_calls: int, window_secs: float) -> None:
+        self._max_calls = max_calls
+        self._window_secs = window_secs
+        self._hits: dict[str, list[float]] = {}
+        # These routes are sync (threadpool) and /live fires several parallel
+        # same-owner calls on page load — the shared `_hits` dict and its per-key
+        # lists are touched non-atomically (setdefault→trim→evict→append), so a
+        # bare check-then-`del` could race two callers into a KeyError→500. One
+        # lock makes the whole read-modify-write atomic; it's trivially cheap.
+        self._lock = threading.Lock()
+
+    def allow(
+        self,
+        key: str,
+        now: float | None = None,
+        max_calls: int | None = None,
+        window_secs: float | None = None,
+    ) -> bool:
+        """`max_calls`/`window_secs` override the instance defaults for this one
+        call (added for modules.py's generate limiter, whose TRUS_GEN_RATE_MAX/
+        WINDOW must be re-read from the environment on every request rather than
+        baked in at import time — the same reason semantic_cache.py's thresholds
+        are read via a function instead of a module-level constant: a value read
+        once at import can't be overridden by a test's per-test env isolation,
+        which runs before each test body but after collection-time imports).
+        transcribe.py/live.py don't pass these, so their behavior is unchanged."""
+        now = time.monotonic() if now is None else now
+        max_calls = self._max_calls if max_calls is None else max_calls
+        window_secs = self._window_secs if window_secs is None else window_secs
+        with self._lock:
+            hits = self._hits.setdefault(key, [])
+            cutoff = now - window_secs
+            while hits and hits[0] < cutoff:
+                hits.pop(0)
+            if not hits:
+                # An idle key whose window has fully expired: drop its (now empty)
+                # entry so per-owner rows don't accumulate forever. Re-added below
+                # if this call is allowed. `pop(key, None)` (not `del`) is
+                # idempotent — safe even if a concurrent call already evicted it.
+                self._hits.pop(key, None)
+            if len(hits) >= max_calls:
+                return False
+            hits.append(now)
+            self._hits[key] = hits
+            return True
 
 
 def _parse_cors_origins(raw: str) -> list[str]:
