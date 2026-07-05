@@ -92,11 +92,14 @@ def _fold_exchange(exchange: list[ExchangeTurn] | None) -> str | None:
 # heuristic tags "goal" vs "fact"; bounded to the first 3 answered turns.
 _PROFILE_GOAL_WORDS = ("want", "goal", "track")
 
-# R-802 completion: prompt-derived accretion. Same keyword style as the
-# interview tagger, but as a GATE, not a tagger — a prompt that doesn't state a
-# durable goal/preference accretes nothing at all (conservative > eager; a
-# plain build instruction like "add a notes field" must never become a fact).
-_PROMPT_GOAL_WORDS = ("want", "goal", "track", "prefer", "trying to")
+# R-802 completion: prompt-derived accretion. A GATE, not a tagger — a prompt
+# that doesn't state a durable goal/preference accretes nothing at all
+# (conservative > eager; a plain build instruction like "add a notes field" must
+# never become a fact). Keywords match on WORD boundaries (see _prompt_goal_fact)
+# so "tracking"/"trackpad"/"racetrack"/"unwanted" don't seed noise facts.
+_PROMPT_GOAL_WORDS = frozenset({"want", "goal", "track", "prefer"})
+# Multi-word cues are matched as adjacent-token phrases, not substrings.
+_PROMPT_GOAL_PHRASES: tuple[tuple[str, ...], ...] = (("trying", "to"),)
 
 # R-802 completion: workspace-activity accretion. A SMALL known set of domain
 # patterns matched against the inserted tools' title words; anything outside it
@@ -116,14 +119,24 @@ _ACTIVITY_DOMAINS: tuple[tuple[str, tuple[str, ...]], ...] = (
 def _prompt_goal_fact(prompt: str | None) -> tuple[str, str] | None:
     """("goal", text) when the originating prompt states a durable goal or
     preference; None otherwise. Text is trimmed and bounded to 200 chars.
+    Keywords match on WORD boundaries (regex token extraction + a naive plural
+    fold, mirroring `_activity_fact`) so build prompts like "add a tracking
+    number field" or "unwanted side effects widget" don't seed noise facts,
+    while "I want to track my reading" / "I'm trying to save money" still do.
     Pure — unit-tested directly."""
     if not prompt:
         return None
     text = prompt.strip()[:200].strip()
     if not text:
         return None
-    if any(w in text.lower() for w in _PROMPT_GOAL_WORDS):
+    words = re.findall(r"[a-z]+", text.lower())
+    tokens = set(words)
+    tokens |= {w[:-1] for w in tokens if w.endswith("s")}  # "goals" → "goal"
+    if tokens & _PROMPT_GOAL_WORDS:
         return ("goal", text)
+    for phrase in _PROMPT_GOAL_PHRASES:
+        if any(tuple(words[i : i + len(phrase)]) == phrase for i in range(len(words))):
+            return ("goal", text)
     return None
 
 

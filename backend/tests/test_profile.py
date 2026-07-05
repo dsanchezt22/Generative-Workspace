@@ -408,6 +408,34 @@ def test_prompt_goal_fact_skips_non_goal_prompts(prompt):
     assert _prompt_goal_fact(prompt) is None
 
 
+@pytest.mark.parametrize(
+    "prompt",
+    [
+        "add a tracking number field",  # "tracking" is not "track"
+        "build a trackpad test app",  # "trackpad" is not "track"
+        "unwanted side effects widget",  # "unwanted" is not "want"
+        "add a racetrack game",  # "racetrack" is not "track"
+    ],
+)
+def test_prompt_goal_fact_matches_whole_words_not_substrings(prompt):
+    """Regression (R-802 no-noise): a keyword embedded inside another word must
+    NOT trip the gate — these are plain build prompts, not durable goals."""
+    assert _prompt_goal_fact(prompt) is None
+
+
+@pytest.mark.parametrize(
+    "prompt",
+    [
+        "I want to track my reading",
+        "my goal is to read more",
+        "I prefer mornings",
+        "I'm trying to save money",
+    ],
+)
+def test_prompt_goal_fact_still_fires_on_genuine_goals(prompt):
+    assert _prompt_goal_fact(prompt) == ("goal", prompt)
+
+
 def test_prompt_goal_fact_bounds_and_trims_text():
     fact = _prompt_goal_fact("  I want to " + "x" * 400)
     assert fact is not None
