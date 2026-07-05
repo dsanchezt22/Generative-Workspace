@@ -1,6 +1,8 @@
 "use client";
 
+import { useRef } from "react";
 import type { Snapshot } from "@/lib/types";
+import { useDialog } from "@/lib/useDialog";
 import { Icon } from "./Icon";
 
 function timeAgo(iso: string): string {
@@ -23,15 +25,27 @@ interface Props {
 }
 
 export function SnapshotsPanel({ snapshots, pageName, onClose, onSave, onRestore, onDelete }: Props) {
+  // R-1306 dialog floor (mount IS open): focus enters on the header ✕, Tab
+  // cycles inside, Escape closes just this panel, focus restores to the
+  // sidebar's Snapshots button on close.
+  const closeRef = useRef<HTMLButtonElement | null>(null);
+  const { ref: dialogRef, onKeyDown } = useDialog<HTMLElement>(true, onClose, closeRef);
   return (
     // R-1304: full-width sheet below `sm` (the fixed 320px column would
     // otherwise leave the canvas a sliver on a 375px phone) — same panel,
     // same tokens/animation, just full-bleed on a narrow viewport.
-    <aside className="fixed top-0 inset-x-0 sm:inset-x-auto sm:right-0 h-screen w-full sm:w-[320px] sm:max-w-[85vw] z-30 bg-[var(--surface)] border-l border-[var(--border)] shadow-2xl shadow-black/40 flex flex-col animate-slide-right">
+    <aside
+      ref={dialogRef}
+      role="dialog"
+      aria-modal="true"
+      aria-label={`Snapshots — ${pageName}`}
+      onKeyDown={onKeyDown}
+      className="fixed top-0 inset-x-0 sm:inset-x-auto sm:right-0 h-screen w-full sm:w-[320px] sm:max-w-[85vw] z-30 bg-[var(--surface)] border-l border-[var(--border)] shadow-2xl shadow-black/40 flex flex-col animate-slide-right"
+    >
       <header className="flex items-center gap-2 px-4 h-14 border-b border-[var(--border)] shrink-0">
         <span className="text-sm font-semibold tracking-tight">Snapshots</span>
         <span className="text-xs text-[var(--muted)] truncate min-w-0">· {pageName}</span>
-        <button type="button" onClick={onClose} aria-label="Close snapshots"
+        <button ref={closeRef} type="button" onClick={onClose} aria-label="Close snapshots"
           className="ml-auto text-[var(--muted)] hover:text-[var(--foreground)] w-6 h-6 grid place-items-center rounded">✕</button>
       </header>
       <div className="p-3 border-b border-[var(--border)]">
@@ -54,7 +68,9 @@ export function SnapshotsPanel({ snapshots, pageName, onClose, onSave, onRestore
               </div>
               <button type="button" onClick={() => onRestore(s.id)}
                 className="text-xs text-[var(--muted)] hover:text-[var(--accent)] transition shrink-0">Restore</button>
-              <button type="button" onClick={() => onDelete(s.id)}
+              {/* Focus-never-lost: deleting unmounts the row that holds focus —
+                  hand focus to the panel ✕ before it disappears. */}
+              <button type="button" onClick={() => { onDelete(s.id); closeRef.current?.focus(); }}
                 className="text-xs text-[var(--muted)] hover:text-[var(--danger)] transition shrink-0" aria-label="Delete snapshot">✕</button>
             </div>
           ))

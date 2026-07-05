@@ -1,6 +1,7 @@
 "use client";
 
 import type { CommitModule, StoredModule } from "@/lib/types";
+import { useDialog } from "@/lib/useDialog";
 import { Module } from "./Module";
 import { Icon } from "./Icon";
 import { resolveAccent, resolveIconName } from "@/lib/theme";
@@ -22,8 +23,20 @@ interface Props {
 export function DetailView({ module, crossModuleValues, inspectorOpen, onClose, onCommit, onUndo, onRefine, onSelect, onEdit, onArchive }: Props) {
   const theme = resolveAccent(module.config.accent, module.config.title);
   const icon = resolveIconName(module.config.icon, module.config.title);
+  // R-1306 dialog floor (mount IS open): focus enters on the ← Canvas button,
+  // Tab cycles through the module's fields, Escape closes just this view, and
+  // focus restores to the card's expand button on close. When the Inspector is
+  // open ABOVE this view, focus sits in that sibling — this trap never fires.
+  const { ref: dialogRef, onKeyDown } = useDialog<HTMLDivElement>(true, onClose);
   return (
-    <div className="fixed inset-0 z-30 bg-[var(--background)] flex flex-col animate-fade">
+    <div
+      ref={dialogRef}
+      role="dialog"
+      aria-modal="true"
+      aria-label={`${module.config.title} — full page`}
+      onKeyDown={onKeyDown}
+      className="fixed inset-0 z-30 bg-[var(--background)] flex flex-col animate-fade"
+    >
       <header className="h-14 shrink-0 px-4 flex items-center gap-3 border-b border-[var(--border)]"
         style={{ ["--accent" as string]: theme.accent } as React.CSSProperties}>
         <button type="button" onClick={onClose}

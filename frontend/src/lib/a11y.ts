@@ -1,5 +1,6 @@
 // Pure keyboard-accessibility decisions (R-1306). DOM wiring lives in the
-// components (Module.tsx arrow-nudge) — the math is here so vitest can pin it.
+// components (Module.tsx arrow-nudge) and useDialog.ts (the dialog-floor
+// hook) — the math is here so vitest can pin it.
 
 /** World-units a focused module moves per arrow press; Shift takes the big hop. */
 export const NUDGE_STEP = 16;
@@ -26,4 +27,27 @@ export function arrowNudgeDelta(
     default:
       return null;
   }
+}
+
+/** What counts as a dialog's tabbable (mirrors ProfilePanel's proven trap). */
+export const TABBABLE_SELECTOR =
+  'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+/**
+ * Focus-trap cycle: given the focused element's index among a dialog's
+ * tabbables, decide where Tab / Shift+Tab must move focus. `null` means the
+ * move is interior — let the browser handle it natively (preserves natural
+ * tab order; only the edges wrap). An index of -1 (focus escaped or sits on
+ * a non-tabbable) pulls focus back into the dialog.
+ */
+export function trapTabTarget(
+  activeIndex: number,
+  count: number,
+  shiftKey: boolean,
+): number | null {
+  if (count === 0) return null;
+  if (activeIndex === -1) return shiftKey ? count - 1 : 0;
+  if (shiftKey && activeIndex === 0) return count - 1;
+  if (!shiftKey && activeIndex === count - 1) return 0;
+  return null;
 }

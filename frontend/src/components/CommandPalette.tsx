@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { Page, StoredModule } from "@/lib/types";
 import { resolveIconName } from "@/lib/theme";
+import { useDialog } from "@/lib/useDialog";
 import { Icon } from "./Icon";
 
 export interface Action {
@@ -34,12 +35,16 @@ export function CommandPalette({ open, onClose, pages, allModules, actions, onGo
   const [q, setQ] = useState("");
   const [sel, setSel] = useState(0);
   const inputRef = useRef<HTMLInputElement | null>(null);
+  // R-1306 dialog floor: focus into the palette on open (its first tabbable IS
+  // the search input), Tab cycles input↔rows, Escape closes just the palette,
+  // and focus restores to the opener (the header search button / wherever ⌘K
+  // was pressed) on close.
+  const { ref: dialogRef, onKeyDown: onDialogKeyDown } = useDialog<HTMLDivElement>(open, onClose);
 
   useEffect(() => {
     if (open) {
       setQ("");
       setSel(0);
-      setTimeout(() => inputRef.current?.focus(), 0);
     }
   }, [open]);
 
@@ -88,6 +93,11 @@ export function CommandPalette({ open, onClose, pages, allModules, actions, onGo
   return (
     <div className="fixed inset-0 z-50 flex items-start justify-center pt-[12vh] bg-black/30 animate-fade" onMouseDown={onClose}>
       <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Search and commands"
+        onKeyDown={onDialogKeyDown}
         className="w-[min(560px,calc(100%-2rem))] rounded-2xl border border-[var(--border)] bg-[var(--surface)] shadow-2xl shadow-black/40 overflow-hidden animate-scale-in"
         onMouseDown={(e) => e.stopPropagation()}
       >
@@ -99,7 +109,7 @@ export function CommandPalette({ open, onClose, pages, allModules, actions, onGo
             if (e.key === "ArrowDown") { e.preventDefault(); setSel((s) => Math.min(s + 1, rows.length - 1)); }
             else if (e.key === "ArrowUp") { e.preventDefault(); setSel((s) => Math.max(s - 1, 0)); }
             else if (e.key === "Enter") { e.preventDefault(); if (rows[sel]) choose(rows[sel]); }
-            else if (e.key === "Escape") { e.preventDefault(); onClose(); }
+            // Escape bubbles to the dialog container (useDialog closes + consumes it).
           }}
           placeholder="Search tools, pages, entries — or type a command…"
           className="w-full bg-transparent px-4 py-3.5 text-sm focus:outline-none border-b border-[var(--border)] placeholder:text-[var(--muted)]"

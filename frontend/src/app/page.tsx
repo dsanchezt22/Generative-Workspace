@@ -812,6 +812,16 @@ export default function Home() {
 
   return (
     <div className="flex h-screen w-full">
+      {/* R-1306: the page's FIRST tabbable — jumps a keyboard user straight to
+          the canvas instead of forcing a tour of the sidebar. Visually hidden
+          until focused, then a small on-theme chip (existing tokens only). */}
+      <a
+        href="#canvas-main"
+        onClick={(e) => { e.preventDefault(); mainRef.current?.focus(); }}
+        className="sr-only focus:not-sr-only focus:fixed focus:top-3 focus:left-3 focus:z-[70] focus:rounded-md focus:border focus:border-[var(--accent)] focus:bg-[var(--surface)] focus:px-3 focus:py-1.5 focus:text-sm"
+      >
+        Skip to canvas
+      </a>
       <Sidebar
         pages={pages}
         activePageId={activePageId}

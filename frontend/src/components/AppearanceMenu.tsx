@@ -3,12 +3,17 @@
 import { useEffect, useRef, useState } from "react";
 import { useAppearance, type Density, type Motion, type Scale, type ThemeMode } from "@/lib/appearance";
 import { ACCENTS, ACCENT_NAMES } from "@/lib/theme";
+import { useDialog } from "@/lib/useDialog";
 import { Icon } from "./Icon";
 
 export function AppearanceMenu() {
   const { theme, density, accent, scale, motion, grid, setTheme, setDensity, setAccent, setScale, setMotion, setGrid } = useAppearance();
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement | null>(null);
+  // R-1306 floor for the one non-modal popover (role=menu, no aria-modal):
+  // focus enters the menu on open, Tab cycles inside, Escape closes it and
+  // hands focus back to the trigger button. Outside-click close stays.
+  const { ref: menuRef, onKeyDown } = useDialog<HTMLDivElement>(open, () => setOpen(false));
 
   useEffect(() => {
     if (!open) return;
@@ -31,13 +36,20 @@ export function AppearanceMenu() {
         onClick={() => setOpen((v) => !v)}
         className="w-7 h-7 rounded-full bg-[var(--surface-elevated)] border border-[var(--border)] grid place-items-center text-xs text-[var(--muted)] hover:text-[var(--foreground)] transition"
         aria-label="Account & appearance"
+        aria-haspopup="menu"
+        aria-expanded={open}
         title="Account & appearance"
       >
         <Icon name="sliders" size={14} />
       </button>
 
       {open && (
-        <div className="absolute right-0 top-9 z-40 w-60 rounded-xl border border-[var(--border)] bg-[var(--surface)] shadow-2xl shadow-black/30 p-3 flex flex-col gap-3">
+        <div
+          ref={menuRef}
+          role="menu"
+          aria-label="Account & appearance"
+          onKeyDown={onKeyDown}
+          className="absolute right-0 top-9 z-40 w-60 rounded-xl border border-[var(--border)] bg-[var(--surface)] shadow-2xl shadow-black/30 p-3 flex flex-col gap-3">
           <div>
             <p className="text-[10px] uppercase tracking-wide text-[var(--muted)] mb-1.5">Theme</p>
             <div className="flex gap-1 rounded-lg bg-[var(--surface-elevated)] p-1">

@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { Automation, Component, ComponentType, ModuleConfig, StoredModule } from "@/lib/types";
 import { COMPONENT_TYPES, makeComponent } from "@/lib/componentFactory";
 import { ICON_CHOICES, resolveAccent, resolveIconName } from "@/lib/theme";
+import { useDialog } from "@/lib/useDialog";
 import { Icon } from "./Icon";
 import { Select } from "./Select";
 import { FieldOptions } from "./FieldOptions";
@@ -106,12 +107,23 @@ export function Inspector({ module, onCommit, onClose, onRefine, onDuplicate, on
   const theme = resolveAccent(draft.accent, draft.title);
   const iconName = resolveIconName(draft.icon, draft.title);
 
+  // R-1306 dialog floor (mount IS open): focus enters on the header ✕, Tab
+  // cycles through the editing controls, Escape closes just the inspector,
+  // and focus restores to the card's pen button on close.
+  const { ref: dialogRef, onKeyDown } = useDialog<HTMLElement>(true, onClose);
+
   const seg = "flex-1 text-xs px-2 py-1 rounded-md transition capitalize";
   const segOn = "bg-[var(--accent)] text-[var(--accent-fg)]";
   const segOff = "text-[var(--muted)] hover:text-[var(--foreground)]";
 
   return (
-    <aside className="fixed top-0 right-0 h-screen w-[320px] max-w-[85vw] z-30 bg-[var(--surface)] border-l border-[var(--border)] shadow-2xl shadow-black/30 flex flex-col animate-slide-right"
+    <aside
+      ref={dialogRef}
+      role="dialog"
+      aria-modal="true"
+      aria-label={`Edit ${draft.title || "untitled module"}`}
+      onKeyDown={onKeyDown}
+      className="fixed top-0 right-0 h-screen w-[320px] max-w-[85vw] z-30 bg-[var(--surface)] border-l border-[var(--border)] shadow-2xl shadow-black/30 flex flex-col animate-slide-right"
       style={{ ["--accent" as string]: theme.accent, ["--accent-fg" as string]: theme.accentFg } as React.CSSProperties}>
       <header className="flex items-center gap-2 px-4 h-14 border-b border-[var(--border)] shrink-0">
         <span className="leading-none" style={{ color: "var(--accent)" }}><Icon name={iconName} size={18} /></span>
