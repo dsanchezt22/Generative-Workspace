@@ -52,6 +52,11 @@ CREATE TABLE IF NOT EXISTS pages (
     -- canvas as an enterable portal tile. Nullable → auto-placed until dragged.
     portal_x    REAL,
     portal_y    REAL,
+    -- R-504 completion: the page's OWN saved viewport (pan offset + zoom), so a
+    -- user's view resumes across devices. Nullable → client default until saved.
+    view_x      REAL,
+    view_y      REAL,
+    view_zoom   REAL,
     created_at  TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_pages_session
@@ -224,6 +229,13 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE pages ADD COLUMN portal_x REAL")
     if "portal_y" not in pcols:
         conn.execute("ALTER TABLE pages ADD COLUMN portal_y REAL")
+    # R-504 completion: the page's own saved viewport (pan/zoom, cross-device).
+    if "view_x" not in pcols:
+        conn.execute("ALTER TABLE pages ADD COLUMN view_x REAL")
+    if "view_y" not in pcols:
+        conn.execute("ALTER TABLE pages ADD COLUMN view_y REAL")
+    if "view_zoom" not in pcols:
+        conn.execute("ALTER TABLE pages ADD COLUMN view_zoom REAL")
     # Screenshot-capture metadata on layout_library (all nullable; image never stored).
     lcols = {r[1] for r in conn.execute("PRAGMA table_info(layout_library)").fetchall()}
     for col, decl in (
@@ -376,7 +388,9 @@ def adopt_session_data(old_owner: str, user_id: str) -> None:
 # Pages
 # ---------------------------------------------------------------------------
 
-_PAGE_COLS = "id, name, icon, parent_id, position, portal_x, portal_y, created_at"
+_PAGE_COLS = (
+    "id, name, icon, parent_id, position, portal_x, portal_y, view_x, view_y, view_zoom, created_at"
+)
 
 
 def _page_from_row(r, session_id: str) -> Page:
@@ -388,6 +402,9 @@ def _page_from_row(r, session_id: str) -> Page:
         position=r["position"],
         portal_x=r["portal_x"],
         portal_y=r["portal_y"],
+        view_x=r["view_x"],
+        view_y=r["view_y"],
+        view_zoom=r["view_zoom"],
         session_id=session_id,
         created_at=r["created_at"],
     )
@@ -474,6 +491,9 @@ def update_page(
     parent_id=_UNSET,
     portal_x=_UNSET,
     portal_y=_UNSET,
+    view_x=_UNSET,
+    view_y=_UNSET,
+    view_zoom=_UNSET,
 ) -> Page | None:
     sets, params = [], []
     if name is not _UNSET:
@@ -493,6 +513,17 @@ def update_page(
     if portal_y is not _UNSET:
         sets.append("portal_y = ?")
         params.append(portal_y)
+    # R-504 completion: the page's own viewport (pan/zoom) — same owner-scoped
+    # additive pattern as the portal placement above.
+    if view_x is not _UNSET:
+        sets.append("view_x = ?")
+        params.append(view_x)
+    if view_y is not _UNSET:
+        sets.append("view_y = ?")
+        params.append(view_y)
+    if view_zoom is not _UNSET:
+        sets.append("view_zoom = ?")
+        params.append(view_zoom)
     if not sets:
         return get_page(session_id, page_id)
     params += [page_id, session_id]

@@ -151,6 +151,56 @@ def test_update_page_rejects_blank_name(client):
     assert resp.status_code == 422
 
 
+# ---------------------------------------------------------------------------
+# parent_id validation (R-503): a dangling/foreign parent makes the page
+# invisible in the sidebar tree + portal layer, so both create and reparent
+# reject a parent that isn't an owned, existing page.
+# ---------------------------------------------------------------------------
+
+
+def test_create_page_rejects_nonexistent_parent(client):
+    _ensure_session(client)
+    resp = client.post("/api/pages", json={"name": "Orphan", "parent_id": "no-such-page"})
+    assert resp.status_code == 422
+
+
+def test_create_page_rejects_foreign_parent(client, client2):
+    """R-903: another owner's page id as parent is treated as nonexistent → 422
+    (never a hint that the id exists)."""
+    _ensure_session(client)
+    a_page = client.post("/api/pages", json={"name": "A"}).json()
+    _ensure_session(client2)
+    resp = client2.post("/api/pages", json={"name": "B", "parent_id": a_page["id"]})
+    assert resp.status_code == 422
+
+
+def test_create_page_with_own_valid_parent_ok(client):
+    _ensure_session(client)
+    root = client.get("/api/pages").json()[0]["id"]
+    resp = client.post("/api/pages", json={"name": "Child", "parent_id": root})
+    assert resp.status_code == 201
+    assert resp.json()["parent_id"] == root
+
+
+def test_update_page_rejects_nonexistent_parent(client):
+    _ensure_session(client)
+    page_id = client.get("/api/pages").json()[0]["id"]
+    resp = client.patch(f"/api/pages/{page_id}", json={"parent_id": "no-such-page"})
+    assert resp.status_code == 422
+
+
+def test_update_page_rejects_foreign_parent(client, client2):
+    _ensure_session(client)
+    a_page = client.post("/api/pages", json={"name": "A"}).json()
+    _ensure_session(client2)
+    b_page = client2.post("/api/pages", json={"name": "B"}).json()
+    resp = client2.patch(f"/api/pages/{b_page['id']}", json={"parent_id": a_page["id"]})
+    assert resp.status_code == 422
+    # B's page is untouched.
+    reread = next(p for p in client2.get("/api/pages").json() if p["id"] == b_page["id"])
+    assert reread["parent_id"] is None
+
+
 def test_reorder_pages_updates_position(client):
     _ensure_session(client)
     first = client.get("/api/pages").json()[0]
@@ -301,10 +351,11 @@ def test_page_module_counts_owner_scoped(client, client2):
 
 
 def test_migration_adds_portal_columns_idempotently(tmp_path):
-    """A legacy pages table (no portal cols) gains portal_x/portal_y on migrate,
-    and a second migrate pass is a no-op (a re-ALTER would raise 'duplicate
-    column name'). Uses its OWN tmp DB (never the shared _db_path()) so it can't
-    perturb the concurrent-migration race test's isolation."""
+    """A legacy pages table (no portal/viewport cols) gains portal_x/portal_y +
+    view_x/view_y/view_zoom on migrate, and a second migrate pass is a no-op (a
+    re-ALTER would raise 'duplicate column name'). Uses its OWN tmp DB (never
+    the shared _db_path()) so it can't perturb the concurrent-migration race
+    test's isolation."""
     import sqlite3
 
     from src import db as dbmod
@@ -321,7 +372,55 @@ def test_migration_adds_portal_columns_idempotently(tmp_path):
         conn.executescript(dbmod._SCHEMA)
         dbmod._migrate(conn)
         cols = {r[1] for r in conn.execute("PRAGMA table_info(pages)").fetchall()}
-        assert {"portal_x", "portal_y"} <= cols
+        assert {"portal_x", "portal_y", "view_x", "view_y", "view_zoom"} <= cols
         dbmod._migrate(conn)  # idempotent second pass — must not raise
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Per-page viewport (R-504 completion): pan/zoom persists on the page row so a
+# user's view resumes across devices (was localStorage-only).
+# ---------------------------------------------------------------------------
+
+
+def test_viewport_defaults_null(client):
+    _ensure_session(client)
+    page = client.post("/api/pages", json={"name": "P"}).json()
+    assert page["view_x"] is None
+    assert page["view_y"] is None
+    assert page["view_zoom"] is None
+
+
+def test_viewport_persists(client):
+    """view_x/view_y/view_zoom persist on the page row (R-504) and read back
+    through the list, not just the PATCH echo."""
+    _ensure_session(client)
+    page_id = client.get("/api/pages").json()[0]["id"]
+    resp = client.patch(
+        f"/api/pages/{page_id}", json={"view_x": -320.25, "view_y": 48.0, "view_zoom": 0.75}
+    )
+    assert resp.status_code == 200
+    assert resp.json()["view_x"] == -320.25
+    assert resp.json()["view_y"] == 48.0
+    assert resp.json()["view_zoom"] == 0.75
+    reread = next(p for p in client.get("/api/pages").json() if p["id"] == page_id)
+    assert reread["view_x"] == -320.25
+    assert reread["view_y"] == 48.0
+    assert reread["view_zoom"] == 0.75
+
+
+def test_viewport_owner_scoped(client, client2):
+    """R-903: owner B can't set owner A's page viewport — the PATCH 404s and A's
+    page is untouched."""
+    _ensure_session(client)
+    a_page = client.post("/api/pages", json={"name": "A"}).json()
+    _ensure_session(client2)
+    resp = client2.patch(
+        f"/api/pages/{a_page['id']}", json={"view_x": 1.0, "view_y": 2.0, "view_zoom": 1.5}
+    )
+    assert resp.status_code == 404
+    reread = next(p for p in client.get("/api/pages").json() if p["id"] == a_page["id"])
+    assert reread["view_x"] is None
+    assert reread["view_y"] is None
+    assert reread["view_zoom"] is None
