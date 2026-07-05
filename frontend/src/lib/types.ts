@@ -59,6 +59,10 @@ export interface LiveValuePayload {
   source: string;
   stale: boolean;
   error: string | null;
+  /** Structured off-mode marker (TRUS_LIVE_DATA=off): present-and-true only on
+   * the backend's disabled payload. THIS boolean is the off-mode signal — never
+   * the error string, which is free to be reworded (R-701 hardening). */
+  disabled?: boolean;
 }
 
 export interface TextInput extends ComponentBase {

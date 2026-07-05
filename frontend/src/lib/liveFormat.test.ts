@@ -1,13 +1,23 @@
 import { describe, expect, it } from "vitest";
+import type { LiveValuePayload } from "./types";
 import {
   buildLiveQueryParams,
   clampRefreshSecs,
   formatLiveNumber,
   formatRelativeTime,
   isLiveDataDisabled,
-  LIVE_DATA_DISABLED_ERROR,
   providerDisplayName,
 } from "./liveFormat";
+
+const payload = (over: Partial<LiveValuePayload>): LiveValuePayload => ({
+  value: null,
+  unit: null,
+  as_of: null,
+  source: "weather",
+  stale: false,
+  error: null,
+  ...over,
+});
 
 describe("providerDisplayName (R-701, 3-2 Minor (a) fold-in)", () => {
   it("maps weather to Open-Meteo", () => {
@@ -21,13 +31,27 @@ describe("providerDisplayName (R-701, 3-2 Minor (a) fold-in)", () => {
   });
 });
 
-describe("isLiveDataDisabled / LIVE_DATA_DISABLED_ERROR", () => {
-  it("recognizes the exact disabled-marker text", () => {
-    expect(isLiveDataDisabled(LIVE_DATA_DISABLED_ERROR)).toBe(true);
-    expect(isLiveDataDisabled("Live data is disabled")).toBe(true);
+describe("isLiveDataDisabled (structured off-mode flag, R-701 hardening)", () => {
+  it("keys on the payload's disabled boolean, not the error copy", () => {
+    expect(
+      isLiveDataDisabled(payload({ disabled: true, error: "Live data is disabled" })),
+    ).toBe(true);
   });
-  it("treats any other error (or null) as a real failure, not disabled", () => {
-    expect(isLiveDataDisabled("Could not reach Open-Meteo: timeout")).toBe(false);
+  it("a REWORDED disabled message still reads as off-mode (no string-matching)", () => {
+    expect(
+      isLiveDataDisabled(payload({ disabled: true, error: "Live data has been switched off." })),
+    ).toBe(true);
+  });
+  it("an error WITHOUT the flag is a real failure, not off-mode — even the old marker text", () => {
+    expect(
+      isLiveDataDisabled(payload({ error: "Could not reach Open-Meteo: timeout" })),
+    ).toBe(false);
+    // The exact legacy copy alone must NOT flip off-mode anymore: the string is
+    // back-compat payload decoration, the boolean is the signal.
+    expect(isLiveDataDisabled(payload({ error: "Live data is disabled" }))).toBe(false);
+    expect(isLiveDataDisabled(payload({ disabled: false }))).toBe(false);
+  });
+  it("treats a missing payload as not disabled", () => {
     expect(isLiveDataDisabled(null)).toBe(false);
     expect(isLiveDataDisabled(undefined)).toBe(false);
   });
