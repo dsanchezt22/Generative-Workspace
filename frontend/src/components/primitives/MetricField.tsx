@@ -28,6 +28,12 @@ export function MetricField({ spec, value }: Props) {
   const liveActive = showLive && live.value !== null;
   const displayValue = liveActive ? live.value! : value;
   const unit = liveActive ? live.unit : spec.unit;
+  // Honesty (R-701): only claim "live" when there's an actual live value or one
+  // is loading. If the provider is down with nothing cached (value === null &&
+  // !loading), the number shown is the manual/computed formula value — so label
+  // it as such and let LiveMeta's "via X — unavailable" carry the provenance,
+  // rather than badging a non-live value "live".
+  const liveTag = showLive && (live.loading || live.value !== null);
 
   const animated = useCountUp(displayValue);
 
@@ -36,7 +42,7 @@ export function MetricField({ spec, value }: Props) {
       <div className="flex items-baseline justify-between">
         <span className="text-xs text-[var(--muted)]">{spec.label}</span>
         <span className="text-[10px] text-[var(--muted)] font-mono uppercase tracking-wide">
-          {showLive ? "live" : FORMULA_LABEL[spec.formula]}
+          {liveTag ? "live" : FORMULA_LABEL[spec.formula]}
         </span>
       </div>
       <div className="flex items-baseline gap-1">

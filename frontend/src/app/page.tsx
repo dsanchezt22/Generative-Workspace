@@ -459,15 +459,29 @@ export default function Home() {
 
   // R-504: dragging a child's portal tile persists its placement on the page row
   // (owner-scoped server-side). Optimistic — the tile stays where the user dropped
-  // it while the PATCH lands; a failure logs but doesn't yank it back.
+  // it while the PATCH lands; on failure it rolls back to the prior spot (the move
+  // never persisted, so leaving it would silently revert on next load) and flashes
+  // a low-drama notice.
   const handlePortalMove = useCallback(async (pageId: string, x: number, y: number) => {
-    setPages((prev) => prev.map((p) => (p.id === pageId ? { ...p, portal_x: x, portal_y: y } : p)));
+    let prevPos: { portal_x?: number | null; portal_y?: number | null } | undefined;
+    setPages((prev) =>
+      prev.map((p) => {
+        if (p.id !== pageId) return p;
+        prevPos = { portal_x: p.portal_x, portal_y: p.portal_y };
+        return { ...p, portal_x: x, portal_y: y };
+      }),
+    );
     try {
       await api.updatePage(pageId, { portal_x: x, portal_y: y });
     } catch (err) {
       console.error("Failed to persist portal position", err);
+      if (prevPos) {
+        const restore = prevPos;
+        setPages((prev) => prev.map((p) => (p.id === pageId ? { ...p, ...restore } : p)));
+      }
+      flashNotice("Couldn't save the tile's new spot — moved it back.");
     }
-  }, []);
+  }, [flashNotice]);
 
   const handleCreatePage = useCallback(async (parentId?: string | null) => {
     try {
