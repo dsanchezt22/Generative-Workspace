@@ -1,5 +1,6 @@
 import contextlib
 import os
+import re
 import time
 from typing import Literal
 
@@ -91,22 +92,85 @@ def _fold_exchange(exchange: list[ExchangeTurn] | None) -> str | None:
 # heuristic tags "goal" vs "fact"; bounded to the first 3 answered turns.
 _PROFILE_GOAL_WORDS = ("want", "goal", "track")
 
+# R-802 completion: prompt-derived accretion. Same keyword style as the
+# interview tagger, but as a GATE, not a tagger — a prompt that doesn't state a
+# durable goal/preference accretes nothing at all (conservative > eager; a
+# plain build instruction like "add a notes field" must never become a fact).
+_PROMPT_GOAL_WORDS = ("want", "goal", "track", "prefer", "trying to")
 
-def _accrete_profile_facts(sid: str, exchange: list[ExchangeTurn] | None) -> None:
-    """Fires on a CONFIRMED insert (POST /api/modules) that carries the exchange
-    which produced the accepted tools — so only a proposal the user actually
-    accepted accretes anything; a discarded preview draft never does. (Preview/
-    generate deliberately do NOT accrete: the user hasn't committed there yet.)
-    Best-effort: a profile write must never break the insert response."""
-    if not exchange:
-        return
-    for turn in exchange[:3]:
+# R-802 completion: workspace-activity accretion. A SMALL known set of domain
+# patterns matched against the inserted tools' title words; anything outside it
+# accretes nothing (no guessing, no noise). Keywords are matched as whole words
+# (plus a naive plural fold) so e.g. "booking" never matches "book".
+_ACTIVITY_DOMAINS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("nutrition", ("nutrition", "calorie", "macro", "meal", "diet")),
+    ("workouts", ("workout", "exercise", "gym", "fitness", "training")),
+    ("budget/finances", ("budget", "expense", "spending", "finance", "saving")),
+    ("habits", ("habit",)),
+    ("sleep", ("sleep",)),
+    ("reading", ("reading", "book")),
+    ("mood", ("mood",)),
+)
+
+
+def _prompt_goal_fact(prompt: str | None) -> tuple[str, str] | None:
+    """("goal", text) when the originating prompt states a durable goal or
+    preference; None otherwise. Text is trimmed and bounded to 200 chars.
+    Pure — unit-tested directly."""
+    if not prompt:
+        return None
+    text = prompt.strip()[:200].strip()
+    if not text:
+        return None
+    if any(w in text.lower() for w in _PROMPT_GOAL_WORDS):
+        return ("goal", text)
+    return None
+
+
+def _activity_fact(configs: list[ModuleConfig]) -> tuple[str, str] | None:
+    """("pattern", "Tracks {domain}") when the inserted tools' titles match one
+    of the known `_ACTIVITY_DOMAINS`; None when nothing matches confidently.
+    Pure — unit-tested directly."""
+    words: set[str] = set()
+    for config in configs:
+        words.update(re.findall(r"[a-z]+", config.title.lower()))
+    words |= {w[:-1] for w in words if w.endswith("s")}  # "calories" → "calorie"
+    for domain, keywords in _ACTIVITY_DOMAINS:
+        if any(k in words for k in keywords):
+            return ("pattern", f"Tracks {domain}")
+    return None
+
+
+def _accrete_profile_facts(
+    sid: str,
+    exchange: list[ExchangeTurn] | None,
+    prompt: str | None = None,
+    configs: list[ModuleConfig] | None = None,
+) -> None:
+    """Fires on a CONFIRMED insert (POST /api/modules) — so only a proposal the
+    user actually accepted accretes anything; a discarded preview draft never
+    does. (Preview/generate deliberately do NOT accrete: the user hasn't
+    committed there yet.) Three sources, each independently best-effort so one
+    failing can never block the others or the insert response:
+    - interview (Stage 3): the exchange answers, verbatim, first 3 turns;
+    - prompt (R-802 completion): ≤1 fact, only a goal/preference-stating prompt;
+    - activity (R-802 completion): ≤1 fact, only a recognized tool domain.
+    All land in the same owner-scoped, deduped, cap-50, user-inspectable store."""
+    for turn in (exchange or [])[:3]:
         answer = turn.answer.strip()
         if not answer:
             continue
         kind = "goal" if any(w in answer.lower() for w in _PROFILE_GOAL_WORDS) else "fact"
         with contextlib.suppress(Exception):
             db.profile_add(sid, kind, answer[:500], source="interview")
+    with contextlib.suppress(Exception):
+        prompt_fact = _prompt_goal_fact(prompt)
+        if prompt_fact:
+            db.profile_add(sid, prompt_fact[0], prompt_fact[1], source="prompt")
+    with contextlib.suppress(Exception):
+        activity_fact = _activity_fact(configs or [])
+        if activity_fact:
+            db.profile_add(sid, activity_fact[0], activity_fact[1], source="activity")
 
 
 def _log(
@@ -256,9 +320,10 @@ async def insert_modules(
     """Persist accepted preview tools onto the canvas."""
     sid = _owner_id(request)
     stored = [db.insert_module(sid, c, page_id=page_id) for c in body.configs]
-    # R-802: accrete profile facts from the interview that produced these tools —
-    # only now, on a confirmed accept, so discarded drafts never enter the profile.
-    _accrete_profile_facts(sid, body.exchange)
+    # R-802: accrete profile facts from the interview, the originating prompt,
+    # and the accepted tools themselves (workspace activity) — only now, on a
+    # confirmed accept, so discarded drafts never enter the profile.
+    _accrete_profile_facts(sid, body.exchange, prompt=body.prompt, configs=body.configs)
     if stored and body.prompt:
         _log(sid, "user", body.prompt, page_id=stored[0].page_id)
     for s in stored:
