@@ -6,6 +6,7 @@ import { Canvas } from "@/components/Canvas";
 import { ConversationPanel } from "@/components/ConversationPanel";
 import { ArchivedPanel } from "@/components/ArchivedPanel";
 import { SnapshotsPanel } from "@/components/SnapshotsPanel";
+import { ProfilePanel } from "@/components/ProfilePanel";
 import { Inspector } from "@/components/Inspector";
 import { DetailView } from "@/components/DetailView";
 import { Sidebar } from "@/components/Sidebar";
@@ -97,6 +98,13 @@ export default function Home() {
   const [archived, setArchived] = useState<StoredModule[]>([]);
   const [snapshotsOpen, setSnapshotsOpen] = useState(false);
   const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
+  // R-502: live module count per page, for the child-page portal tiles' cheap
+  // "N tools" preview. One grouped COUNT server-side — never loads child configs.
+  const [childCounts, setChildCounts] = useState<Record<string, number>>({});
+  // R-801: the "remembers you" profile surface. ProfilePanel fetches + owns its
+  // own facts state; page.tsx only toggles visibility and keeps it mutually
+  // exclusive with the other right-hand panels.
+  const [profileOpen, setProfileOpen] = useState(false);
   // R-1102: page delete is the most destructive action (cascades every module
   // on the page) — always confirmed, stating the module count. Holds the page
   // plus its real module ids: `modules` state only covers the ACTIVE page,
@@ -271,6 +279,12 @@ export default function Home() {
     api.listConversation(pageId).then(setMessages).catch(() => {});
   }, []);
 
+  // R-502: refresh the per-page module counts for the portal tiles. Cheap
+  // (grouped COUNT), so it's fine to re-fetch on navigation and after generation.
+  const refreshChildCounts = useCallback(() => {
+    api.pageModuleCounts().then(setChildCounts).catch(() => {});
+  }, []);
+
   // Check invite-claim status first (R-901): an unclaimed session (prod, anon
   // off) gets the gate instead of the canvas, before any workspace data loads.
   // Then load pages, then modules + conversation for the first page. The
@@ -341,12 +355,30 @@ export default function Home() {
           pendingFocusRef.current = null;
           setSelectedId(id);
           setFocusReq({ id, n: Date.now() });
+        } else if (
+          // R-502 discoverability: portal tiles live in a shelf ABOVE the module
+          // grid, so a raw {0,0,1} view leaves them above the viewport. On the
+          // FIRST visit of a page that has child portals (no saved view yet), defer
+          // a fit so modules + the portal shelf land framed together. A page the
+          // user has already arranged keeps its saved view (no regression).
+          pages.some((p) => (p.parent_id ?? null) === activePageId) &&
+          !localStorage.getItem(`trus-view-${activePageId}`)
+        ) {
+          window.setTimeout(() => setFitReq((n) => n + 1), 180);
         }
       })
       .catch((err) => console.error("Failed to load modules for page", err));
     reloadConvo(activePageId);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activePageId]);
+
+  // R-502: keep the portal tiles' "N tools" counts fresh — refetch when the
+  // active page changes (incl. first load once activePageId resolves, and when
+  // returning to a parent after building in a child).
+  useEffect(() => {
+    if (!activePageId) return;
+    refreshChildCounts();
+  }, [activePageId, refreshChildCounts]);
 
   const handleNewModule = useCallback((m: StoredModule) => {
     setModules((prev) => {
@@ -410,6 +442,7 @@ export default function Home() {
     setConvoOpen(false);
     setArchivedOpen(false);
     setSnapshotsOpen(false);
+    setProfileOpen(false);
   }, []);
 
   const handleRefinedModule = useCallback((updated: StoredModule) => {
@@ -423,6 +456,32 @@ export default function Home() {
     setActivePageId(id);
     setRefineTarget(null);
   }, []);
+
+  // R-504: dragging a child's portal tile persists its placement on the page row
+  // (owner-scoped server-side). Optimistic — the tile stays where the user dropped
+  // it while the PATCH lands; on failure it rolls back to the prior spot (the move
+  // never persisted, so leaving it would silently revert on next load) and flashes
+  // a low-drama notice.
+  const handlePortalMove = useCallback(async (pageId: string, x: number, y: number) => {
+    let prevPos: { portal_x?: number | null; portal_y?: number | null } | undefined;
+    setPages((prev) =>
+      prev.map((p) => {
+        if (p.id !== pageId) return p;
+        prevPos = { portal_x: p.portal_x, portal_y: p.portal_y };
+        return { ...p, portal_x: x, portal_y: y };
+      }),
+    );
+    try {
+      await api.updatePage(pageId, { portal_x: x, portal_y: y });
+    } catch (err) {
+      console.error("Failed to persist portal position", err);
+      if (prevPos) {
+        const restore = prevPos;
+        setPages((prev) => prev.map((p) => (p.id === pageId ? { ...p, ...restore } : p)));
+      }
+      flashNotice("Couldn't save the tile's new spot — moved it back.");
+    }
+  }, [flashNotice]);
 
   const handleCreatePage = useCallback(async (parentId?: string | null) => {
     try {
@@ -506,7 +565,13 @@ export default function Home() {
     }
     setModules((prev) => prev.filter((m) => m.page_id !== req.page.id));
     setPages((prev) => {
-      const remaining = prev.filter((p) => p.id !== req.page.id);
+      // R-503: mirror the server's reparent-not-orphan — the deleted page's
+      // direct children move up to its own parent (grandparent, or root), so the
+      // sidebar tree stays correct without a reload instead of orphaning them.
+      const grandparent = req.page.parent_id ?? null;
+      const remaining = prev
+        .filter((p) => p.id !== req.page.id)
+        .map((p) => ((p.parent_id ?? null) === req.page.id ? { ...p, parent_id: grandparent } : p));
       setActivePageId((cur) => (cur === req.page.id ? remaining[remaining.length - 1]?.id ?? null : cur));
       return remaining;
     });
@@ -552,6 +617,7 @@ export default function Home() {
     setInspectorId(null);
     setConvoOpen(false);
     setSnapshotsOpen(false);
+    setProfileOpen(false);
     try { setArchived(await api.listArchived()); } catch { setArchived([]); }
     setArchivedOpen(true);
   }, []);
@@ -578,9 +644,21 @@ export default function Home() {
     setInspectorId(null);
     setConvoOpen(false);
     setArchivedOpen(false);
+    setProfileOpen(false);
     try { setSnapshots(await api.listSnapshots(activePageId)); } catch { setSnapshots([]); }
     setSnapshotsOpen(true);
   }, [activePageId]);
+
+  // Profile opens like the others (mutually exclusive with the right-hand
+  // panels). The panel fetches its own facts on mount, so this just toggles it.
+  const openProfile = useCallback(() => {
+    setSelectedId(null);
+    setInspectorId(null);
+    setConvoOpen(false);
+    setArchivedOpen(false);
+    setSnapshotsOpen(false);
+    setProfileOpen(true);
+  }, []);
 
   const handleSaveSnapshot = useCallback(async () => {
     if (!activePageId) return;
@@ -656,7 +734,7 @@ export default function Home() {
       if (mod && e.key === "/") { e.preventDefault(); setPromptFocus((n) => n + 1); return; }
       if (mod && e.key.toLowerCase() === "d" && selectedId) { e.preventDefault(); handleDuplicateModule(selectedId); return; }
       if (mod && e.key.toLowerCase() === "z" && selectedId && !typing) { e.preventDefault(); handleUndoModule(selectedId); return; }
-      if (e.key === "Escape") { setCmdOpen(false); setShortcutsOpen(false); setArchivedOpen(false); setSnapshotsOpen(false); setDetailId(null); setSelectedId(null); setInspectorId(null); setConvoOpen(false); return; }
+      if (e.key === "Escape") { setCmdOpen(false); setShortcutsOpen(false); setArchivedOpen(false); setSnapshotsOpen(false); setProfileOpen(false); setDetailId(null); setSelectedId(null); setInspectorId(null); setConvoOpen(false); return; }
       if (!typing && !mod) {
         if (e.key === "?" || (e.shiftKey && e.key === "/")) setShortcutsOpen(true);
         else if (e.key.toLowerCase() === "f") setFitReq((n) => n + 1);
@@ -667,6 +745,11 @@ export default function Home() {
   }, [selectedId, toggleSidebar, handleDuplicateModule, handleUndoModule]);
 
   const activeModules = modules.filter((m) => !m.page_id || m.page_id === activePageId);
+  // R-502: this page's direct children render as enterable portal tiles on its canvas.
+  const childPages = useMemo(
+    () => pages.filter((p) => (p.parent_id ?? null) === (activePageId ?? null)),
+    [pages, activePageId],
+  );
   const activePage = pages.find((p) => p.id === activePageId) ?? null;
   const inspectorModule = activeModules.find((m) => m.id === inspectorId) ?? null;
   const detailModule = activeModules.find((m) => m.id === detailId) ?? null;
@@ -708,6 +791,7 @@ export default function Home() {
         onReorder={handleReorderPages}
         onOpenArchived={openArchived}
         onOpenSnapshots={openSnapshots}
+        onOpenProfile={openProfile}
       />
       <main className="flex-1 flex flex-col relative min-w-0">
       <header className="absolute top-0 inset-x-0 z-20 h-14 px-4 sm:px-5 flex items-center gap-3 border-b border-[var(--border)] bg-[var(--background)]/85 backdrop-blur">
@@ -749,7 +833,7 @@ export default function Home() {
 
         <button
           type="button"
-          onClick={() => setConvoOpen((v) => { const n = !v; if (n) { setSelectedId(null); setInspectorId(null); setArchivedOpen(false); setSnapshotsOpen(false); } return n; })}
+          onClick={() => setConvoOpen((v) => { const n = !v; if (n) { setSelectedId(null); setInspectorId(null); setArchivedOpen(false); setSnapshotsOpen(false); setProfileOpen(false); } return n; })}
           className={`shrink-0 flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs transition ${
             convoOpen
               ? "border-[var(--accent)] text-[var(--foreground)]"
@@ -833,8 +917,8 @@ export default function Home() {
         modules={activeModules}
         activePageId={activePageId ?? undefined}
         selectedId={selectedId}
-        onModuleSelect={(id) => { setSelectedId(id); setInspectorId(null); if (id) { setConvoOpen(false); setArchivedOpen(false); setSnapshotsOpen(false); } }}
-        onModuleEdit={(id) => { setSelectedId(id); setInspectorId(id); setConvoOpen(false); setArchivedOpen(false); setSnapshotsOpen(false); }}
+        onModuleSelect={(id) => { setSelectedId(id); setInspectorId(null); if (id) { setConvoOpen(false); setArchivedOpen(false); setSnapshotsOpen(false); setProfileOpen(false); } }}
+        onModuleEdit={(id) => { setSelectedId(id); setInspectorId(id); setConvoOpen(false); setArchivedOpen(false); setSnapshotsOpen(false); setProfileOpen(false); }}
         onModuleExpand={handleExpand}
         onModuleChange={handleModuleChange}
         onModuleCommit={commitModule}
@@ -844,6 +928,10 @@ export default function Home() {
         focusRequest={focusReq}
         fitRequest={fitReq}
         onSketchModules={(mods) => mods.forEach(handleNewModule)}
+        childPages={childPages}
+        childCounts={childCounts}
+        onEnterPortal={handleSelectPage}
+        onPortalMove={handlePortalMove}
       />
 
       {!loading && activeModules.length === 0 && (
@@ -935,6 +1023,8 @@ export default function Home() {
           onDelete={handleDeleteSnapshot}
         />
       )}
+
+      {profileOpen && <ProfilePanel onClose={() => setProfileOpen(false)} />}
       </main>
 
       <CommandPalette

@@ -48,6 +48,10 @@ CREATE TABLE IF NOT EXISTS pages (
     icon        TEXT,
     parent_id   TEXT,
     position    INTEGER NOT NULL DEFAULT 0,
+    -- R-502/R-504: a CHILD page's placement (world coords) on its PARENT's
+    -- canvas as an enterable portal tile. Nullable → auto-placed until dragged.
+    portal_x    REAL,
+    portal_y    REAL,
     created_at  TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_pages_session
@@ -134,6 +138,30 @@ CREATE TABLE IF NOT EXISTS gen_events (
     created_at  TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_gen_events_owner_day ON gen_events (owner, created_at);
+-- Live external-data cache (R-701/R-704): per-provider+query (NOT per-owner —
+-- weather/nutrition lookups are public data), bounding outbound fetches to the
+-- caller-supplied refresh_secs TTL (enforced in services/live_data.py against
+-- fetched_at, not stored here).
+CREATE TABLE IF NOT EXISTS live_cache (
+    provider     TEXT NOT NULL,
+    query_hash   TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    fetched_at   TEXT NOT NULL,
+    PRIMARY KEY (provider, query_hash)
+);
+-- Evolving user profile store (R-801/R-802): per-owner facts Trus has learned
+-- ("remembers you"). owner is the same _owner_id key as every other per-owner
+-- store (R-903) — a claimed uid, or (dev only) the anonymous sid.
+CREATE TABLE IF NOT EXISTS user_profile (
+    id          TEXT PRIMARY KEY,
+    owner       TEXT NOT NULL,
+    kind        TEXT NOT NULL,       -- goal | preference | pattern | fact
+    text        TEXT NOT NULL,
+    source      TEXT NOT NULL,       -- interview | prompt | activity | manual
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_user_profile_owner ON user_profile(owner, updated_at);
 """
 
 # Tracks which db file has had its schema ensured this process, so we re-run the
@@ -190,6 +218,11 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE pages ADD COLUMN icon TEXT")
     if "parent_id" not in pcols:
         conn.execute("ALTER TABLE pages ADD COLUMN parent_id TEXT")
+    # R-502/R-504: portal placement of a child page on its parent's canvas.
+    if "portal_x" not in pcols:
+        conn.execute("ALTER TABLE pages ADD COLUMN portal_x REAL")
+    if "portal_y" not in pcols:
+        conn.execute("ALTER TABLE pages ADD COLUMN portal_y REAL")
     # Screenshot-capture metadata on layout_library (all nullable; image never stored).
     lcols = {r[1] for r in conn.execute("PRAGMA table_info(layout_library)").fetchall()}
     for col, decl in (
@@ -342,7 +375,7 @@ def adopt_session_data(old_owner: str, user_id: str) -> None:
 # Pages
 # ---------------------------------------------------------------------------
 
-_PAGE_COLS = "id, name, icon, parent_id, position, created_at"
+_PAGE_COLS = "id, name, icon, parent_id, position, portal_x, portal_y, created_at"
 
 
 def _page_from_row(r, session_id: str) -> Page:
@@ -352,6 +385,8 @@ def _page_from_row(r, session_id: str) -> Page:
         icon=r["icon"],
         parent_id=r["parent_id"],
         position=r["position"],
+        portal_x=r["portal_x"],
+        portal_y=r["portal_y"],
         session_id=session_id,
         created_at=r["created_at"],
     )
@@ -386,6 +421,20 @@ def list_pages(session_id: str) -> list[Page]:
     return [_page_from_row(r, session_id) for r in rows]
 
 
+def page_module_counts(session_id: str) -> dict[str, int]:
+    """Live (non-archived) module count per page for this owner — one grouped
+    COUNT, so the portal tiles (R-502) can show a cheap "N tools" preview
+    WITHOUT loading any child page's module configs. Owner-scoped."""
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT page_id, COUNT(*) AS n FROM modules"
+            " WHERE session_id = ? AND archived = 0 AND page_id IS NOT NULL"
+            " GROUP BY page_id",
+            (session_id,),
+        ).fetchall()
+    return {r["page_id"]: r["n"] for r in rows}
+
+
 def create_page(
     session_id: str, name: str, icon: str | None = None, parent_id: str | None = None
 ) -> Page:
@@ -417,7 +466,13 @@ _UNSET = object()
 
 
 def update_page(
-    session_id: str, page_id: str, name=_UNSET, icon=_UNSET, parent_id=_UNSET
+    session_id: str,
+    page_id: str,
+    name=_UNSET,
+    icon=_UNSET,
+    parent_id=_UNSET,
+    portal_x=_UNSET,
+    portal_y=_UNSET,
 ) -> Page | None:
     sets, params = [], []
     if name is not _UNSET:
@@ -429,6 +484,14 @@ def update_page(
     if parent_id is not _UNSET:
         sets.append("parent_id = ?")
         params.append(parent_id)
+    # R-504: portal placement persists on the page row (owner-scoped by the WHERE
+    # below), so a child's arrangement on its parent's canvas survives across devices.
+    if portal_x is not _UNSET:
+        sets.append("portal_x = ?")
+        params.append(portal_x)
+    if portal_y is not _UNSET:
+        sets.append("portal_y = ?")
+        params.append(portal_y)
     if not sets:
         return get_page(session_id, page_id)
     params += [page_id, session_id]
@@ -468,13 +531,33 @@ def rename_page(session_id: str, page_id: str, name: str) -> Page | None:
 
 
 def delete_page(session_id: str, page_id: str) -> bool:
-    """Delete a page and all its modules. Refuses to delete the last page."""
+    """Delete a page and all its modules. Refuses to delete the last page.
+
+    R-503 (orphan fix): parent_id is a bare column with NO FK cascade, so a
+    naive delete would leave this page's direct children pointing at a deleted
+    row — the sidebar tree renders from root, so an orphaned child vanishes.
+    Before deleting, REPARENT this page's direct children to its OWN parent
+    (grandparent, or NULL/root when this page was top-level): children move up
+    one level, never disappear. Owner-scoped by every WHERE clause. The child
+    pages and their modules are untouched — only this page's own modules cascade.
+    """
     with _conn() as c:
         count = c.execute(
             "SELECT COUNT(*) FROM pages WHERE session_id = ?", (session_id,)
         ).fetchone()[0]
         if count <= 1:
             return False
+        row = c.execute(
+            "SELECT parent_id FROM pages WHERE id = ? AND session_id = ?",
+            (page_id, session_id),
+        ).fetchone()
+        if row is None:
+            return False
+        grandparent = row["parent_id"]
+        c.execute(
+            "UPDATE pages SET parent_id = ? WHERE parent_id = ? AND session_id = ?",
+            (grandparent, page_id, session_id),
+        )
         cur = c.execute("DELETE FROM pages WHERE id = ? AND session_id = ?", (page_id, session_id))
         return cur.rowcount > 0
 
@@ -1015,6 +1098,34 @@ def cache_stats() -> dict:
 # (R-104's async route) instead of degrading into an unbounded table scan.
 _SUGGESTION_SCAN_CAP = 500
 
+# Stage-2b backlog: moved server-side from frontend/src/lib/suggestions.ts'
+# filterSuggestions so ANY consumer of GET /api/suggestions gets clean chips —
+# the frontend filter stays in place too (belt-and-braces). Kept in sync with
+# that file: a 📎-prefixed file-upload log line, a refine-combined prompt
+# (PromptBar joins "original — tweak" with this em-dash), a refine imperative
+# ("make it…"), and anything under 3 words are all noise, not build ideas.
+_SUGGESTION_REFINE_JOIN = " — "
+_SUGGESTION_REFINE_PREFIXES = (
+    "make it",
+    "make the",
+    "change ",
+    "turn it",
+    "also add",
+    "remove the",
+    "rename ",
+)
+
+
+def _is_suggestion_noise(text: str) -> bool:
+    if text.startswith("📎"):
+        return True
+    if _SUGGESTION_REFINE_JOIN in text:
+        return True
+    if len(text.split()) < 3:
+        return True
+    lower = text.lower()
+    return any(lower.startswith(p) for p in _SUGGESTION_REFINE_PREFIXES)
+
 
 def suggestion_prompts(owner: str, limit: int) -> list[str]:
     """This owner's recent distinct generation prompts, for suggestion chips
@@ -1023,8 +1134,9 @@ def suggestion_prompts(owner: str, limit: int) -> list[str]:
     (favors prompts that actually got reused); if that yields fewer than `limit`,
     tops up from recent user-role `messages` rows for the same owner (page-agnostic
     — messages.session_id doubles as the owner key, same as gen_cache.owner).
-    Deduped case-insensitively; blob-like entries (len > 200, template seeds) and
-    empty/whitespace-only strings are excluded; messages never re-add a prompt
+    Deduped case-insensitively; blob-like entries (len > 200, template seeds),
+    empty/whitespace-only strings, and suggestion noise (see
+    _is_suggestion_noise) are excluded; messages never re-add a prompt
     gen_cache already contributed."""
     if limit <= 0:
         return []
@@ -1033,7 +1145,7 @@ def suggestion_prompts(owner: str, limit: int) -> list[str]:
 
     def _consider(text: str | None) -> None:
         text = (text or "").strip()
-        if not text or len(text) > 200:
+        if not text or len(text) > 200 or _is_suggestion_noise(text):
             return
         key = text.lower()
         if key in seen:
@@ -1204,6 +1316,30 @@ def daily_active(days: int = 14) -> list[dict]:
     return [{"day": r["day"], "owners": r["owners"]} for r in rows]
 
 
+# ── Live external-data cache (R-701/R-704) ───────────────────────────────────
+
+
+def live_cache_get(provider: str, query_hash: str) -> dict | None:
+    with _conn() as c:
+        row = c.execute(
+            "SELECT payload_json, fetched_at FROM live_cache WHERE provider = ? AND query_hash = ?",
+            (provider, query_hash),
+        ).fetchone()
+    if row is None:
+        return None
+    return {"payload": json.loads(row["payload_json"]), "fetched_at": row["fetched_at"]}
+
+
+def live_cache_set(provider: str, query_hash: str, payload_json: str, fetched_at: str) -> None:
+    with _conn() as c:
+        c.execute(
+            "INSERT INTO live_cache (provider, query_hash, payload_json, fetched_at) VALUES (?, ?, ?, ?) "
+            "ON CONFLICT (provider, query_hash) DO UPDATE SET"
+            " payload_json = excluded.payload_json, fetched_at = excluded.fetched_at",
+            (provider, query_hash, payload_json, fetched_at),
+        )
+
+
 def last_seen_by_user(days: int = 30) -> list[dict]:
     """Per-claimed-user activity (R-1201: "which of the 50 used it yesterday").
 
@@ -1234,3 +1370,103 @@ def last_seen_by_user(days: int = 30) -> list[dict]:
         }
         for r in rows
     ]
+
+
+# ── Evolving user profile store (R-801/R-802) ───────────────────────────────
+
+# ≤50 facts/owner — self-curating: an add past the cap prunes the single
+# oldest-by-updated_at row rather than refusing the new (presumably more
+# recent/relevant) one.
+_PROFILE_CAP = 50
+_PROFILE_COLS = "id, owner, kind, text, source, created_at, updated_at"
+
+
+def _profile_from_row(r: sqlite3.Row) -> dict:
+    return {
+        "id": r["id"],
+        "owner": r["owner"],
+        "kind": r["kind"],
+        "text": r["text"],
+        "source": r["source"],
+        "created_at": r["created_at"],
+        "updated_at": r["updated_at"],
+    }
+
+
+def profile_list(owner: str) -> list[dict]:
+    """This owner's profile facts, most-recently-updated first (R-903: WHERE-scoped
+    to `owner` — another owner's facts can never appear)."""
+    with _conn() as c:
+        rows = c.execute(  # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
+            f"SELECT {_PROFILE_COLS} FROM user_profile WHERE owner = ? ORDER BY updated_at DESC",
+            (owner,),
+        ).fetchall()
+    return [_profile_from_row(r) for r in rows]
+
+
+def profile_add(owner: str, kind: str, text: str, source: str) -> dict:
+    """Add a profile fact (R-801/R-802), owner-scoped.
+
+    Dedup: a case-insensitive exact match of `text` within this owner+kind is
+    NOT re-added — the existing row is returned untouched (a repeated
+    observation isn't a "new" fact, so updated_at is not bumped).
+
+    Cap: ≤50 facts/owner. On the 51st add, the single OLDEST row (by
+    updated_at) for this owner is pruned first, so the profile self-curates
+    instead of ever refusing a legitimate new fact.
+    """
+    with _conn() as c:
+        dup = c.execute(  # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
+            f"SELECT {_PROFILE_COLS} FROM user_profile"
+            " WHERE owner = ? AND kind = ? AND lower(text) = lower(?)",
+            (owner, kind, text),
+        ).fetchone()
+        if dup:
+            return _profile_from_row(dup)
+        count = c.execute("SELECT COUNT(*) FROM user_profile WHERE owner = ?", (owner,)).fetchone()[
+            0
+        ]
+        if count >= _PROFILE_CAP:
+            oldest = c.execute(
+                "SELECT id FROM user_profile WHERE owner = ? ORDER BY updated_at ASC LIMIT 1",
+                (owner,),
+            ).fetchone()
+            if oldest:
+                c.execute("DELETE FROM user_profile WHERE id = ?", (oldest["id"],))
+        pid = str(uuid.uuid4())
+        now = _now()
+        c.execute(
+            "INSERT INTO user_profile (id, owner, kind, text, source, created_at, updated_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (pid, owner, kind, text, source, now, now),
+        )
+        row = c.execute(  # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
+            f"SELECT {_PROFILE_COLS} FROM user_profile WHERE id = ?", (pid,)
+        ).fetchone()
+    return _profile_from_row(row)
+
+
+def profile_update(owner: str, profile_id: str, text: str) -> dict | None:
+    with _conn() as c:
+        cur = c.execute(
+            "UPDATE user_profile SET text = ?, updated_at = ? WHERE id = ? AND owner = ?",
+            (text, _now(), profile_id, owner),
+        )
+        if cur.rowcount == 0:
+            return None
+        row = c.execute(  # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
+            f"SELECT {_PROFILE_COLS} FROM user_profile WHERE id = ?", (profile_id,)
+        ).fetchone()
+    return _profile_from_row(row)
+
+
+def profile_delete(owner: str, profile_id: str) -> bool:
+    with _conn() as c:
+        cur = c.execute("DELETE FROM user_profile WHERE id = ? AND owner = ?", (profile_id, owner))
+        return cur.rowcount > 0
+
+
+def profile_clear(owner: str) -> int:
+    with _conn() as c:
+        cur = c.execute("DELETE FROM user_profile WHERE owner = ?", (owner,))
+        return cur.rowcount

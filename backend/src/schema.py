@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class ComponentBase(BaseModel):
@@ -19,6 +19,38 @@ class ComponentBase(BaseModel):
     # screenshot capture mark the "primary action / hero figure". Optional → default
     # render is unchanged for every existing config.
     emphasis: Literal["normal", "primary", "muted"] | None = None
+
+
+class DataSource(BaseModel):
+    """A live external-data binding for a single-value display component
+    (R-701/R-704): Metric/Kpi/Ring/Gauge/ProgressBar MAY carry one. The
+    frontend's refresh hook calls GET /api/live/{provider} with `query` and
+    renders the fetched value with freshness + provenance; a fetch
+    failure/staleness never blocks manual editing — the component's own
+    state[id] stays the fallback."""
+
+    provider: Literal["weather", "nutrition"]
+    query: dict[str, str | float] = Field(default_factory=dict)
+    refresh_secs: int = 600
+    label: str | None = None
+
+    @field_validator("refresh_secs")
+    @classmethod
+    def _bounded_refresh_secs(cls, v: int) -> int:
+        if not (60 <= v <= 86400):
+            raise ValueError("refresh_secs must be between 60 and 86400")
+        return v
+
+    @field_validator("query")
+    @classmethod
+    def _bounded_query(cls, v: dict[str, str | float]) -> dict[str, str | float]:
+        # Value types (str/number only) are already enforced by the field's own
+        # `dict[str, str | float]` annotation — anything else (list/dict/None)
+        # fails pydantic's own coercion before this validator runs. Only the key
+        # count needs manual enforcement (pydantic has no built-in dict-length bound).
+        if len(v) > 10:
+            raise ValueError("query may have at most 10 keys")
+        return v
 
 
 class TextInput(ComponentBase):
@@ -51,6 +83,7 @@ class ProgressBar(ComponentBase):
     max: float = 100
     bound_to: str | None = None  # intra-module: reads state[bound_to]
     source_module_id: str | None = None  # cross-module: reads that module's state[bound_to]
+    data_source: DataSource | None = None  # R-701/R-704: optional live-value binding
 
 
 class ListField(ComponentBase):
@@ -66,6 +99,7 @@ class Metric(ComponentBase):
     formula: Literal["sum", "count", "avg", "max", "min"] = "sum"
     source_component_id: str  # aggregate state[this] across modules
     unit: str | None = None
+    data_source: DataSource | None = None  # R-701/R-704: optional live-value binding
 
 
 class Rating(ComponentBase):
@@ -87,6 +121,7 @@ class Kpi(ComponentBase):
 
     type: Literal["kpi"] = "kpi"
     unit: str | None = None
+    data_source: DataSource | None = None  # R-701/R-704: optional live-value binding
 
 
 class DatePicker(ComponentBase):
@@ -150,6 +185,7 @@ class Ring(ComponentBase):
     type: Literal["ring"] = "ring"
     max: float = 100
     bound_to: str | None = None
+    data_source: DataSource | None = None  # R-701/R-704: optional live-value binding
 
 
 class Timeline(ComponentBase):
@@ -201,6 +237,7 @@ class Gauge(ComponentBase):
     min: float = 0
     max: float = 100
     unit: str | None = None
+    data_source: DataSource | None = None  # R-701/R-704: optional live-value binding
 
 
 class Checklist(ComponentBase):
@@ -329,6 +366,10 @@ class Page(BaseModel):
     icon: str | None = None
     parent_id: str | None = None
     position: int
+    # R-502/R-504: a child page's portal placement (world coords) on its parent's
+    # canvas. Null until the tile is dragged — the frontend then auto-places it.
+    portal_x: float | None = None
+    portal_y: float | None = None
     created_at: str
 
 
@@ -342,6 +383,9 @@ class RenamePageRequest(BaseModel):
     name: str | None = None
     icon: str | None = None
     parent_id: str | None = None
+    # R-504: dragging a child's portal tile persists its placement here.
+    portal_x: float | None = None
+    portal_y: float | None = None
 
 
 class ReorderPagesRequest(BaseModel):
@@ -417,11 +461,40 @@ class GenerateResponse(BaseModel):
 class InsertModulesRequest(BaseModel):
     configs: list[ModuleConfig]
     prompt: str | None = None
+    # R-802: the clarifying interview that produced these accepted tools, if any.
+    # Accretion fires HERE (on a confirmed insert), not on preview/generate — so a
+    # discarded draft never enters the profile. Same shape/cap as GenerateRequest.
+    exchange: list[ExchangeTurn] | None = Field(default=None, max_length=6)
 
 
 class PatchRequest(BaseModel):
     config: ModuleConfig
     rev: int | None = None
+
+
+class UserProfileEntry(BaseModel):
+    """One fact the "remembers you" profile store holds about an owner (R-801).
+    Always owner-scoped in the DB layer — this is just the wire shape."""
+
+    id: str
+    owner: str
+    kind: Literal["goal", "preference", "pattern", "fact"]
+    text: str
+    source: Literal["interview", "prompt", "activity", "manual"]
+    created_at: str
+    updated_at: str
+
+
+class ProfileAddRequest(BaseModel):
+    """Manual "add a fact" (POST /api/profile). source is always "manual" —
+    the route sets it; it isn't caller-controlled."""
+
+    kind: Literal["goal", "preference", "pattern", "fact"]
+    text: str = Field(max_length=500)
+
+
+class ProfileUpdateRequest(BaseModel):
+    text: str = Field(max_length=500)
 
 
 class RefusalError(Exception):

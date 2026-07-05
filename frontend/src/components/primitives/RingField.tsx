@@ -1,6 +1,9 @@
 "use client";
 
 import type { Ring } from "@/lib/types";
+import { useLiveValue } from "@/lib/useLiveValue";
+import { formatLiveNumber } from "@/lib/liveFormat";
+import { LiveMeta } from "./LiveMeta";
 
 interface Props {
   spec: Ring;
@@ -9,8 +12,17 @@ interface Props {
 }
 
 export function RingField({ spec, value, onChange }: Props) {
+  // R-701/R-703: a data_source drives the ring's fill from a live value
+  // instead of the manual/bound one. The manual input (when present) always
+  // stays bound to the manual `value` — never the live one — so editing it
+  // keeps working exactly as before once live becomes stale/unavailable/off
+  // (R-703: a dead provider never breaks the module).
+  const live = useLiveValue(spec.data_source);
+  const showLive = Boolean(spec.data_source) && !live.disabled;
+  const liveActive = showLive && live.value !== null;
   const max = spec.max || 100;
-  const v = Number(value) || 0;
+  const manualV = Number(value) || 0;
+  const v = liveActive ? live.value! : manualV;
   const pct = Math.max(0, Math.min(1, v / max));
   const R = 26, C = 2 * Math.PI * R;
 
@@ -27,14 +39,15 @@ export function RingField({ spec, value, onChange }: Props) {
         {onChange ? (
           <input
             type="number"
-            value={value === undefined || value === null || (value as unknown) === "" ? "" : v}
+            value={value === undefined || value === null || (value as unknown) === "" ? "" : manualV}
             onChange={(e) => onChange(e.target.value === "" ? "" : Number(e.target.value))}
             className="w-20 mt-1 rounded border border-[var(--border)] bg-[var(--surface-elevated)] px-1.5 py-0.5 text-xs focus:outline-none"
             placeholder={`/ ${max}`}
           />
         ) : (
-          <span className="text-[10px] text-[var(--muted)] tabular-nums">{v} / {max}</span>
+          <span className="text-[10px] text-[var(--muted)] tabular-nums">{formatLiveNumber(v)} / {max}</span>
         )}
+        {showLive && <LiveMeta live={live} />}
       </div>
     </div>
   );

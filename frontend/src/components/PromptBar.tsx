@@ -59,6 +59,11 @@ export function PromptBar({ onModule, activePageId, refineTarget, onRefineModule
   const isRefining = Boolean(refineTarget);
   const [file, setFile] = useState<File | null>(null);
   const [previews, setPreviews] = useState<ModuleConfig[]>([]);
+  // R-802: the clarifying interview (if any) that produced the CURRENT preview
+  // stack. Carried to api.insertModules on accept so the backend accretes profile
+  // facts only from a proposal the user actually accepted — never a fresh (no-
+  // interview) build, and never a discarded draft. Null for non-interview previews.
+  const [previewExchange, setPreviewExchange] = useState<ExchangeTurnState[] | null>(null);
   // R-103/R-301: the model's one-paragraph rationale for the current preview stack.
   const [plan, setPlan] = useState<string | null>(null);
   const lastPromptRef = useRef<string>("");
@@ -120,6 +125,8 @@ export function PromptBar({ onModule, activePageId, refineTarget, onRefineModule
     } else if (result.previews?.length) {
       setPreviews(result.previews);
       setPlan(result.plan ?? null);
+      // Remember the resolved interview so accepting THIS preview accretes it (R-802).
+      setPreviewExchange(turnsToSend);
       lastPromptRef.current = original;
       setPrompt("");
       setExchange(null);
@@ -142,6 +149,7 @@ export function PromptBar({ onModule, activePageId, refineTarget, onRefineModule
       lastPromptRef.current = v;
       setPreviews(result.previews);
       setPlan(result.plan ?? null);
+      setPreviewExchange(null); // a fresh proposal — no interview to accrete
       setPrompt("");
     }
     if (result.degraded) setError(DEGRADED_NOTICE);
@@ -170,6 +178,7 @@ export function PromptBar({ onModule, activePageId, refineTarget, onRefineModule
         setPreviews([]);
         setPlan(null);
         setExchange(null);
+        setPreviewExchange(null);
         setFile(null);
         onClearRefine?.();
         await runFreshPreview(v);
@@ -182,6 +191,7 @@ export function PromptBar({ onModule, activePageId, refineTarget, onRefineModule
         } else if (result.previews?.length) {
           setPreviews(result.previews);
           setPlan(result.plan ?? null);
+          setPreviewExchange(null); // refining the preview is a new build, not the interview
           lastPromptRef.current = combined;
         }
         if (result.degraded) setError(DEGRADED_NOTICE);
@@ -191,9 +201,16 @@ export function PromptBar({ onModule, activePageId, refineTarget, onRefineModule
         onRefineModule(updated);
         setPrompt("");
       } else if (file) {
-        const result = await api.generateModuleFromFile(file, v, activePageId);
-        if (result.modules?.length) result.modules.forEach((m) => onModule(m));
-        else if (result.module) onModule(result.module);
+        // R-223 backlog: preview-then-confirm for a file attach, mirroring the
+        // text-generation preview stack — the tools no longer land on the
+        // canvas straight away.
+        const result = await api.generateModuleFromFile(file, v, activePageId, undefined, true);
+        if (result.previews?.length) {
+          lastPromptRef.current = v || file.name;
+          setPreviews(result.previews);
+          setPlan(result.plan ?? null);
+          setPreviewExchange(null); // file-derived preview — no interview to accrete
+        }
         if (result.degraded) setError(DEGRADED_NOTICE);
         setPrompt("");
         setFile(null);
@@ -255,18 +272,22 @@ export function PromptBar({ onModule, activePageId, refineTarget, onRefineModule
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autoPrompt]);
 
-  const addConfigs = async (configs: ModuleConfig[]) => {
+  const addConfigs = async (configs: ModuleConfig[], exchange?: ExchangeTurnState[] | null) => {
     try {
-      const stored = await api.insertModules(configs, lastPromptRef.current, activePageId);
+      // R-802: pass the interview (if any) so the backend accretes profile facts
+      // on this confirmed accept. undefined for a fresh/refined/file proposal.
+      const stored = await api.insertModules(configs, lastPromptRef.current, activePageId, exchange ?? undefined);
       stored.forEach((m) => onModule(m));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Couldn't add to canvas.");
     }
   };
-  const addAll = async () => { await addConfigs(previews); setPreviews([]); setPlan(null); };
-  const addOne = async (i: number) => { await addConfigs([previews[i]]); setPreviews((p) => p.filter((_, idx) => idx !== i)); };
+  const addAll = async () => { await addConfigs(previews, previewExchange); setPreviews([]); setPlan(null); setPreviewExchange(null); };
+  // First accept accretes the interview; null it so a second single-add from the
+  // same stack doesn't re-send it (the backend dedups anyway, but keep it clean).
+  const addOne = async (i: number) => { await addConfigs([previews[i]], previewExchange); setPreviews((p) => p.filter((_, idx) => idx !== i)); setPreviewExchange(null); };
   const dismissOne = (i: number) => setPreviews((p) => p.filter((_, idx) => idx !== i));
-  const dismissAll = () => { setPreviews([]); setPlan(null); };
+  const dismissAll = () => { setPreviews([]); setPlan(null); setPreviewExchange(null); };
   // Inline edits to a preview (typing into its fields) flow back into the config.
   const updatePreview = (i: number, m: StoredModule) => setPreviews((p) => p.map((c, idx) => (idx === i ? m.config : c)));
 

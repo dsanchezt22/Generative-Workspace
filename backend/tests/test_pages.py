@@ -197,3 +197,131 @@ def test_list_modules_without_page_returns_all(client):
 
     all_modules = client.get("/api/modules").json()
     assert len(all_modules) == 2
+
+
+# ---------------------------------------------------------------------------
+# Portal placement (R-502/R-504) + orphan-safe delete (R-503)
+# ---------------------------------------------------------------------------
+
+
+def test_portal_position_defaults_null(client):
+    _ensure_session(client)
+    child = client.post("/api/pages", json={"name": "Child"}).json()
+    assert child["portal_x"] is None
+    assert child["portal_y"] is None
+
+
+def test_portal_position_persists(client):
+    """A child's portal placement persists on the page row (R-504) and reads back
+    through the list, not just the PATCH echo."""
+    _ensure_session(client)
+    parent = client.get("/api/pages").json()[0]["id"]
+    child = client.post("/api/pages", json={"name": "Child", "parent_id": parent}).json()
+    resp = client.patch(f"/api/pages/{child['id']}", json={"portal_x": 120.5, "portal_y": -40.0})
+    assert resp.status_code == 200
+    assert resp.json()["portal_x"] == 120.5
+    assert resp.json()["portal_y"] == -40.0
+    reread = next(p for p in client.get("/api/pages").json() if p["id"] == child["id"])
+    assert reread["portal_x"] == 120.5
+    assert reread["portal_y"] == -40.0
+
+
+def test_portal_position_owner_scoped(client, client2):
+    """R-903: owner B can't set owner A's page portal — the PATCH 404s and A's
+    page is untouched."""
+    _ensure_session(client)
+    a_page = client.post("/api/pages", json={"name": "A"}).json()
+    _ensure_session(client2)
+    resp = client2.patch(f"/api/pages/{a_page['id']}", json={"portal_x": 9.0, "portal_y": 9.0})
+    assert resp.status_code == 404
+    reread = next(p for p in client.get("/api/pages").json() if p["id"] == a_page["id"])
+    assert reread["portal_x"] is None
+    assert reread["portal_y"] is None
+
+
+def test_delete_parent_reparents_children_to_grandparent(client):
+    """R-503: deleting a mid-tree parent moves its children UP to the grandparent,
+    never orphaning them (an orphan → parent_id points at a deleted row → it
+    vanishes from the sidebar tree, which renders from root)."""
+    _ensure_session(client)
+    root = client.get("/api/pages").json()[0]["id"]
+    parent = client.post("/api/pages", json={"name": "Parent", "parent_id": root}).json()
+    child = client.post("/api/pages", json={"name": "Child", "parent_id": parent["id"]}).json()
+
+    assert client.delete(f"/api/pages/{parent['id']}").status_code == 204
+
+    pages = {p["id"]: p for p in client.get("/api/pages").json()}
+    assert parent["id"] not in pages  # deleted
+    assert child["id"] in pages  # survived
+    assert pages[child["id"]]["parent_id"] == root  # reparented to grandparent
+
+
+def test_delete_top_level_parent_reparents_children_to_root(client):
+    """A top-level parent (parent_id NULL) → its children reparent to root (NULL),
+    so they surface as top-level pages rather than orphaning."""
+    _ensure_session(client)
+    top = client.post("/api/pages", json={"name": "Top"}).json()  # parent_id None
+    child = client.post("/api/pages", json={"name": "Child", "parent_id": top["id"]}).json()
+
+    assert client.delete(f"/api/pages/{top['id']}").status_code == 204
+
+    pages = {p["id"]: p for p in client.get("/api/pages").json()}
+    assert top["id"] not in pages
+    assert child["id"] in pages
+    assert pages[child["id"]]["parent_id"] is None  # reparented to root
+
+
+def test_delete_parent_keeps_child_modules_intact(client):
+    """Reparent-not-cascade is non-destructive: a surviving child keeps its
+    modules (only the DELETED page's own modules cascade)."""
+    _ensure_session(client)
+    root = client.get("/api/pages").json()[0]["id"]
+    parent = client.post("/api/pages", json={"name": "Parent", "parent_id": root}).json()
+    child = client.post("/api/pages", json={"name": "Child", "parent_id": parent["id"]}).json()
+
+    with patch("src.services.orchestrator.llm.generate", return_value=_VALID_RESULT):
+        client.post(f"/api/modules/generate?page_id={child['id']}", json={"prompt": "p"})
+
+    assert client.delete(f"/api/pages/{parent['id']}").status_code == 204
+    child_modules = client.get(f"/api/modules?page_id={child['id']}").json()
+    assert len(child_modules) == 1
+
+
+def test_page_module_counts_owner_scoped(client, client2):
+    """The portal preview's cheap count is a grouped COUNT, owner-scoped (R-903)."""
+    _ensure_session(client)
+    page = client.get("/api/pages").json()[0]["id"]
+    with patch("src.services.orchestrator.llm.generate", return_value=_VALID_RESULT):
+        client.post(f"/api/modules/generate?page_id={page}", json={"prompt": "a"})
+        client.post(f"/api/modules/generate?page_id={page}", json={"prompt": "b"})
+    counts = client.get("/api/pages/counts").json()
+    assert counts[page] == 2
+    # client2 is a separate owner — sees none of client's counts.
+    assert client2.get("/api/pages/counts").json() == {}
+
+
+def test_migration_adds_portal_columns_idempotently(tmp_path):
+    """A legacy pages table (no portal cols) gains portal_x/portal_y on migrate,
+    and a second migrate pass is a no-op (a re-ALTER would raise 'duplicate
+    column name'). Uses its OWN tmp DB (never the shared _db_path()) so it can't
+    perturb the concurrent-migration race test's isolation."""
+    import sqlite3
+
+    from src import db as dbmod
+
+    conn = sqlite3.connect(tmp_path / "legacy.db")
+    try:
+        # Simulate a pre-portal DB: pages WITHOUT the portal columns, then the
+        # rest of the schema (pages' CREATE IF NOT EXISTS is skipped → stays legacy).
+        conn.execute(
+            "CREATE TABLE pages (id TEXT PRIMARY KEY, session_id TEXT NOT NULL,"
+            " name TEXT NOT NULL, icon TEXT, parent_id TEXT,"
+            " position INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL)"
+        )
+        conn.executescript(dbmod._SCHEMA)
+        dbmod._migrate(conn)
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(pages)").fetchall()}
+        assert {"portal_x", "portal_y"} <= cols
+        dbmod._migrate(conn)  # idempotent second pass — must not raise
+    finally:
+        conn.close()

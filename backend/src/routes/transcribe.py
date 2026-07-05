@@ -13,6 +13,7 @@ never succeed.
 
 import contextlib
 import os
+import threading
 import time
 
 from fastapi import APIRouter, File, HTTPException, Request, UploadFile
@@ -25,6 +26,50 @@ from src.schema import LLMError
 router = APIRouter()
 
 _MAX_BYTES = 25 * 1024 * 1024
+
+
+class _RateLimiter:
+    """A per-key, in-memory sliding-window limiter: at most `max_calls` calls
+    per `window_secs` for a given key. Deliberately generic (not hardcoded to
+    "owner") — the generate/preview routes are the next customer for the same
+    pattern, each with their own instance + limits. Process-local only (fine
+    for the MVP's single-instance deployment; a multi-instance deploy would
+    need a shared store instead)."""
+
+    def __init__(self, max_calls: int, window_secs: float) -> None:
+        self._max_calls = max_calls
+        self._window_secs = window_secs
+        self._hits: dict[str, list[float]] = {}
+        # These routes are sync (threadpool) and /live fires several parallel
+        # same-owner calls on page load — the shared `_hits` dict and its per-key
+        # lists are touched non-atomically (setdefault→trim→evict→append), so a
+        # bare check-then-`del` could race two callers into a KeyError→500. One
+        # lock makes the whole read-modify-write atomic; it's trivially cheap.
+        self._lock = threading.Lock()
+
+    def allow(self, key: str, now: float | None = None) -> bool:
+        now = time.monotonic() if now is None else now
+        with self._lock:
+            hits = self._hits.setdefault(key, [])
+            cutoff = now - self._window_secs
+            while hits and hits[0] < cutoff:
+                hits.pop(0)
+            if not hits:
+                # An idle key whose window has fully expired: drop its (now empty)
+                # entry so per-owner rows don't accumulate forever. Re-added below
+                # if this call is allowed. `pop(key, None)` (not `del`) is
+                # idempotent — safe even if a concurrent call already evicted it.
+                self._hits.pop(key, None)
+            if len(hits) >= self._max_calls:
+                return False
+            hits.append(now)
+            self._hits[key] = hits
+            return True
+
+
+# R-204 backlog: ≤20 transcribes / 5 min per owner — cheap abuse guard on a
+# cost-bearing endpoint.
+_transcribe_limiter = _RateLimiter(max_calls=20, window_secs=5 * 60)
 
 
 class TranscriptionResponse(BaseModel):
@@ -54,6 +99,11 @@ def _track_transcribe(sid: str, outcome: str, t0: float) -> None:
 def transcribe_audio(request: Request, file: UploadFile = File(...)) -> TranscriptionResponse:
     _require_trusted_origin(request)
     sid = _owner_id(request)
+    if not _transcribe_limiter.allow(sid):
+        raise HTTPException(
+            status_code=429,
+            detail="Too many transcriptions — wait a few minutes and try again.",
+        )
     if not llm.stt_available():
         raise HTTPException(
             status_code=422,

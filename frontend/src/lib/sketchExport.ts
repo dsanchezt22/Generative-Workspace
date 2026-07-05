@@ -58,6 +58,20 @@ export function strokeBounds(strokes: Stroke[], pad = 0): Bounds | null {
   return { minX, minY, maxX, maxY, width: maxX - minX, height: maxY - minY };
 }
 
+// Stage-2b backlog (R-221): the offscreen snap raster is sized 1:1 to the
+// stroke bbox — a sketch drawn across a huge world-space area (e.g. zoomed
+// far out) could otherwise allocate an oversized canvas. `rasterScale`
+// returns a uniform downscale factor (<=1) the rasterizer applies to both the
+// canvas dimensions and the stroke coordinates it draws; 1 when the bbox
+// already fits within `maxSide` on every side.
+const MAX_RASTER_SIDE = 2048;
+
+export function rasterScale(bounds: Bounds, maxSide = MAX_RASTER_SIDE): number {
+  const longest = Math.max(bounds.width, bounds.height);
+  if (longest <= maxSide) return 1;
+  return maxSide / longest;
+}
+
 /**
  * Convert a pointer position (clientX/clientY) into WORLD coordinates — the
  * inverse of the Canvas view transform (`translate(view.x,view.y) scale(zoom)`

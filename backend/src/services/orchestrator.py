@@ -15,9 +15,10 @@ from typing import TypeVar
 
 from pydantic import ValidationError
 
-from src import llm
-from src.schema import ClarifyingQuestion, LLMError, ModuleConfig, RefusalError
+from src import db, llm
+from src.schema import ClarifyingQuestion, DataSource, LLMError, ModuleConfig, RefusalError
 from src.services import extract
+from src.services.live_data import ALLOWED_PROVIDERS
 
 _T = TypeVar("_T")
 
@@ -220,6 +221,14 @@ def _module_context(modules: list[ModuleConfig]) -> str:
 # length, not per-message) so a long history never dominates the prompt.
 _CONVERSATION_CONTEXT_BUDGET = 1200
 
+# Stage-2b backlog: a cap on the FINAL composed message once seed-JSON +
+# module-context + exchange fold + conversation block are all stacked (see
+# _seeded_system below). `_CONVERSATION_CONTEXT_BUDGET` already bounds the
+# conversation block on its own, but a large module-context list (many
+# existing modules) can still push the total over a sane size. This is a
+# last-resort guard, not the primary budget.
+_MAX_PROMPT_CHARS = 12000
+
 
 def _conversation_block(messages: list[dict] | None) -> str:
     """Render the owner's recent persisted conversation (db.recent_messages,
@@ -238,6 +247,34 @@ def _conversation_block(messages: list[dict] | None) -> str:
         tail = f"{messages[-1]['role']}: {messages[-1]['text']}"
         lines = [tail[-_CONVERSATION_CONTEXT_BUDGET:]]
     return "\n\nRecent conversation:\n" + "\n".join(lines)
+
+
+# R-803: cap on the rendered "What I know about you:" block — mirrors
+# _CONVERSATION_CONTEXT_BUDGET's bounded-overall-length (not per-fact)
+# approach so an established profile never dominates the prompt.
+_PROFILE_CONTEXT_BUDGET = 800
+_PROFILE_CONTEXT_MAX_FACTS = 10
+
+
+def _profile_block(facts: list[dict] | None) -> str:
+    """Render the owner's profile (db.profile_list, most-recently-updated
+    first) as a bounded "What I know about you:" context block, so a
+    returning user's proposals are shaped by what Trus has already learned
+    about them (R-803). Mirrors _conversation_block's budgeting: only the
+    ~10 most recent facts are even considered, then bounded to ~800 chars
+    total; when it doesn't fit, the OLDEST of those ~10 (the tail of this
+    most-recent-first list) are dropped first."""
+    if not facts:
+        return ""
+    lines = [f"- ({f['kind']}) {f['text']}" for f in facts[:_PROFILE_CONTEXT_MAX_FACTS]]
+    while lines and sum(len(x) for x in lines) + len(lines) - 1 > _PROFILE_CONTEXT_BUDGET:
+        lines.pop()
+    if not lines:
+        # Even the single most recent fact alone exceeds the budget — keep its
+        # head rather than drop it entirely.
+        head = f"- ({facts[0]['kind']}) {facts[0]['text']}"
+        lines = [head[:_PROFILE_CONTEXT_BUDGET]]
+    return "\n\nWhat I know about you:\n" + "\n".join(lines)
 
 
 def _seeded_prompt(prompt: str, existing_modules: list[ModuleConfig] | None = None) -> str:
@@ -267,6 +304,12 @@ def _parse_module_config(raw: str) -> ModuleConfig:
         raise RefusalError(str(data["refusal"]))
     if isinstance(data, dict) and "question" in data and len(data) == 1:
         raise ClarifyingQuestion(str(data["question"]))
+    # R-705: same strip-defense as _parse_modules — a corrupted/out-of-domain
+    # data_source (REFINE_SYSTEM_PROMPT hands the model a config that may already
+    # carry a valid one) is stripped before validation so it never kills the
+    # whole module; the component survives as manual entry.
+    if isinstance(data, dict):
+        _sanitize_module_data_sources(data)
     try:
         return ModuleConfig.model_validate(data)
     except ValidationError as e:
@@ -333,6 +376,24 @@ HOW MANY TOOLS:
   • "my semester" → [Class Schedule (calendar), Assignment Tracker (table), GPA (kpi), Study Habits (calendar)]
   • "moving house" → [Moving Checklist (list), Budget (chart), Address Change (table), Timeline (calendar)]
 
+LIVE DATA BINDINGS (R-701/R-702/R-705): Metric, Kpi, Ring, Gauge, and ProgressBar MAY carry an
+optional "data_source" field — but ONLY when the user's intent clearly falls into one of these
+TWO launched domains. There are no others:
+- Calorie/food/nutrition intent → "data_source": {{"provider": "nutrition", "query": {{"food": "<item>"}}}}
+- Weather/trip/run/hike/outdoor intent → "data_source": {{"provider": "weather", "query": {{"place": "<city>"}}}}
+  (lat/lon also accepted: {{"lat": <num>, "lon": <num>}})
+Example — a calorie tracker's Kpi "Calories":
+  {{ "id": "calories", "type": "kpi", "label": "Calories", "unit": "kcal",
+     "data_source": {{"provider": "nutrition", "query": {{"food": "banana"}}}} }}
+Example — a trip planner's Metric "Saturday Forecast":
+  {{ "id": "forecast", "type": "metric", "label": "Saturday Forecast", "formula": "avg",
+     "source_component_id": "forecast",
+     "data_source": {{"provider": "weather", "query": {{"place": "Tokyo"}}}} }}
+For ANY other domain — stocks, flights, sports scores, currency rates, news, or anything else not
+listed above — do NOT emit a data_source, even if the user asks for "live" or "real-time" data.
+Leave the component as plain manual entry instead. Never fabricate a live binding for a source we
+don't actually have (R-705) — an unlaunched domain gets no live badge, not a fake one.
+
 Rules:
 1. Only the component types listed above. Pick the ones that make each tool LOOK right.
 2. Give EACH module a DISTINCT icon and accent so the system reads as a colour-coded set.
@@ -345,7 +406,44 @@ Rules:
    {{ "question": "<one short, specific question>" }}
 7. If illicit or impossible, output exactly: {{ "refusal": "<one-sentence reason>" }}
 8. Do not narrate. Output ONLY the JSON object above (or the single refusal/question object).
+9. Only bind "data_source" for the two launched domains above (nutrition, weather) — see
+   LIVE DATA BINDINGS. Every other domain stays manual entry, no data_source.
 """
+
+
+def _cap_composed_prompt(
+    head: str,
+    context: str,
+    convo_block: str,
+    profile_block: str,
+    exchange_block: str,
+    tail: str,
+) -> str:
+    """Stage-2b backlog (extended for R-803's profile block): bound the final
+    composed message to `_MAX_PROMPT_CHARS`. `head` (the raw user request +
+    seed skeleton) and `exchange_block` (the interview answers) are NEVER
+    truncated — the model needs both to do the job and to avoid re-asking an
+    already-answered question. When over budget, the LOWEST-priority blocks
+    are cut first: conversation and profile share that lowest tier (profile
+    is no higher priority than conversation — conversation keeps the existing
+    priority within the tier when both must shrink), then the module-context
+    detail is trimmed only as a last resort."""
+    full = head + context + convo_block + profile_block + exchange_block + tail
+    if len(full) <= _MAX_PROMPT_CHARS:
+        return full
+    protected_len = len(head) + len(exchange_block) + len(tail)
+    budget = max(0, _MAX_PROMPT_CHARS - protected_len)
+    if len(context) >= budget:
+        # No room left for conversation OR profile; module-context itself must
+        # also be trimmed to what's left of the budget.
+        convo_block = ""
+        profile_block = ""
+        context = context[:budget]
+    else:
+        remaining = budget - len(context)
+        convo_block = convo_block[:remaining]
+        profile_block = profile_block[: max(0, remaining - len(convo_block))]
+    return head + context + convo_block + profile_block + exchange_block + tail
 
 
 def _seeded_system(
@@ -354,6 +452,7 @@ def _seeded_system(
     seed_override: list | None = None,
     exchange_context: str | None = None,
     recent_messages: list[dict] | None = None,
+    profile_facts: list[dict] | None = None,
 ) -> str:
     from src.stub_templates import pick_system
 
@@ -366,6 +465,11 @@ def _seeded_system(
     # the generate/preview routes only — never the grounded-file path, where
     # document content already dominates). Bounded, never the cache key.
     convo_block = _conversation_block(recent_messages)
+    # R-803: the owner's profile (db.profile_list(owner), fetched by
+    # generate_modules — never the grounded-file path, same exclusion as the
+    # conversation block above: document content already dominates there).
+    # Bounded, never the cache key.
+    profile_block = _profile_block(profile_facts)
     # R-102: the folded interview Q/A (built by the route from GenerateRequest.exchange)
     # reaches the model here so a multi-turn clarifying chain sees ALL prior answers —
     # never the semantic-cache key (see generate_modules — that stays the raw `prompt`).
@@ -379,15 +483,15 @@ def _seeded_system(
         if exchange_context
         else ""
     )
-    return (
+    head = (
         f"User request: {prompt}\n\n"
         f"Example starting system (adapt freely — change the number of tools, fields, components, "
         f"labels, icons, accents, and prefill state to match the request; do not return it as-is):\n{seed}"
-        f"{context}"
-        f"{convo_block}"
-        f"{exchange_block}\n\n"
-        f"Return the adapted ModuleConfig JSON array."
     )
+    tail = "\n\nReturn the adapted ModuleConfig JSON array."
+    # Stage-2b backlog: cap the total composed size AFTER everything above is
+    # built — see _cap_composed_prompt's truncation priority.
+    return _cap_composed_prompt(head, context, convo_block, profile_block, exchange_block, tail)
 
 
 @dataclass
@@ -397,6 +501,42 @@ class _Decomposition:
 
     plan: str | None
     modules: list[ModuleConfig]
+
+
+def _sanitize_data_source(component: dict) -> None:
+    """R-705 defense-in-depth: strip an invalid or out-of-domain `data_source`
+    from a raw (pre-Pydantic) component dict, in place.
+
+    `DataSource.provider` is a strict `Literal["weather", "nutrition"]`, so a
+    well-formed-but-wrong-domain value (e.g. "stocks") — or any other malformed
+    shape (an out-of-bounds `refresh_secs`, an oversized `query`, wrong value
+    types) — would otherwise fail `ModuleConfig.model_validate()` for the WHOLE
+    module, dropping every other component in it too. Sanitizing the raw dict
+    BEFORE that validation call means the model's mistake costs only the
+    live-data binding: the component keeps validating and renders as ordinary
+    manual entry (never a whole-module rejection)."""
+    raw = component.get("data_source")
+    if raw is None:
+        return
+    if not isinstance(raw, dict):
+        component["data_source"] = None
+        return
+    try:
+        validated = DataSource.model_validate(raw)
+    except ValidationError:
+        component["data_source"] = None
+        return
+    if validated.provider not in ALLOWED_PROVIDERS:
+        component["data_source"] = None
+
+
+def _sanitize_module_data_sources(item: dict) -> None:
+    components = item.get("components")
+    if not isinstance(components, list):
+        return
+    for component in components:
+        if isinstance(component, dict):
+            _sanitize_data_source(component)
 
 
 def _parse_modules(raw: str) -> _Decomposition:
@@ -425,6 +565,10 @@ def _parse_modules(raw: str) -> _Decomposition:
     for item in data:
         if not isinstance(item, dict) or "refusal" in item:
             continue
+        # R-705: strip any invalid/out-of-domain data_source BEFORE Pydantic
+        # validation, so the model fabricating a bad live binding costs only
+        # that binding (component survives as manual entry), not the module.
+        _sanitize_module_data_sources(item)
         try:
             out.append(ModuleConfig.model_validate(item))
         except ValidationError:
@@ -470,7 +614,15 @@ def generate_modules(
     `recent_messages` (R-302: the owner's last ~10 persisted `messages` rows for
     the current page, oldest-first — see db.recent_messages) also reaches the
     model via `_seeded_system` only, never the cache key: an identical re-prompt
-    still cache-HITs regardless of how the conversation has moved on since."""
+    still cache-HITs regardless of how the conversation has moved on since.
+    `owner`'s profile (R-803: db.profile_list(owner), the ~10 most-recently-
+    updated facts) is fetched HERE (not by the caller, unlike recent_messages —
+    `owner` is already this function's own parameter) and reaches the model via
+    `_seeded_system` only, never the cache key: an identical re-prompt still
+    cache-HITs regardless of what the owner's profile looks like. Skipped
+    entirely on a cache hit (nothing to compose) and never reached by the
+    grounded-file path (_generate_modules_grounded doesn't thread an owner
+    through at all — document content already dominates there)."""
     last_plan.set(None)
     if llm.is_stub_mode():
         from src.stub_templates import pick_system
@@ -494,12 +646,16 @@ def generate_modules(
             return [ModuleConfig.model_validate(c) for c in cached]
         except ValidationError:
             pass  # stale/incompatible cache entry → fall through and regenerate
+    # R-803: the owner's profile shapes the generation prompt (see docstring
+    # above) — fetched here, not by the route, since `owner` is already ours.
+    profile_facts = db.profile_list(owner)
     user_message = _seeded_system(
         prompt,
         existing_modules,
         seed_override=cached if mode == "seed" else None,
         exchange_context=exchange_context,
         recent_messages=recent_messages,
+        profile_facts=profile_facts,
     )
     try:
         parsed = _generate_validated(

@@ -296,6 +296,52 @@ def test_cache_hit_ignores_differing_conversation_history(monkeypatch):
     assert calls["n"] == 1  # model NOT called again — served from cache despite differing history
 
 
+def test_cache_hit_ignores_owner_profile_existing(monkeypatch):
+    """R-803: profile lives in the seeded system message, never the cache key
+    (`prompt`) — an identical re-prompt still cache-HITs even after a
+    distinctive profile fact has been added for that owner in between."""
+    from src import db
+    from src.services import orchestrator
+
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.setenv("TRUS_LLM_PROVIDER", "openai")
+    monkeypatch.setenv("TRUS_LLM_BASE_URL", "http://h/v1")
+    monkeypatch.setenv("TRUS_LLM_MODEL", "m")
+    for k in _VARS:
+        monkeypatch.delenv(k, raising=False)
+
+    calls = {"n": 0}
+
+    def fake_generate(prompt, system=None, *, schema=None, expect_array=False):
+        calls["n"] += 1
+        text = json.dumps(
+            [
+                {
+                    "title": "Cached Tool",
+                    "components": [{"id": "a", "type": "text_input", "label": "A"}],
+                },
+            ]
+        )
+        result = gen_result(text, provider="openai", model="m")
+        llm.last_call.set(result)
+        return result
+
+    monkeypatch.setattr(orchestrator.llm, "generate", fake_generate)
+
+    prompt = "a very specific unique profile caching prompt"
+    r1 = orchestrator.generate_modules(prompt, owner="owner-cache-profile")
+    assert [m.title for m in r1] == ["Cached Tool"]
+    assert calls["n"] == 1
+
+    db.profile_add(
+        "owner-cache-profile", "fact", "distinctive cached-profile fact", source="manual"
+    )
+
+    r2 = orchestrator.generate_modules(prompt, owner="owner-cache-profile")
+    assert [m.title for m in r2] == ["Cached Tool"]
+    assert calls["n"] == 1  # model NOT called again despite a new profile fact existing
+
+
 def test_chain_generation_never_served_a_stale_cache_hit(monkeypatch):
     """FIX (review 2b lookup-side): a same-owner PLAIN cache entry created
     mid-chain (a parallel tab/device) must NOT short-circuit the chain-final

@@ -433,3 +433,124 @@ def test_llm_transcribe_filename_none_defaults(monkeypatch):
     monkeypatch.setattr(llm.urllib.request, "urlopen", fake_urlopen)
     llm.transcribe(b"data", "audio/webm", None)
     assert b'filename="audio"' in captured["body"]
+
+
+# ---------------------------------------------------------------------------
+# Stage-2b backlog: per-owner sliding-window rate limit (≤20 / 5 min) → 429.
+# ---------------------------------------------------------------------------
+
+
+def test_rate_limiter_allows_up_to_max_then_blocks():
+    from src.routes.transcribe import _RateLimiter
+
+    limiter = _RateLimiter(max_calls=3, window_secs=60)
+    assert limiter.allow("a", now=1000.0)
+    assert limiter.allow("a", now=1000.0)
+    assert limiter.allow("a", now=1000.0)
+    assert not limiter.allow("a", now=1000.0)
+
+
+def test_rate_limiter_sliding_window_expires_old_hits():
+    from src.routes.transcribe import _RateLimiter
+
+    limiter = _RateLimiter(max_calls=1, window_secs=10)
+    assert limiter.allow("a", now=0.0)
+    assert not limiter.allow("a", now=5.0)
+    assert limiter.allow("a", now=11.0)  # the first hit has slid out of the window
+
+
+def test_rate_limiter_is_independent_per_key():
+    from src.routes.transcribe import _RateLimiter
+
+    limiter = _RateLimiter(max_calls=1, window_secs=60)
+    assert limiter.allow("a", now=0.0)
+    assert limiter.allow("b", now=0.0)  # a different key is unaffected
+    assert not limiter.allow("a", now=1.0)
+
+
+def test_rate_limiter_evicts_idle_keys():
+    """A key whose window has fully expired must not leave an empty list behind
+    in the internal map — per-owner rows would otherwise accumulate forever.
+    The invariant: the map never holds an empty list for any key."""
+    from src.routes.transcribe import _RateLimiter
+
+    limiter = _RateLimiter(max_calls=1, window_secs=10)
+    assert limiter.allow("a", now=0.0)
+    assert "a" in limiter._hits
+    # Window fully expires; the next call for "a" trims its stale hit to empty
+    # and evicts the entry before re-adding, so no empty list ever lingers.
+    assert limiter.allow("a", now=100.0)
+    assert limiter._hits["a"] == [100.0]  # exactly one fresh hit, no stale residue
+    assert all(hits for hits in limiter._hits.values())  # never an empty list
+
+
+def test_rate_limiter_parallel_same_key_evictions_never_raise():
+    """/transcribe and /live are sync (threadpool) routes and /live fires several
+    parallel same-owner calls on page load. The eviction step used to `del
+    self._hits[key]` on a shared dict — two callers racing the check-then-del
+    could KeyError → 500. With `pop(key, None)` under a lock the shared
+    read-modify-write is atomic, so hammering parallel same-key calls that expire
+    the window every iteration must never surface an exception."""
+    import threading
+
+    from src.routes.transcribe import _RateLimiter
+
+    limiter = _RateLimiter(max_calls=1, window_secs=10)
+    errors: list[Exception] = []
+    start = threading.Barrier(16)
+
+    def worker() -> None:
+        start.wait()  # release all threads at once to maximize interleaving
+        try:
+            for t in range(200):
+                # Each call's `now` jumps a full window past the last, so every
+                # call trims the shared list to empty and hits the evict branch.
+                limiter.allow("shared", now=float(t * 100))
+        except Exception as e:  # a raced KeyError would land here
+            errors.append(e)
+
+    threads = [threading.Thread(target=worker) for _ in range(16)]
+    for th in threads:
+        th.start()
+    for th in threads:
+        th.join()
+
+    assert not errors, f"eviction raced into an error: {errors[:3]}"
+    assert all(hits for hits in limiter._hits.values())  # never an empty list
+
+
+def test_transcribe_21st_call_in_window_is_429(client, monkeypatch):
+    _configure_stt(monkeypatch)
+    monkeypatch.setattr(llm, "transcribe", lambda data, mime, filename: "ok")
+    for _ in range(20):
+        resp = client.post(
+            "/api/transcribe", files={"file": ("r.webm", b"fake-audio-bytes", "audio/webm")}
+        )
+        assert resp.status_code == 200, resp.text
+    resp = client.post(
+        "/api/transcribe", files={"file": ("r.webm", b"fake-audio-bytes", "audio/webm")}
+    )
+    assert resp.status_code == 429, resp.text
+    assert "too many" in resp.json()["detail"].lower()
+
+
+def test_transcribe_rate_limit_is_per_owner(client, monkeypatch):
+    """A different owner (a separate session/cookie jar) is unaffected by
+    another owner's exhausted rate limit."""
+    _configure_stt(monkeypatch)
+    monkeypatch.setattr(llm, "transcribe", lambda data, mime, filename: "ok")
+    for _ in range(20):
+        resp = client.post(
+            "/api/transcribe", files={"file": ("r.webm", b"fake-audio-bytes", "audio/webm")}
+        )
+        assert resp.status_code == 200, resp.text
+    resp = client.post(
+        "/api/transcribe", files={"file": ("r.webm", b"fake-audio-bytes", "audio/webm")}
+    )
+    assert resp.status_code == 429, resp.text
+
+    with TestClient(app) as other:
+        resp2 = other.post(
+            "/api/transcribe", files={"file": ("r.webm", b"fake-audio-bytes", "audio/webm")}
+        )
+        assert resp2.status_code == 200, resp2.text

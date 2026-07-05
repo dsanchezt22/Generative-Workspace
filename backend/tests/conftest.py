@@ -91,6 +91,10 @@ def _isolate_llm_env(monkeypatch):
         "TRUS_ENV",
         "TRUS_COOKIE_SECURE",
         "TRUS_CORS_ORIGINS",
+        # Live-data kill switch (R-701/R-704) — default "on" so the existing
+        # suite's expectations are deterministic; test_live_data.py opts into
+        # "off" explicitly.
+        "TRUS_LIVE_DATA",
     ):
         monkeypatch.delenv(k, raising=False)
 

@@ -3,6 +3,7 @@ from contextlib import contextmanager
 from unittest.mock import patch
 
 import pytest
+from src import db
 from src.schema import ClarifyingQuestion, RefusalError
 from src.services import orchestrator
 from src.stub_templates import pick_system
@@ -213,6 +214,237 @@ def test_recent_conversation_single_oversized_message_keeps_recent_tail():
     assert "TAIL-SENTINEL" in prompt_used
 
 
+# --- R-803: the owner's profile shapes generation context ---
+
+
+def test_profile_fact_reaches_the_model_message():
+    arr = json.dumps(
+        [{"title": "A", "components": [{"id": "x", "type": "text_input", "label": "X"}]}]
+    )
+    db.profile_add(
+        "owner-profile-reach", "fact", "a distinctive narwhal-owner fact", source="manual"
+    )
+    with _fake_llm(arr) as mock_gen:
+        orchestrator.generate_modules("plan my profile-aware prompt", owner="owner-profile-reach")
+    prompt_used = mock_gen.call_args[0][0]
+    assert "What I know about you:" in prompt_used
+    assert "a distinctive narwhal-owner fact" in prompt_used
+
+
+def test_no_profile_omits_the_profile_block():
+    arr = json.dumps(
+        [{"title": "A", "components": [{"id": "x", "type": "text_input", "label": "X"}]}]
+    )
+    with _fake_llm(arr) as mock_gen:
+        orchestrator.generate_modules("plan a trip with no profile", owner="owner-no-profile")
+    prompt_used = mock_gen.call_args[0][0]
+    assert "What I know about you:" not in prompt_used
+
+
+def test_profile_context_bounded_to_about_800_chars():
+    arr = json.dumps(
+        [{"title": "A", "components": [{"id": "x", "type": "text_input", "label": "X"}]}]
+    )
+    for i in range(20):
+        db.profile_add(
+            "owner-profile-bounded", "fact", f"profile fact number {i} " * 5, source="manual"
+        )
+    with _fake_llm(arr) as mock_gen:
+        orchestrator.generate_modules(
+            "plan my bounded profile prompt", owner="owner-profile-bounded"
+        )
+    prompt_used = mock_gen.call_args[0][0]
+    start = prompt_used.index("What I know about you:")
+    end = prompt_used.index("\n\nReturn the adapted", start)
+    block = prompt_used[start:end]
+    assert len(block) <= 800 + 100  # header + slack around the ~800-char budget
+
+
+def test_profile_never_crosses_owners_in_generation_context():
+    """R-903: owner B's fact must never reach owner A's generation prompt."""
+    db.profile_add("owner-profile-a", "fact", "owner-a-only-distinctive-fact", source="manual")
+    db.profile_add("owner-profile-b", "fact", "owner-b-only-distinctive-fact", source="manual")
+    arr = json.dumps(
+        [{"title": "A", "components": [{"id": "x", "type": "text_input", "label": "X"}]}]
+    )
+    with _fake_llm(arr) as mock_gen:
+        orchestrator.generate_modules("plan my isolation-check prompt", owner="owner-profile-a")
+    prompt_used = mock_gen.call_args[0][0]
+    assert "owner-a-only-distinctive-fact" in prompt_used
+    assert "owner-b-only-distinctive-fact" not in prompt_used
+
+
+def test_profile_not_reached_on_grounded_file_path():
+    """R-803: doc content dominates the grounded-file path — same exclusion as
+    the conversation block. generate_modules_from_file has no `owner` param at
+    all (nothing to look up), so a profile fact for "local" (the default owner
+    other callers use) must never leak into a file-grounded generation."""
+    db.profile_add("local", "fact", "a distinctive local-owner fact", source="manual")
+    grounded_arr = json.dumps(
+        [{"title": "A", "components": [{"id": "x", "type": "text_input", "label": "X"}]}]
+    )
+    captured: dict = {}
+
+    def fake_generate(prompt, system=None, *, schema=None, expect_array=False):
+        captured["prompt"] = prompt
+        result = gen_result(grounded_arr)
+        orchestrator.llm.last_call.set(result)
+        return result
+
+    with (
+        patch("src.services.orchestrator.llm.is_stub_mode", return_value=False),
+        patch("src.services.orchestrator.llm.generate", side_effect=fake_generate),
+        patch("src.services.extract.text_from_file", return_value="extracted document text"),
+    ):
+        orchestrator.generate_modules_from_file(
+            "build tools from this doc", b"data", "application/pdf"
+        )
+    assert "What I know about you:" not in captured["prompt"]
+
+
+def test_profile_clear_removes_fact_from_future_generation_context():
+    """R-804/R-1003 end-to-end: a distinctive profile string is GONE after
+    clear — not in profile_list, and not in any future generation context."""
+    owner = "owner-erasure"
+    db.profile_add(owner, "fact", "distinctive-erasure-fact-xyz", source="manual")
+    arr = json.dumps(
+        [{"title": "A", "components": [{"id": "x", "type": "text_input", "label": "X"}]}]
+    )
+    with _fake_llm(arr) as mock_gen:
+        orchestrator.generate_modules("plan my erasure-check prompt one", owner=owner)
+    assert "distinctive-erasure-fact-xyz" in mock_gen.call_args[0][0]
+
+    assert db.profile_clear(owner) == 1
+    assert db.profile_list(owner) == []
+
+    with _fake_llm(arr) as mock_gen2:
+        orchestrator.generate_modules(
+            "plan my erasure-check prompt two, totally different wording", owner=owner
+        )
+    prompt_after_clear = mock_gen2.call_args[0][0]
+    assert "distinctive-erasure-fact-xyz" not in prompt_after_clear
+    assert "What I know about you:" not in prompt_after_clear
+
+
+# --- Stage-2b backlog: composed-prompt token cap (_MAX_PROMPT_CHARS) ---
+
+
+def test_cap_composed_prompt_is_a_noop_under_budget():
+    result = orchestrator._cap_composed_prompt("h", "c", "v", "p", "e", "t")
+    assert result == "hcvpet"
+
+
+def test_cap_composed_prompt_never_truncates_head_exchange_or_tail():
+    head = "User request: a distinctive raw prompt\n\n"
+    tail = "\n\nReturn the adapted ModuleConfig JSON array."
+    exchange_block = "\n\nConversation so far:\nQ: Which city?\nA: Tokyo" * 20
+    context = "C" * 20000
+    convo_block = "V" * 20000
+    profile_block = "P" * 20000
+    result = orchestrator._cap_composed_prompt(
+        head, context, convo_block, profile_block, exchange_block, tail
+    )
+    assert len(result) <= orchestrator._MAX_PROMPT_CHARS
+    assert result.startswith(head)
+    assert result.endswith(tail)
+    assert exchange_block in result
+
+
+def test_cap_composed_prompt_truncates_conversation_and_profile_before_module_context():
+    """When the module-context block alone fits comfortably but the
+    conversation/profile blocks are oversized, those are cut (or dropped)
+    first — module-context stays fully intact. Conversation and profile share
+    the same lowest priority tier (R-803)."""
+    head = "User request: a distinctive raw prompt\n\n"
+    tail = "\n\nReturn the adapted ModuleConfig JSON array."
+    exchange_block = "\n\nConversation so far:\nQ: Which city?\nA: Tokyo"
+    context = "\n\nExisting modules on canvas:\n- Module: field_a, field_b"
+    convo_block = "\n\nRecent conversation:\n" + ("user: filler turn. " * 2000)
+    profile_block = "\n\nWhat I know about you:\n- (fact) a distinctive profile fact"
+    result = orchestrator._cap_composed_prompt(
+        head, context, convo_block, profile_block, exchange_block, tail
+    )
+    assert len(result) <= orchestrator._MAX_PROMPT_CHARS
+    assert context in result  # module-context untouched
+    assert convo_block not in result  # conversation was cut to fit
+    assert profile_block not in result  # profile squeezed out alongside it
+
+
+def test_cap_composed_prompt_also_truncates_module_context_when_conversation_alone_is_not_enough():
+    """When even fully dropping the conversation/profile blocks isn't enough,
+    the module-context detail is trimmed too (still never head/exchange/tail)."""
+    head = "User request: another distinctive raw prompt\n\n"
+    tail = "\n\nReturn the adapted ModuleConfig JSON array."
+    exchange_block = "\n\nConversation so far:\nQ: Which city?\nA: Tokyo"
+    context = "\n\nExisting modules on canvas:\n" + ("- Module: field_a, field_b\n" * 2000)
+    convo_block = "\n\nRecent conversation:\nuser: hi"
+    profile_block = "\n\nWhat I know about you:\n- (fact) some fact"
+    result = orchestrator._cap_composed_prompt(
+        head, context, convo_block, profile_block, exchange_block, tail
+    )
+    assert len(result) <= orchestrator._MAX_PROMPT_CHARS
+    assert result.startswith(head)
+    assert result.endswith(tail)
+    assert exchange_block in result
+    assert convo_block not in result  # conversation dropped first
+    assert profile_block not in result  # profile dropped too
+    assert context not in result  # and module-context also had to be trimmed
+
+
+def test_cap_composed_prompt_keeps_all_protected_content_when_it_alone_exceeds_cap():
+    """Safety-critical branch: when the PROTECTED content (head + exchange +
+    tail) alone already exceeds _MAX_PROMPT_CHARS, it is STILL never truncated —
+    the raw user prompt and every exchange answer survive in full — and the
+    lower-priority blocks (conversation, profile, module-context) are dropped
+    to zero. The invariant is "never drop protected content", even at the cost
+    of overshooting the cap."""
+    user_prompt = "UP-START " + ("u" * 15000) + " UP-END"
+    head = f"User request: {user_prompt}\n\n"
+    exchange_block = "\n\nConversation so far:\nQ: Which city?\nA: TOKYO-ANSWER-SENTINEL"
+    tail = "\n\nReturn the adapted ModuleConfig JSON array."
+    context = "\n\nExisting modules on canvas:\n- Module: field_a, field_b"
+    convo_block = "\n\nRecent conversation:\nuser: some earlier chatter"
+    profile_block = "\n\nWhat I know about you:\n- (fact) some earlier fact"
+    result = orchestrator._cap_composed_prompt(
+        head, context, convo_block, profile_block, exchange_block, tail
+    )
+    # Protected content is fully intact even though the total exceeds the cap.
+    assert user_prompt in result
+    assert "TOKYO-ANSWER-SENTINEL" in result
+    assert result.startswith(head)
+    assert result.endswith(tail)
+    assert exchange_block in result
+    # The lower-priority blocks were dropped entirely to fit.
+    assert convo_block not in result
+    assert profile_block not in result
+    assert context not in result
+    assert result == head + exchange_block + tail
+    # And the composed length is exactly the protected content — nothing else.
+    assert len(result) == len(head) + len(exchange_block) + len(tail)
+    assert len(result) > orchestrator._MAX_PROMPT_CHARS  # overshoots, by design
+
+
+def test_seeded_system_wires_the_cap_end_to_end():
+    """Integration: _seeded_system itself enforces the cap via its own
+    (private) helpers _module_context/_conversation_block — patched here to
+    return oversized strings so the wiring (not just the pure helper) is
+    proven."""
+    huge_context = "\n\nExisting modules on canvas:\n" + ("- Module: field_a, field_b\n" * 2000)
+    small_convo = "\n\nRecent conversation:\nuser: hi"
+    with (
+        patch("src.services.orchestrator._module_context", return_value=huge_context),
+        patch("src.services.orchestrator._conversation_block", return_value=small_convo),
+    ):
+        msg = orchestrator._seeded_system(
+            "a distinctive raw user prompt", exchange_context="Q: Which city?\nA: Tokyo"
+        )
+    assert len(msg) <= orchestrator._MAX_PROMPT_CHARS
+    assert "a distinctive raw user prompt" in msg
+    assert "Tokyo" in msg
+    assert small_convo not in msg
+    assert huge_context not in msg
+
+
 def test_new_component_types_validate():
     from src.schema import ModuleConfig
 
@@ -239,3 +471,167 @@ def test_new_component_types_validate():
         "calendar",
         "chart",
     ]
+
+
+# --- R-701/R-702/R-705: orchestrator emits live-data bindings, never fabricates
+# an out-of-domain one ---
+
+
+def test_decompose_prompt_documents_the_two_launched_domains():
+    """Pin the prompt contract: nutrition + weather are the only two domains the
+    model may bind, with a concrete example for each."""
+    prompt = orchestrator.DECOMPOSE_SYSTEM_PROMPT
+    assert '"provider": "nutrition"' in prompt
+    assert '"provider": "weather"' in prompt
+    assert "calorie" in prompt.lower()
+    assert "weather" in prompt.lower()
+
+
+def test_decompose_prompt_forbids_out_of_domain_fabrication():
+    """R-705: the prompt must explicitly rule out any domain besides the two
+    launched ones — no fabricated live badge for stocks/flights/etc."""
+    prompt = orchestrator.DECOMPOSE_SYSTEM_PROMPT
+    assert "do not emit a data_source" in prompt.lower() or "never fabricate" in prompt.lower()
+    assert "stocks" in prompt.lower() or "flights" in prompt.lower()
+
+
+def test_generate_modules_keeps_valid_nutrition_data_source():
+    arr = json.dumps(
+        [
+            {
+                "title": "Calorie Tracker",
+                "components": [
+                    {"id": "food", "type": "text_input", "label": "Food"},
+                    {
+                        "id": "calories",
+                        "type": "kpi",
+                        "label": "Calories",
+                        "unit": "kcal",
+                        "data_source": {
+                            "provider": "nutrition",
+                            "query": {"food": "banana"},
+                        },
+                    },
+                ],
+            }
+        ]
+    )
+    with _fake_llm(arr):
+        mods = orchestrator.generate_modules("track calories for a banana")
+    assert len(mods) == 1
+    kpi = mods[0].components[1]
+    assert kpi.type == "kpi"
+    assert kpi.data_source is not None
+    assert kpi.data_source.provider == "nutrition"
+    assert kpi.data_source.query == {"food": "banana"}
+
+
+def test_generate_modules_strips_out_of_domain_data_source():
+    """A well-formed but out-of-domain provider (e.g. "stocks") must NOT drop
+    the whole module — it is stripped so the component survives as manual
+    entry (R-705)."""
+    arr = json.dumps(
+        [
+            {
+                "title": "Stock Tracker",
+                "components": [
+                    {
+                        "id": "price",
+                        "type": "kpi",
+                        "label": "Share Price",
+                        "data_source": {"provider": "stocks", "query": {"ticker": "AAPL"}},
+                    },
+                ],
+            }
+        ]
+    )
+    with _fake_llm(arr):
+        mods = orchestrator.generate_modules("track a stock price")
+    assert len(mods) == 1
+    kpi = mods[0].components[0]
+    assert kpi.type == "kpi"
+    assert kpi.data_source is None
+
+
+def test_generate_modules_strips_malformed_data_source():
+    """A recognized provider with an out-of-bounds field (refresh_secs below the
+    schema's 60s floor) is still malformed — stripped, not module-fatal."""
+    arr = json.dumps(
+        [
+            {
+                "title": "Hike Planner",
+                "components": [
+                    {
+                        "id": "forecast",
+                        "type": "metric",
+                        "label": "Forecast",
+                        "formula": "avg",
+                        "source_component_id": "forecast",
+                        "data_source": {
+                            "provider": "weather",
+                            "query": {"place": "Tokyo"},
+                            "refresh_secs": 5,
+                        },
+                    },
+                ],
+            }
+        ]
+    )
+    with _fake_llm(arr):
+        mods = orchestrator.generate_modules("plan my Tokyo hike")
+    assert len(mods) == 1
+    metric = mods[0].components[0]
+    assert metric.type == "metric"
+    assert metric.data_source is None
+
+
+def test_generate_modules_valid_weather_data_source_survives():
+    arr = json.dumps(
+        [
+            {
+                "title": "Trip Planner",
+                "components": [
+                    {
+                        "id": "forecast",
+                        "type": "metric",
+                        "label": "Saturday Forecast",
+                        "formula": "avg",
+                        "source_component_id": "forecast",
+                        "data_source": {
+                            "provider": "weather",
+                            "query": {"place": "Boulder"},
+                        },
+                    },
+                ],
+            }
+        ]
+    )
+    with _fake_llm(arr):
+        mods = orchestrator.generate_modules("plan my Saturday hike")
+    metric = mods[0].components[0]
+    assert metric.data_source is not None
+    assert metric.data_source.provider == "weather"
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "not-a-dict",  # a bare string
+        [1, 2, 3],  # a list
+        42,  # an int
+        {"query": {"food": "banana"}},  # a dict missing `provider`
+        {"provider": "stocks", "query": {}},  # a well-formed out-of-domain provider
+    ],
+)
+def test_sanitize_data_source_strips_garbage_without_crashing(bad):
+    """Pin the sanitizer against non-dict and malformed data_source values: each
+    is stripped to None in place, never raising."""
+    component = {"id": "x", "type": "kpi", "label": "X", "data_source": bad}
+    orchestrator._sanitize_data_source(component)
+    assert component["data_source"] is None
+
+
+def test_sanitize_data_source_leaves_none_untouched():
+    component = {"id": "x", "type": "kpi", "label": "X"}
+    orchestrator._sanitize_data_source(component)
+    assert component.get("data_source") is None

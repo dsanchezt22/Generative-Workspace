@@ -69,11 +69,11 @@ def test_messages_top_up_when_cache_is_short():
     semantic_cache.store("system", "track my workouts", [{"title": "a"}], owner=owner)
     db.add_message(owner, "user", "plan my week", page_id="p1")
     db.add_message(owner, "assistant", "Created Planner", page_id="p1")
-    db.add_message(owner, "user", "budget tracker", page_id="p2")
+    db.add_message(owner, "user", "monthly budget tracker", page_id="p2")
     prompts = db.suggestion_prompts(owner, 5)
     assert prompts[0] == "track my workouts"  # gen_cache contribution stays first
     assert "plan my week" in prompts
-    assert "budget tracker" in prompts
+    assert "monthly budget tracker" in prompts
     assert "Created Planner" not in prompts  # assistant-role rows never counted
 
 
@@ -92,6 +92,51 @@ def test_limit_caps_the_returned_count():
     for i in range(8):
         semantic_cache.store("system", f"idea number {i}", [{"title": "a"}], owner=owner)
     assert len(db.suggestion_prompts(owner, 3)) == 3
+
+
+# ---------------------------------------------------------------------------
+# Stage-2b backlog: server-side noise filter (moved from suggestions.ts) —
+# a 📎 log line, a refine-combined prompt, a refine imperative, and a terse
+# (<3 word) fragment must never surface as a suggestion.
+# ---------------------------------------------------------------------------
+
+
+def test_file_upload_log_line_is_excluded():
+    db.init_db()
+    owner = db.ensure_session(None)
+    db.add_message(owner, "user", "📎 receipt.png: extracted 3 line items", page_id="p1")
+    db.add_message(owner, "user", "create a budget tracker", page_id="p1")
+    prompts = db.suggestion_prompts(owner, 5)
+    assert prompts == ["create a budget tracker"]
+
+
+def test_refine_combined_preview_prompt_is_excluded():
+    db.init_db()
+    owner = db.ensure_session(None)
+    db.add_message(owner, "user", "Create a workout log — add a rest-day checkbox", page_id="p1")
+    db.add_message(owner, "user", "Create a workout log", page_id="p1")
+    prompts = db.suggestion_prompts(owner, 5)
+    assert prompts == ["Create a workout log"]
+
+
+def test_refine_imperative_prefix_is_excluded():
+    db.init_db()
+    owner = db.ensure_session(None)
+    db.add_message(owner, "user", "make it a bar chart instead", page_id="p1")
+    db.add_message(owner, "user", "change the currency to euros", page_id="p1")
+    db.add_message(owner, "user", "create a savings goal tracker", page_id="p1")
+    prompts = db.suggestion_prompts(owner, 5)
+    assert prompts == ["create a savings goal tracker"]
+
+
+def test_terse_fragment_under_three_words_is_excluded():
+    db.init_db()
+    owner = db.ensure_session(None)
+    db.add_message(owner, "user", "budget", page_id="p1")
+    db.add_message(owner, "user", "add columns", page_id="p1")
+    db.add_message(owner, "user", "create a reading list", page_id="p1")
+    prompts = db.suggestion_prompts(owner, 5)
+    assert prompts == ["create a reading list"]
 
 
 # ---------------------------------------------------------------------------
@@ -185,5 +230,26 @@ def test_default_limit_is_five():
         resp = client.get("/api/suggestions")
         assert resp.status_code == 200
         assert len(resp.json()) == 5
+    finally:
+        client.__exit__(None, None, None)
+
+
+def test_route_never_returns_noise_seeded_into_messages():
+    """Stage-2b backlog: a 📎 file-upload log line and a refine-combined
+    prompt seeded into `messages` must never appear in the API response."""
+    db.init_db()
+    client, owner = _claimed_client("Grace")
+    try:
+        db.add_message(owner, "user", "📎 receipt.png: extracted 3 line items", page_id="p1")
+        db.add_message(
+            owner, "user", "Create a workout log — add a rest-day checkbox", page_id="p1"
+        )
+        db.add_message(owner, "user", "Create a distinctive workout log", page_id="p1")
+        resp = client.get("/api/suggestions")
+        assert resp.status_code == 200
+        prompts = [s["prompt"] for s in resp.json()]
+        assert "📎 receipt.png: extracted 3 line items" not in prompts
+        assert "Create a workout log — add a rest-day checkbox" not in prompts
+        assert "Create a distinctive workout log" in prompts
     finally:
         client.__exit__(None, None, None)

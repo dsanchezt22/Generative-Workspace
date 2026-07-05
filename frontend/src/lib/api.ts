@@ -1,4 +1,5 @@
-import type { Message, ModuleConfig, Page, Snapshot, StoredModule, StudioLayout, StudioUseCase } from "./types";
+import type { DataSource, LiveValuePayload, Message, ModuleConfig, Page, ProfileKind, Snapshot, StoredModule, StudioLayout, StudioUseCase, UserProfileEntry } from "./types";
+import { buildLiveQueryParams } from "./liveFormat";
 
 const BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";
 
@@ -115,8 +116,20 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ name, icon, parent_id: parentId ?? null }),
     }),
-  updatePage: (id: string, patch: { name?: string; icon?: string | null; parent_id?: string | null }) =>
-    request<Page>(`/api/pages/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
+  updatePage: (
+    id: string,
+    patch: {
+      name?: string;
+      icon?: string | null;
+      parent_id?: string | null;
+      // R-504: dragging a child's portal tile persists its world placement.
+      portal_x?: number | null;
+      portal_y?: number | null;
+    },
+  ) => request<Page>(`/api/pages/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
+  // R-502: live module count per page for the portal tiles' cheap "N tools"
+  // preview (one grouped COUNT server-side — no child module configs loaded).
+  pageModuleCounts: () => request<Record<string, number>>("/api/pages/counts"),
   renamePage: (id: string, name: string) =>
     request<Page>(`/api/pages/${id}`, { method: "PATCH", body: JSON.stringify({ name }) }),
   reorderPages: (orderedIds: string[]) =>
@@ -153,18 +166,31 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ prompt, exchange, build_now: buildNow }),
     }),
-  insertModules: (configs: ModuleConfig[], prompt?: string, pageId?: string) =>
+  // R-802: `exchange` carries the clarifying interview that produced these
+  // accepted tools, so the backend accretes profile facts HERE (on a confirmed
+  // accept) rather than on the discardable preview. Omitted for a fresh (no-
+  // interview) proposal — a plain build accretes nothing.
+  insertModules: (configs: ModuleConfig[], prompt?: string, pageId?: string, exchange?: ExchangeTurn[]) =>
     request<StoredModule[]>(`/api/modules${pageId ? `?page_id=${pageId}` : ""}`, {
       method: "POST",
-      body: JSON.stringify({ configs, prompt }),
+      body: JSON.stringify({ configs, prompt, exchange }),
     }),
   // R-221: `hint` is the sketch snap's bounded interpretation instruction; the
   // backend folds it into the model-visible message. Omitted for plain uploads.
-  generateModuleFromFile: async (file: File, prompt: string, pageId?: string, hint?: string): Promise<GenerateResponse> => {
+  // `preview` (Stage-2b/R-223 backlog): mirrors previewModules — the caller gets
+  // `previews` back instead of the tools being inserted straight onto the canvas.
+  generateModuleFromFile: async (
+    file: File,
+    prompt: string,
+    pageId?: string,
+    hint?: string,
+    preview?: boolean,
+  ): Promise<GenerateResponse> => {
     const fd = new FormData();
     fd.append("file", file);
     fd.append("prompt", prompt);
     if (hint) fd.append("hint", hint);
+    if (preview) fd.append("preview", "true");
     const res = await fetch(`${BASE}/api/modules/generate_from_file${pageId ? `?page_id=${pageId}` : ""}`, {
       method: "POST",
       credentials: "include",
@@ -240,6 +266,13 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ prompt }),
     }),
+  // R-701/R-704: the live-value refresh hook's fetch (`useLiveValue.ts`). GET,
+  // owner-gated via the session cookie (request() already sends
+  // credentials:"include"); query→params built by the shared, tested builder
+  // (weather: place OR lat+lon; nutrition: food).
+  liveValue: (provider: DataSource["provider"], query: DataSource["query"], refreshSecs: number) =>
+    request<LiveValuePayload>(`/api/live/${provider}?${buildLiveQueryParams(provider, query, refreshSecs)}`),
+
   workspaceInsights: (pageId?: string) =>
     request<GenerateResponse>(
       `/api/workspace/insights${pageId ? `?page_id=${pageId}` : ""}`,
@@ -259,6 +292,25 @@ export const api = {
     request<void>(`/api/conversations${pageId ? `?page_id=${pageId}` : ""}`, {
       method: "DELETE",
     }),
+
+  // R-801: the "remembers you" profile surface — owner-gated CRUD over the
+  // facts Trus has learned about the caller (ProfilePanel). All owner-scoped
+  // server-side; request() already sends credentials:"include".
+  profileList: () => request<UserProfileEntry[]>("/api/profile"),
+  profileAdd: (kind: ProfileKind, text: string) =>
+    request<UserProfileEntry>("/api/profile", {
+      method: "POST",
+      body: JSON.stringify({ kind, text }),
+    }),
+  profileUpdate: (id: string, text: string) =>
+    request<UserProfileEntry>(`/api/profile/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ text }),
+    }),
+  profileDelete: (id: string) =>
+    request<void>(`/api/profile/${id}`, { method: "DELETE" }),
+  // R-804/R-1003: real erasure — the backend hard-DELETEs every fact for this owner.
+  profileClear: () => request<{ deleted: number }>("/api/profile", { method: "DELETE" }),
 
   // Layout Studio
   studioUseCases: () => request<StudioUseCase[]>("/api/studio/use-cases"),

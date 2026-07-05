@@ -49,6 +49,30 @@ def _fold_exchange(exchange: list[ExchangeTurn] | None) -> str | None:
     return "\n\n".join(lines)
 
 
+# R-802 accretion, "without forms": the user's own interview answers become
+# visible profile facts — verbatim (Option A: no extra model call, so nothing
+# enters the profile the user didn't literally type/say). A light keyword
+# heuristic tags "goal" vs "fact"; bounded to the first 3 answered turns.
+_PROFILE_GOAL_WORDS = ("want", "goal", "track")
+
+
+def _accrete_profile_facts(sid: str, exchange: list[ExchangeTurn] | None) -> None:
+    """Fires on a CONFIRMED insert (POST /api/modules) that carries the exchange
+    which produced the accepted tools — so only a proposal the user actually
+    accepted accretes anything; a discarded preview draft never does. (Preview/
+    generate deliberately do NOT accrete: the user hasn't committed there yet.)
+    Best-effort: a profile write must never break the insert response."""
+    if not exchange:
+        return
+    for turn in exchange[:3]:
+        answer = turn.answer.strip()
+        if not answer:
+            continue
+        kind = "goal" if any(w in answer.lower() for w in _PROFILE_GOAL_WORDS) else "fact"
+        with contextlib.suppress(Exception):
+            db.profile_add(sid, kind, answer[:500], source="interview")
+
+
 def _log(
     sid: str,
     role: Literal["user", "assistant"],
@@ -194,6 +218,9 @@ async def insert_modules(
     """Persist accepted preview tools onto the canvas."""
     sid = _owner_id(request)
     stored = [db.insert_module(sid, c, page_id=page_id) for c in body.configs]
+    # R-802: accrete profile facts from the interview that produced these tools —
+    # only now, on a confirmed accept, so discarded drafts never enter the profile.
+    _accrete_profile_facts(sid, body.exchange)
     if stored and body.prompt:
         _log(sid, "user", body.prompt, page_id=stored[0].page_id)
     for s in stored:
@@ -207,6 +234,7 @@ def generate_from_file(
     file: UploadFile = File(...),
     prompt: str = Form(""),
     hint: str = Form(""),
+    preview: bool = Form(False),
     page_id: str | None = Query(default=None),
 ) -> GenerateResponse:
     _require_trusted_origin(request)
@@ -241,11 +269,17 @@ def generate_from_file(
         raise HTTPException(status_code=422, detail={"refusal": e.reason}) from e
     except LLMError as e:
         raise HTTPException(status_code=503, detail=_llm_error_detail(e)) from None
+    deg = llm.last_call.get()
+    if preview:
+        # R-223 backlog: preview-then-confirm for file/sketch uploads, mirroring
+        # /modules/preview — nothing is persisted or logged here; the caller
+        # confirms via POST /api/modules (insert_modules), which does its own
+        # logging once the user actually accepts a proposed tool.
+        return GenerateResponse(previews=configs, degraded=bool(deg and deg.degraded))
     stored = [db.insert_module(sid, c, page_id=page_id) for c in configs]
     _log(sid, "user", f"📎 {file.filename}: {instruction}", page_id=stored[0].page_id)
     for s in stored:
         _log(sid, "assistant", f"Created {s.config.title}", page_id=s.page_id, module_id=s.id)
-    deg = llm.last_call.get()
     return GenerateResponse(module=stored[0], modules=stored, degraded=bool(deg and deg.degraded))
 
 

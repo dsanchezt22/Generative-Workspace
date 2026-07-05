@@ -39,6 +39,28 @@ export interface ComponentBase {
   emphasis?: "normal" | "primary" | "muted" | null;
 }
 
+/** A live external-data binding for a single-value display component
+ * (R-701/R-704): Metric/Kpi/Ring/Gauge/ProgressBar may carry one. Mirrors
+ * backend/src/schema.py's DataSource. */
+export interface DataSource {
+  provider: "weather" | "nutrition";
+  query: Record<string, string | number>;
+  refresh_secs?: number;
+  label?: string | null;
+}
+
+/** The `GET /api/live/{provider}` response shape (R-701/R-704, `routes/live.py`).
+ * `as_of` stays snake_case to match the wire payload exactly — `useLiveValue`
+ * maps it to `asOf`. */
+export interface LiveValuePayload {
+  value: number | null;
+  unit: string | null;
+  as_of: string | null;
+  source: string;
+  stale: boolean;
+  error: string | null;
+}
+
 export interface TextInput extends ComponentBase {
   type: "text_input";
   placeholder?: string | null;
@@ -69,6 +91,7 @@ export interface ProgressBar extends ComponentBase {
   max: number;
   bound_to?: string | null;
   source_module_id?: string | null;
+  data_source?: DataSource | null;
 }
 
 export interface Metric extends ComponentBase {
@@ -76,6 +99,7 @@ export interface Metric extends ComponentBase {
   formula: "sum" | "count" | "avg" | "max" | "min";
   source_component_id: string;
   unit?: string | null;
+  data_source?: DataSource | null;
 }
 
 export interface ListField extends ComponentBase {
@@ -97,6 +121,7 @@ export interface Tags extends ComponentBase {
 export interface Kpi extends ComponentBase {
   type: "kpi";
   unit?: string | null;
+  data_source?: DataSource | null;
 }
 
 export interface DatePicker extends ComponentBase {
@@ -142,6 +167,7 @@ export interface Ring extends ComponentBase {
   type: "ring";
   max: number;
   bound_to?: string | null;
+  data_source?: DataSource | null;
 }
 
 export interface Timeline extends ComponentBase {
@@ -158,7 +184,7 @@ export interface Section extends ComponentBase { type: "section"; }
 export interface Divider extends ComponentBase { type: "divider"; }
 export interface Kanban extends ComponentBase { type: "kanban"; columns: string[]; }
 export interface Heatmap extends ComponentBase { type: "heatmap"; unit?: string | null; }
-export interface Gauge extends ComponentBase { type: "gauge"; min: number; max: number; unit?: string | null; }
+export interface Gauge extends ComponentBase { type: "gauge"; min: number; max: number; unit?: string | null; data_source?: DataSource | null; }
 export interface Checklist extends ComponentBase { type: "checklist"; }
 export interface Gallery extends ComponentBase { type: "gallery"; }
 export interface Note extends ComponentBase { type: "note"; placeholder?: string | null; }
@@ -258,6 +284,10 @@ export interface Page {
   icon?: string | null;
   parent_id?: string | null;
   position: number;
+  /** R-502/R-504: this child page's portal placement (world coords) on its
+   * parent's canvas. Null until dragged — the frontend then auto-places it. */
+  portal_x?: number | null;
+  portal_y?: number | null;
   created_at: string;
 }
 
@@ -276,6 +306,19 @@ export interface Snapshot {
   label: string;
   module_count: number;
   created_at: string;
+}
+
+// The "remembers you" profile store (R-801). Mirrors backend UserProfileEntry.
+export type ProfileKind = "goal" | "preference" | "pattern" | "fact";
+
+export interface UserProfileEntry {
+  id: string;
+  owner: string;
+  kind: ProfileKind;
+  text: string;
+  source: "interview" | "prompt" | "activity" | "manual";
+  created_at: string;
+  updated_at: string;
 }
 
 // Layout Studio — a use-case-indexed library of candidate layouts.

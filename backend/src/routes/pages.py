@@ -16,6 +16,13 @@ async def list_pages(request: Request) -> list[Page]:
     return pages
 
 
+@router.get("/pages/counts", response_model=dict[str, int])
+async def page_module_counts(request: Request) -> dict[str, int]:
+    """Live module count per page (R-502): the portal tiles' cheap "N tools"
+    preview without loading any child page's module configs. Owner-scoped."""
+    return db.page_module_counts(_owner_id(request))
+
+
 @router.post("/pages", response_model=Page, status_code=201)
 async def create_page(body: CreatePageRequest, request: Request) -> Page:
     name = body.name.strip()
@@ -46,7 +53,7 @@ def _would_loop(sid: str, page_id: str, parent_id: str | None) -> bool:
 async def update_page(page_id: str, body: RenamePageRequest, request: Request) -> Page:
     sid = _owner_id(request)
     fields = body.model_fields_set
-    kwargs: dict[str, str | None] = {}
+    kwargs: dict[str, str | float | None] = {}
     if "name" in fields:
         name = (body.name or "").strip()
         if not name:
@@ -58,6 +65,11 @@ async def update_page(page_id: str, body: RenamePageRequest, request: Request) -
         if _would_loop(sid, page_id, body.parent_id):
             raise HTTPException(status_code=409, detail="A page can't be placed inside itself.")
         kwargs["parent_id"] = body.parent_id
+    # R-504: portal placement is owner-scoped in db.update_page (WHERE session_id).
+    if "portal_x" in fields:
+        kwargs["portal_x"] = body.portal_x
+    if "portal_y" in fields:
+        kwargs["portal_y"] = body.portal_y
     updated = db.update_page(sid, page_id, **kwargs)
     if updated is None:
         raise HTTPException(status_code=404, detail="Page not found")
