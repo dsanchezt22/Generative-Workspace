@@ -103,6 +103,10 @@ def _isolate_llm_env(monkeypatch):
         "TRUS_DAILY_COST_CAP_USD",
         "TRUS_TOKEN_COST_IN",
         "TRUS_TOKEN_COST_OUT",
+        # Backup CLI (R-1106) — a developer's local .env must not point tests at a
+        # real backup dir or perturb the retention default (7) under test.
+        "TRUS_BACKUP_DIR",
+        "TRUS_BACKUP_KEEP",
     ):
         monkeypatch.delenv(k, raising=False)
 
