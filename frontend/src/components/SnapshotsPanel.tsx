@@ -24,7 +24,10 @@ interface Props {
 
 export function SnapshotsPanel({ snapshots, pageName, onClose, onSave, onRestore, onDelete }: Props) {
   return (
-    <aside className="fixed top-0 right-0 h-screen w-[320px] max-w-[85vw] z-30 bg-[var(--surface)] border-l border-[var(--border)] shadow-2xl shadow-black/40 flex flex-col animate-slide-right">
+    // R-1304: full-width sheet below `sm` (the fixed 320px column would
+    // otherwise leave the canvas a sliver on a 375px phone) — same panel,
+    // same tokens/animation, just full-bleed on a narrow viewport.
+    <aside className="fixed top-0 inset-x-0 sm:inset-x-auto sm:right-0 h-screen w-full sm:w-[320px] sm:max-w-[85vw] z-30 bg-[var(--surface)] border-l border-[var(--border)] shadow-2xl shadow-black/40 flex flex-col animate-slide-right">
       <header className="flex items-center gap-2 px-4 h-14 border-b border-[var(--border)] shrink-0">
         <span className="text-sm font-semibold tracking-tight">Snapshots</span>
         <span className="text-xs text-[var(--muted)] truncate min-w-0">· {pageName}</span>

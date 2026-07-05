@@ -12,6 +12,13 @@ import {
   type Point,
   type Stroke,
 } from "@/lib/sketchExport";
+import {
+  clampZoom,
+  pinchZoomFactor,
+  pointerDistance,
+  pointerMidpoint,
+  zoomTowardPoint,
+} from "@/lib/pinchZoom";
 import { PORTAL_H, PORTAL_W, portalPosition } from "@/lib/portalLayout";
 import { Icon } from "./Icon";
 import { Module } from "./Module";
@@ -135,6 +142,16 @@ export function Canvas({
   const panRef = useRef<{ x: number; y: number; vx: number; vy: number } | null>(
     null,
   );
+  // R-1304: two-finger pinch-zoom. `activePointersRef` tracks every active
+  // pointer's last known screen position (insertion order = touch order, so
+  // a 3rd incidental touch during a pinch never displaces the original two).
+  // `pinchDistRef` holds the last sampled inter-finger distance so each move
+  // event yields a per-step zoom factor (the same per-tick pattern onWheel
+  // uses below) instead of a cumulative ratio from gesture start, which would
+  // drift if a sample were ever missed. Null when not mid-pinch.
+  const activePointersRef = useRef<Map<number, Point>>(new Map());
+  const pinchDistRef = useRef<number | null>(null);
+  const ZOOM_MIN = 0.3, ZOOM_MAX = 2;
   const moduleDragRef = useRef<{
     moduleId: string;
     startClient: { x: number; y: number };
@@ -149,8 +166,18 @@ export function Canvas({
   const onPointerDown = useCallback(
     (e: React.PointerEvent) => {
       if (e.target !== e.currentTarget) return;
-      onModuleSelect(null); // clicking empty canvas deselects
       (e.currentTarget as Element).setPointerCapture(e.pointerId);
+      activePointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (activePointersRef.current.size === 2) {
+        // A second touch lands (possibly mid-pan): hand off to pinch-zoom
+        // cleanly — a stale pan delta must never fight the pinch.
+        panRef.current = null;
+        const [p1, p2] = Array.from(activePointersRef.current.values());
+        pinchDistRef.current = pointerDistance(p1, p2);
+        return;
+      }
+      if (activePointersRef.current.size > 2) return; // an extra touch doesn't restart the gesture
+      onModuleSelect(null); // a genuine single-pointer tap/click on empty canvas deselects
       panRef.current = { x: e.clientX, y: e.clientY, vx: view.x, vy: view.y };
     },
     [view, onModuleSelect],
@@ -159,33 +186,45 @@ export function Canvas({
   // Panning only — module drag/resize use window listeners (see below) so a lost
   // pointer can never fall through to a pan ("all modules move at once").
   const onPointerMove = useCallback((e: React.PointerEvent) => {
+    if (activePointersRef.current.has(e.pointerId)) {
+      activePointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    }
+    if (activePointersRef.current.size === 2 && pinchDistRef.current !== null) {
+      // R-1304: zoom by each step's distance ratio, toward the fingers'
+      // midpoint — reuses the same `zoomTowardPoint` anchor math onWheel and
+      // the +/- buttons use, so the clamp + view-update behavior is identical.
+      const [p1, p2] = Array.from(activePointersRef.current.values());
+      const dist = pointerDistance(p1, p2);
+      const factor = pinchZoomFactor(pinchDistRef.current, dist);
+      pinchDistRef.current = dist;
+      const rect = containerRef.current?.getBoundingClientRect();
+      const mid = pointerMidpoint(p1, p2);
+      const midLocal = { x: mid.x - (rect?.left ?? 0), y: mid.y - (rect?.top ?? 0) };
+      setView((prev) => zoomTowardPoint(prev, factor, midLocal, ZOOM_MIN, ZOOM_MAX));
+      return;
+    }
     if (!panRef.current) return;
     const { x, y, vx, vy } = panRef.current;
     setView((prev) => ({ ...prev, x: vx + (e.clientX - x), y: vy + (e.clientY - y) }));
   }, []);
 
+  // Any tracked pointer ending — one lifted mid-pinch, or the single pan
+  // finger — exits whatever gesture is active cleanly rather than trying to
+  // resume a pan from a stale reference point (which would jump the canvas).
   const onPointerUp = useCallback((e: React.PointerEvent) => {
     (e.currentTarget as Element).releasePointerCapture?.(e.pointerId);
+    activePointersRef.current.delete(e.pointerId);
+    pinchDistRef.current = null;
     panRef.current = null;
   }, []);
 
   const onWheel = useCallback((e: React.WheelEvent) => {
     if (!e.ctrlKey && !e.metaKey) return;
     e.preventDefault();
-    setView((prev) => {
-      const factor = Math.exp(-e.deltaY * 0.0015);
-      const nextZoom = Math.min(2, Math.max(0.3, prev.zoom * factor));
-      const rect = containerRef.current?.getBoundingClientRect();
-      const px = rect ? e.clientX - rect.left : 0;
-      const py = rect ? e.clientY - rect.top : 0;
-      const wx = (px - prev.x) / prev.zoom;
-      const wy = (py - prev.y) / prev.zoom;
-      return {
-        zoom: nextZoom,
-        x: px - wx * nextZoom,
-        y: py - wy * nextZoom,
-      };
-    });
+    const factor = Math.exp(-e.deltaY * 0.0015);
+    const rect = containerRef.current?.getBoundingClientRect();
+    const point = { x: rect ? e.clientX - rect.left : 0, y: rect ? e.clientY - rect.top : 0 };
+    setView((prev) => zoomTowardPoint(prev, factor, point, ZOOM_MIN, ZOOM_MAX));
   }, []);
 
   const viewZoomRef = useRef(view.zoom);
@@ -393,20 +432,14 @@ export function Canvas({
     [portalWinMove, portalWinUp],
   );
 
-  const ZOOM_MIN = 0.3, ZOOM_MAX = 2;
-  const clampZoom = (z: number) => Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, z));
-
-  // Zoom toward the viewport center by a multiplicative factor.
+  // Zoom toward the viewport center by a multiplicative factor (the +/-
+  // buttons). Shares `zoomTowardPoint` with wheel-zoom and pinch-zoom
+  // (R-1304) — the same "keep the world point under `screenPoint` fixed"
+  // anchor math, just centered instead of at the cursor/fingers.
   const zoomBy = useCallback((factor: number) => {
     const rect = containerRef.current?.getBoundingClientRect();
-    const cx = rect ? rect.width / 2 : 0;
-    const cy = rect ? rect.height / 2 : 0;
-    setView((prev) => {
-      const nz = clampZoom(prev.zoom * factor);
-      const wx = (cx - prev.x) / prev.zoom;
-      const wy = (cy - prev.y) / prev.zoom;
-      return { zoom: nz, x: cx - wx * nz, y: cy - wy * nz };
-    });
+    const point = { x: rect ? rect.width / 2 : 0, y: rect ? rect.height / 2 : 0 };
+    setView((prev) => zoomTowardPoint(prev, factor, point, ZOOM_MIN, ZOOM_MAX));
   }, []);
 
   // Content-sized cards report height:0 in their layout, so we measure the real
@@ -456,7 +489,7 @@ export function Canvas({
     const ch = b.maxY - b.minY + pad * 2;
     // Never magnify past 100% when fitting — upscaling is what made freshly
     // generated tools look "overly big". We only ever zoom out to fit.
-    const zoom = Math.min(1, clampZoom(Math.min(rect.width / cw, rect.height / ch)));
+    const zoom = Math.min(1, clampZoom(Math.min(rect.width / cw, rect.height / ch), ZOOM_MIN, ZOOM_MAX));
     const cxWorld = (b.minX + b.maxX) / 2;
     const cyWorld = (b.minY + b.maxY) / 2;
     setView({

@@ -261,7 +261,16 @@ export default function Home() {
   const handleStartConversation = useCallback(() => setIntroOpen(true), []);
 
   useEffect(() => {
-    setSidebarCollapsed(localStorage.getItem("trus-sidebar-collapsed") === "1");
+    const stored = localStorage.getItem("trus-sidebar-collapsed");
+    if (stored !== null) {
+      setSidebarCollapsed(stored === "1");
+    } else if (typeof window !== "undefined" && window.innerWidth < 640) {
+      // R-1304: no explicit preference yet, and the viewport is narrow (below
+      // Tailwind `sm`) — default to collapsed so the ~224px expanded sidebar
+      // doesn't squeeze the canvas to a sliver on first mobile visit. A user
+      // who explicitly expands it (localStorage set) keeps that choice.
+      setSidebarCollapsed(true);
+    }
   }, []);
   const toggleSidebar = useCallback(() => {
     setSidebarCollapsed((v) => {

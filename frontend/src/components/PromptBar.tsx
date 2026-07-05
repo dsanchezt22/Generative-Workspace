@@ -442,7 +442,10 @@ export function PromptBar({ onModule, activePageId, refineTarget, onRefineModule
               type="button"
               onClick={toggleMic}
               disabled={transcribing}
-              className={`shrink-0 w-8 h-8 grid place-items-center rounded-full transition disabled:opacity-40 ${
+              // R-1304: 44px tap target on touch (below `sm`) — the mic is the
+              // one voice affordance in the bar and must be reachable; desktop
+              // keeps the original 32px icon button (`sm:w-8 sm:h-8`).
+              className={`shrink-0 w-11 h-11 sm:w-8 sm:h-8 grid place-items-center rounded-full transition disabled:opacity-40 ${
                 recording ? "bg-[var(--danger)] text-white animate-pulse" : "text-[var(--muted)] hover:text-[var(--foreground)] hover:bg-[var(--surface-elevated)]"
               }`}
               title={recording ? "Stop recording" : transcribing ? "Transcribing…" : "Speak"}
@@ -454,7 +457,9 @@ export function PromptBar({ onModule, activePageId, refineTarget, onRefineModule
           <button
             type="button"
             onClick={() => fileRef.current?.click()}
-            className="shrink-0 w-8 h-8 grid place-items-center rounded-full text-[var(--muted)] hover:text-[var(--foreground)] hover:bg-[var(--surface-elevated)] transition"
+            // R-1304: same 44px-on-touch treatment as the mic so the row reads
+            // consistently sized (desktop unchanged at 32px via `sm:`).
+            className="shrink-0 w-11 h-11 sm:w-8 sm:h-8 grid place-items-center rounded-full text-[var(--muted)] hover:text-[var(--foreground)] hover:bg-[var(--surface-elevated)] transition"
             title="Attach a document or image"
             aria-label="Attach file"
           >
