@@ -59,6 +59,10 @@ export interface LiveValuePayload {
   source: string;
   stale: boolean;
   error: string | null;
+  /** Structured off-mode marker (TRUS_LIVE_DATA=off): present-and-true only on
+   * the backend's disabled payload. THIS boolean is the off-mode signal — never
+   * the error string, which is free to be reworded (R-701 hardening). */
+  disabled?: boolean;
 }
 
 export interface TextInput extends ComponentBase {
@@ -288,6 +292,11 @@ export interface Page {
    * parent's canvas. Null until dragged — the frontend then auto-places it. */
   portal_x?: number | null;
   portal_y?: number | null;
+  /** R-504 completion: the page's own saved viewport (pan offset + zoom), so
+   * the view resumes across devices. Null until first saved. */
+  view_x?: number | null;
+  view_y?: number | null;
+  view_zoom?: number | null;
   created_at: string;
 }
 

@@ -370,6 +370,11 @@ class Page(BaseModel):
     # canvas. Null until the tile is dragged — the frontend then auto-places it.
     portal_x: float | None = None
     portal_y: float | None = None
+    # R-504 completion: this page's own saved viewport (pan offset + zoom), so a
+    # user's view resumes across devices. Null until the view is first saved.
+    view_x: float | None = None
+    view_y: float | None = None
+    view_zoom: float | None = None
     created_at: str
 
 
@@ -386,6 +391,10 @@ class RenamePageRequest(BaseModel):
     # R-504: dragging a child's portal tile persists its placement here.
     portal_x: float | None = None
     portal_y: float | None = None
+    # R-504 completion: the page's own viewport (pan/zoom), saved debounced.
+    view_x: float | None = None
+    view_y: float | None = None
+    view_zoom: float | None = None
 
 
 class ReorderPagesRequest(BaseModel):

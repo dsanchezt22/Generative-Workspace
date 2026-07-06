@@ -12,6 +12,8 @@ import pytest
 from fastapi.testclient import TestClient
 from src import db
 from src.main import app
+from src.routes.modules import _activity_fact, _prompt_goal_fact
+from src.schema import ModuleConfig
 
 from tests.conftest import gen_result as _gr
 
@@ -286,11 +288,10 @@ def test_insert_with_exchange_accretes_an_interview_fact(client):
         json={"configs": [CONFIG], "prompt": "track my weight", "exchange": exchange},
     )
     assert resp.status_code == 201, resp.text
-    profile = client.get("/api/profile").json()
-    assert len(profile) == 1
-    assert profile[0]["source"] == "interview"
-    assert profile[0]["text"] == "I want to lose 10 pounds"
-    assert profile[0]["kind"] == "goal"  # heuristic: "want"/"goal" → goal
+    interview = [p for p in client.get("/api/profile").json() if p["source"] == "interview"]
+    assert len(interview) == 1
+    assert interview[0]["text"] == "I want to lose 10 pounds"
+    assert interview[0]["kind"] == "goal"  # heuristic: "want"/"goal" → goal
 
 
 def test_insert_with_exchange_accretes_a_fact_kind(client):
@@ -300,17 +301,18 @@ def test_insert_with_exchange_accretes_a_fact_kind(client):
         json={"configs": [CONFIG], "prompt": "plan my week", "exchange": exchange},
     )
     assert resp.status_code == 201, resp.text
-    profile = client.get("/api/profile").json()
-    assert len(profile) == 1
-    assert profile[0]["source"] == "interview"
-    assert profile[0]["text"] == "Austin, Texas"
-    assert profile[0]["kind"] == "fact"  # no goal/want/track keyword
+    interview = [p for p in client.get("/api/profile").json() if p["source"] == "interview"]
+    assert len(interview) == 1
+    assert interview[0]["text"] == "Austin, Texas"
+    assert interview[0]["kind"] == "fact"  # no goal/want/track keyword
 
 
-def test_insert_without_exchange_does_not_accrete(client):
+def test_insert_without_exchange_accretes_no_interview_fact(client):
     resp = client.post("/api/modules", json={"configs": [CONFIG], "prompt": "track my weight"})
     assert resp.status_code == 201, resp.text
-    assert client.get("/api/profile").json() == []
+    # (prompt/activity accretion may fire — see the R-802-completion section below —
+    # but interview facts require an exchange.)
+    assert [p for p in client.get("/api/profile").json() if p["source"] == "interview"] == []
 
 
 def test_preview_does_not_accrete(client):
@@ -351,7 +353,8 @@ def test_insert_accretion_is_bounded_to_three_facts(client):
         json={"configs": [CONFIG], "prompt": "plan my trip", "exchange": exchange},
     )
     assert resp.status_code == 201, resp.text
-    assert len(client.get("/api/profile").json()) == 3
+    interview = [p for p in client.get("/api/profile").json() if p["source"] == "interview"]
+    assert len(interview) == 3
 
 
 def test_insert_accretion_is_owner_scoped(client, second_client):
@@ -362,3 +365,214 @@ def test_insert_accretion_is_owner_scoped(client, second_client):
     )
     # second_client is a different (anonymous) owner — never sees client's accreted fact.
     assert second_client.get("/api/profile").json() == []
+
+
+# ---------------------------------------------------------------------------
+# R-802 completion: prompt- + activity-derived accretion, SAME confirmed-insert
+# seam as interview accretion above. Conservative by design: ≤1 prompt-fact and
+# ≤1 activity-fact per insert, and only on a confident heuristic match — a plain
+# build prompt or an unrecognizable tool accretes NOTHING (no noise).
+# ---------------------------------------------------------------------------
+
+NEUTRAL_CONFIG = {
+    "title": "Notes",
+    "components": [{"id": "note", "type": "text_input", "label": "Note"}],
+}
+
+NUTRITION_CONFIG = {
+    "title": "Calorie Tracker",
+    "components": [{"id": "cal", "type": "text_input", "label": "Calories"}],
+}
+
+
+# --- pure helper: _prompt_goal_fact ---
+
+
+@pytest.mark.parametrize(
+    "prompt",
+    [
+        "I want to track my reading",
+        "my goal is to save money",
+        "track my sleep",
+        "I prefer short workouts",
+        "I'm trying to read more",
+    ],
+)
+def test_prompt_goal_fact_detects_goal_statements(prompt):
+    fact = _prompt_goal_fact(prompt)
+    assert fact == ("goal", prompt)
+
+
+@pytest.mark.parametrize("prompt", ["add a notes field", "make it blue", "", "   ", None])
+def test_prompt_goal_fact_skips_non_goal_prompts(prompt):
+    assert _prompt_goal_fact(prompt) is None
+
+
+@pytest.mark.parametrize(
+    "prompt",
+    [
+        "add a tracking number field",  # "tracking" is not "track"
+        "build a trackpad test app",  # "trackpad" is not "track"
+        "unwanted side effects widget",  # "unwanted" is not "want"
+        "add a racetrack game",  # "racetrack" is not "track"
+    ],
+)
+def test_prompt_goal_fact_matches_whole_words_not_substrings(prompt):
+    """Regression (R-802 no-noise): a keyword embedded inside another word must
+    NOT trip the gate — these are plain build prompts, not durable goals."""
+    assert _prompt_goal_fact(prompt) is None
+
+
+@pytest.mark.parametrize(
+    "prompt",
+    [
+        "I want to track my reading",
+        "my goal is to read more",
+        "I prefer mornings",
+        "I'm trying to save money",
+    ],
+)
+def test_prompt_goal_fact_still_fires_on_genuine_goals(prompt):
+    assert _prompt_goal_fact(prompt) == ("goal", prompt)
+
+
+def test_prompt_goal_fact_bounds_and_trims_text():
+    fact = _prompt_goal_fact("  I want to " + "x" * 400)
+    assert fact is not None
+    assert fact[1].startswith("I want to")  # leading whitespace trimmed
+    assert len(fact[1]) <= 200
+
+
+# --- pure helper: _activity_fact ---
+
+
+def _cfg(title: str) -> ModuleConfig:
+    return ModuleConfig(title=title, components=[])
+
+
+@pytest.mark.parametrize(
+    ("title", "text"),
+    [
+        ("Calorie Tracker", "Tracks nutrition"),
+        ("Meal Planner", "Tracks nutrition"),
+        ("Workout Log", "Tracks workouts"),
+        ("Gym Sessions", "Tracks workouts"),
+        ("Monthly Budget", "Tracks budget/finances"),
+        ("Expense Log", "Tracks budget/finances"),
+        ("Habit Tracker", "Tracks habits"),
+        ("Sleep Log", "Tracks sleep"),
+        ("Reading List", "Tracks reading"),
+        ("Mood Journal", "Tracks mood"),
+    ],
+)
+def test_activity_fact_recognizes_known_domains(title, text):
+    assert _activity_fact([_cfg(title)]) == ("pattern", text)
+
+
+@pytest.mark.parametrize(
+    "title", ["Notes", "Party Planner", "Booking Dashboard", "Recipe Book", "Address Book"]
+)
+def test_activity_fact_unrecognized_domain_returns_none(title):
+    # "Booking Dashboard" also proves token matching ("booking" must not match a
+    # "book" cue), and "Recipe Book"/"Address Book" prove bare "book" is no
+    # longer a reading cue (final Stage-4 review: it accreted wrong facts).
+    assert _activity_fact([_cfg(title)]) is None
+
+
+def test_activity_fact_empty_configs_returns_none():
+    assert _activity_fact([]) is None
+
+
+# --- route seam: source="prompt" ---
+
+
+def test_insert_goal_prompt_accretes_prompt_fact(client):
+    resp = client.post(
+        "/api/modules",
+        json={"configs": [NEUTRAL_CONFIG], "prompt": "I want to track my reading"},
+    )
+    assert resp.status_code == 201, resp.text
+    facts = [p for p in client.get("/api/profile").json() if p["source"] == "prompt"]
+    assert len(facts) == 1
+    assert facts[0]["kind"] == "goal"
+    assert facts[0]["text"] == "I want to track my reading"
+
+
+def test_insert_non_goal_prompt_accretes_nothing(client):
+    resp = client.post(
+        "/api/modules", json={"configs": [NEUTRAL_CONFIG], "prompt": "add a notes field"}
+    )
+    assert resp.status_code == 201, resp.text
+    assert client.get("/api/profile").json() == []  # no noise: nothing at all
+
+
+def test_insert_prompt_fact_text_is_bounded(client):
+    resp = client.post(
+        "/api/modules",
+        json={"configs": [NEUTRAL_CONFIG], "prompt": "I want to " + "x" * 400},
+    )
+    assert resp.status_code == 201, resp.text
+    facts = [p for p in client.get("/api/profile").json() if p["source"] == "prompt"]
+    assert len(facts) == 1
+    assert len(facts[0]["text"]) <= 200
+
+
+# --- route seam: source="activity" ---
+
+
+def test_insert_nutrition_tool_accretes_activity_fact(client):
+    resp = client.post(
+        "/api/modules",
+        json={"configs": [NUTRITION_CONFIG], "prompt": "add a calorie counter"},
+    )
+    assert resp.status_code == 201, resp.text
+    profile = client.get("/api/profile").json()
+    activity = [p for p in profile if p["source"] == "activity"]
+    assert len(activity) == 1
+    assert activity[0]["kind"] == "pattern"
+    assert activity[0]["text"] == "Tracks nutrition"
+    assert [p for p in profile if p["source"] == "prompt"] == []  # non-goal prompt: none
+
+
+def test_insert_unrecognizable_tool_accretes_no_activity_fact(client):
+    resp = client.post("/api/modules", json={"configs": [NEUTRAL_CONFIG]})
+    assert resp.status_code == 201, resp.text
+    assert client.get("/api/profile").json() == []
+
+
+# --- all three sources on one insert; bounded + deduped + owner-scoped ---
+
+
+def test_all_three_sources_fire_once_and_dedupe_on_repeat(client):
+    payload = {
+        "configs": [NUTRITION_CONFIG],
+        "prompt": "I want to eat healthier",
+        "exchange": [{"question": "Goal?", "answer": "I want to lose 10 pounds"}],
+    }
+    for _ in range(2):  # a second identical insert must not double-add anything
+        assert client.post("/api/modules", json=payload).status_code == 201
+    profile = client.get("/api/profile").json()
+    assert sorted(p["source"] for p in profile) == ["activity", "interview", "prompt"]
+
+
+def test_prompt_and_activity_accretion_is_owner_scoped(client, second_client):
+    resp = second_client.post(
+        "/api/modules",
+        json={"configs": [NUTRITION_CONFIG], "prompt": "I want to eat healthier"},
+    )
+    assert resp.status_code == 201, resp.text
+    # owner B's insert wrote B's profile (prompt + activity), never owner A's.
+    assert client.get("/api/profile").json() == []
+    assert len(second_client.get("/api/profile").json()) == 2
+
+
+def test_failed_insert_accretes_nothing(client):
+    # An invalid config fails validation (422) before the insert — accretion
+    # only ever runs after a successful insert, so the profile stays empty.
+    bad = {
+        "configs": [{"title": "Calorie Tracker", "components": [{"id": "x", "type": "nope"}]}],
+        "prompt": "I want to eat healthier",
+    }
+    resp = client.post("/api/modules", json=bad)
+    assert resp.status_code == 422
+    assert client.get("/api/profile").json() == []

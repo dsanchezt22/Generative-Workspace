@@ -14,7 +14,12 @@ from fastapi import APIRouter, File, Form, HTTPException, Query, Request, Upload
 from pydantic import BaseModel
 
 from src import db, llm, semantic_cache
-from src.routes.deps import _llm_error_detail, _owner_id, _require_trusted_origin
+from src.routes.deps import (
+    _check_gen_budget,
+    _llm_error_detail,
+    _owner_id,
+    _require_trusted_origin,
+)
 from src.schema import LLMError, ModuleConfig, RefusalError
 from src.services import studio
 
@@ -102,6 +107,9 @@ def generate(
     store them in the library."""
     _require_trusted_origin(request)
     owner = _owner_id(request)
+    # R-1202 (final Stage-4 review): layout mining calls llm.generate() in
+    # non-stub mode — same shared per-owner budget, checked before any spend.
+    _check_gen_budget(owner)
     if studio.get_use_case(key) is None:
         raise HTTPException(status_code=404, detail=f"Unknown use case: {key}")
     layouts = studio.generate_layouts(key, n)
@@ -245,6 +253,10 @@ def import_layout(
     the DERIVED layout to the library. Only the layout is stored — never the image."""
     _require_trusted_origin(request)
     owner = _owner_id(request)
+    # R-1202 (final Stage-4 review): this route spends vision-model tokens, so it
+    # draws from the SAME per-owner generation budget as the modules.py handlers —
+    # checked before any image/vision work, so a limited request never spends.
+    _check_gen_budget(owner)
     if studio.get_use_case(key) is None:
         raise HTTPException(status_code=404, detail=f"Unknown use case: {key}")
     data, mime = _load_image(file, image_url)
@@ -280,6 +292,9 @@ def capture_layout(
     captures into the generation pool. Only the layout is stored — never the image."""
     _require_trusted_origin(request)
     owner = _owner_id(request)
+    # R-1202 (final Stage-4 review): the CAPTURE and TRANSFORM stages both spend
+    # model tokens — same shared per-owner budget, checked before any spend.
+    _check_gen_budget(owner)
     if studio.get_use_case(key) is None:
         raise HTTPException(status_code=404, detail=f"Unknown use case: {key}")
     data, mime = _load_image(file, image_url)

@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, ApiError } from "@/lib/api";
-import type { CommitModule, Page, StoredModule } from "@/lib/types";
+import type { CommitModule, ModuleConfig, Page, StoredModule } from "@/lib/types";
 import { resolveIconName } from "@/lib/theme";
 import {
   rasterScale,
@@ -12,7 +12,15 @@ import {
   type Point,
   type Stroke,
 } from "@/lib/sketchExport";
+import {
+  clampZoom,
+  pinchZoomFactor,
+  pointerDistance,
+  pointerMidpoint,
+  zoomTowardPoint,
+} from "@/lib/pinchZoom";
 import { PORTAL_H, PORTAL_W, portalPosition } from "@/lib/portalLayout";
+import { resolveInitialView, viewChanged, type ViewState } from "@/lib/viewPersist";
 import { Icon } from "./Icon";
 import { Module } from "./Module";
 
@@ -42,6 +50,8 @@ interface Props {
   onModuleCommit: CommitModule;
   // R-1102: the card's ✕ archives (undoable), not a hard delete.
   onModuleArchive: (id: string) => void;
+  // R-1306: keyboard Delete on a focused card — parent confirms, then archives.
+  onModuleArchiveRequest?: (id: string) => void;
   onModuleUndo: (id: string) => void;
   onModuleSelectForRefine: (id: string) => void;
   selectedId?: string | null;
@@ -51,10 +61,11 @@ interface Props {
   activePageId?: string;
   focusRequest?: { id: string; n: number };
   fitRequest?: number;
-  // R-221-223: snapped sketch → generated modules land on the canvas via the
-  // parent's normal new-module path (placement + fit). Optional so Canvas renders
-  // without it (the Sketch toggle simply won't reach generation).
-  onSketchModules?: (modules: StoredModule[]) => void;
+  // R-221-223: a snapped sketch produces a PREVIEW STACK the user confirms or
+  // dismisses in the PromptBar — the same preview→confirm path a typed prompt or
+  // file attach takes — never tools landing straight on the canvas. Optional so
+  // Canvas renders without it (the Sketch toggle simply won't reach generation).
+  onSketchPreviews?: (configs: ModuleConfig[], plan: string | null) => void;
   // R-502/R-504: child pages (parent_id === activePageId) render as enterable
   // world-coord portal tiles BELOW the module layer. `childCounts` feeds each
   // tile's cheap "N tools" preview; enter switches to that page; a drag persists
@@ -64,6 +75,11 @@ interface Props {
   childCounts?: Record<string, number>;
   onEnterPortal?: (pageId: string) => void;
   onPortalMove?: (pageId: string, x: number, y: number) => void;
+  // R-504 completion: the active page's server-saved viewport (null when it has
+  // none) and the debounced persist callback — pan/zoom resumes cross-device.
+  // Optional so Canvas renders without the wiring (localStorage still applies).
+  serverView?: ViewState | null;
+  onViewSave?: (pageId: string, v: ViewState) => void;
 }
 
 interface View {
@@ -113,6 +129,7 @@ export function Canvas({
   onModuleChange,
   onModuleCommit,
   onModuleArchive,
+  onModuleArchiveRequest,
   onModuleUndo,
   onModuleSelectForRefine,
   selectedId,
@@ -122,11 +139,13 @@ export function Canvas({
   activePageId,
   focusRequest,
   fitRequest,
-  onSketchModules,
+  onSketchPreviews,
   childPages,
   childCounts,
   onEnterPortal,
   onPortalMove,
+  serverView,
+  onViewSave,
 }: Props) {
   const [view, setView] = useState<View>({ x: 0, y: 0, zoom: 1 });
   const [draggingModule, setDraggingModule] = useState<string | null>(null);
@@ -135,6 +154,16 @@ export function Canvas({
   const panRef = useRef<{ x: number; y: number; vx: number; vy: number } | null>(
     null,
   );
+  // R-1304: two-finger pinch-zoom. `activePointersRef` tracks every active
+  // pointer's last known screen position (insertion order = touch order, so
+  // a 3rd incidental touch during a pinch never displaces the original two).
+  // `pinchDistRef` holds the last sampled inter-finger distance so each move
+  // event yields a per-step zoom factor (the same per-tick pattern onWheel
+  // uses below) instead of a cumulative ratio from gesture start, which would
+  // drift if a sample were ever missed. Null when not mid-pinch.
+  const activePointersRef = useRef<Map<number, Point>>(new Map());
+  const pinchDistRef = useRef<number | null>(null);
+  const ZOOM_MIN = 0.3, ZOOM_MAX = 2;
   const moduleDragRef = useRef<{
     moduleId: string;
     startClient: { x: number; y: number };
@@ -149,8 +178,18 @@ export function Canvas({
   const onPointerDown = useCallback(
     (e: React.PointerEvent) => {
       if (e.target !== e.currentTarget) return;
-      onModuleSelect(null); // clicking empty canvas deselects
       (e.currentTarget as Element).setPointerCapture(e.pointerId);
+      activePointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (activePointersRef.current.size === 2) {
+        // A second touch lands (possibly mid-pan): hand off to pinch-zoom
+        // cleanly — a stale pan delta must never fight the pinch.
+        panRef.current = null;
+        const [p1, p2] = Array.from(activePointersRef.current.values());
+        pinchDistRef.current = pointerDistance(p1, p2);
+        return;
+      }
+      if (activePointersRef.current.size > 2) return; // an extra touch doesn't restart the gesture
+      onModuleSelect(null); // a genuine single-pointer tap/click on empty canvas deselects
       panRef.current = { x: e.clientX, y: e.clientY, vx: view.x, vy: view.y };
     },
     [view, onModuleSelect],
@@ -159,33 +198,54 @@ export function Canvas({
   // Panning only — module drag/resize use window listeners (see below) so a lost
   // pointer can never fall through to a pan ("all modules move at once").
   const onPointerMove = useCallback((e: React.PointerEvent) => {
+    if (activePointersRef.current.has(e.pointerId)) {
+      activePointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    }
+    if (activePointersRef.current.size === 2 && pinchDistRef.current !== null) {
+      // R-1304: zoom by each step's distance ratio, toward the fingers'
+      // midpoint — reuses the same `zoomTowardPoint` anchor math onWheel and
+      // the +/- buttons use, so the clamp + view-update behavior is identical.
+      const [p1, p2] = Array.from(activePointersRef.current.values());
+      const dist = pointerDistance(p1, p2);
+      const factor = pinchZoomFactor(pinchDistRef.current, dist);
+      pinchDistRef.current = dist;
+      const rect = containerRef.current?.getBoundingClientRect();
+      const mid = pointerMidpoint(p1, p2);
+      const midLocal = { x: mid.x - (rect?.left ?? 0), y: mid.y - (rect?.top ?? 0) };
+      setView((prev) => zoomTowardPoint(prev, factor, midLocal, ZOOM_MIN, ZOOM_MAX));
+      return;
+    }
     if (!panRef.current) return;
     const { x, y, vx, vy } = panRef.current;
     setView((prev) => ({ ...prev, x: vx + (e.clientX - x), y: vy + (e.clientY - y) }));
   }, []);
 
+  // A tracked pointer ending. Remove it, then decide by how many remain:
+  //  - exactly 2 left (a 3rd incidental touch lifted mid-pinch) → RE-SEED the
+  //    pinch distance from the two survivors so the gesture resumes seamlessly
+  //    instead of dying until a full restart;
+  //  - fewer than 2 left → exit any gesture cleanly (clear pinch AND pan), so a
+  //    lifted pinch finger never strands a stale pan reference that would jump
+  //    the canvas on the next move.
   const onPointerUp = useCallback((e: React.PointerEvent) => {
     (e.currentTarget as Element).releasePointerCapture?.(e.pointerId);
+    activePointersRef.current.delete(e.pointerId);
+    if (activePointersRef.current.size === 2) {
+      const [p1, p2] = Array.from(activePointersRef.current.values());
+      pinchDistRef.current = pointerDistance(p1, p2);
+      return;
+    }
+    pinchDistRef.current = null;
     panRef.current = null;
   }, []);
 
   const onWheel = useCallback((e: React.WheelEvent) => {
     if (!e.ctrlKey && !e.metaKey) return;
     e.preventDefault();
-    setView((prev) => {
-      const factor = Math.exp(-e.deltaY * 0.0015);
-      const nextZoom = Math.min(2, Math.max(0.3, prev.zoom * factor));
-      const rect = containerRef.current?.getBoundingClientRect();
-      const px = rect ? e.clientX - rect.left : 0;
-      const py = rect ? e.clientY - rect.top : 0;
-      const wx = (px - prev.x) / prev.zoom;
-      const wy = (py - prev.y) / prev.zoom;
-      return {
-        zoom: nextZoom,
-        x: px - wx * nextZoom,
-        y: py - wy * nextZoom,
-      };
-    });
+    const factor = Math.exp(-e.deltaY * 0.0015);
+    const rect = containerRef.current?.getBoundingClientRect();
+    const point = { x: rect ? e.clientX - rect.left : 0, y: rect ? e.clientY - rect.top : 0 };
+    setView((prev) => zoomTowardPoint(prev, factor, point, ZOOM_MIN, ZOOM_MAX));
   }, []);
 
   const viewZoomRef = useRef(view.zoom);
@@ -204,25 +264,43 @@ export function Canvas({
     return () => ro.disconnect();
   }, []);
 
-  // Remember pan/zoom per page across reloads and tab switches (PRD 6.2).
+  // Remember pan/zoom per page across reloads and tab switches (PRD 6.2), and —
+  // R-504 completion — across DEVICES: the server-saved view (pages.view_x/y/zoom)
+  // wins on load, localStorage stays the instant offline fallback. serverView and
+  // onViewSave are latched in refs so the [activePageId] load effect reads the
+  // freshest values without re-running (and resetting the view) when the pages
+  // list refreshes after a save.
   const latestViewRef = useRef(view);
   useEffect(() => { latestViewRef.current = view; }, [view]);
+  const serverViewRef = useRef(serverView);
+  useEffect(() => { serverViewRef.current = serverView; }, [serverView]);
+  const onViewSaveRef = useRef(onViewSave);
+  useEffect(() => { onViewSaveRef.current = onViewSave; }, [onViewSave]);
+  // The last view persisted (or just loaded) for the current page — the guard
+  // that stops the save effect echoing a freshly-loaded view back as a PATCH.
+  const lastSavedViewRef = useRef<{ pid: string; v: View } | null>(null);
   const currentPageRef = useRef<string | undefined>(activePageId);
   useEffect(() => {
     currentPageRef.current = activePageId;
     if (!activePageId) return;
-    try {
-      const raw = localStorage.getItem(`trus-view-${activePageId}`);
-      setView(raw ? (JSON.parse(raw) as View) : { x: 0, y: 0, zoom: 1 });
-    } catch {
-      setView({ x: 0, y: 0, zoom: 1 });
-    }
+    let raw: string | null = null;
+    try { raw = localStorage.getItem(`trus-view-${activePageId}`); } catch {}
+    const v = resolveInitialView(serverViewRef.current ?? null, raw);
+    lastSavedViewRef.current = { pid: activePageId, v };
+    setView(v);
   }, [activePageId]);
   useEffect(() => {
     const pid = currentPageRef.current;
     if (!pid) return;
     const t = setTimeout(() => {
       try { localStorage.setItem(`trus-view-${pid}`, JSON.stringify(view)); } catch {}
+      // Cross-device persist (R-504), same debounce tick. Skipped when the view
+      // is exactly what was loaded/saved last — no echo PATCH on page open.
+      const last = lastSavedViewRef.current;
+      if (!last || last.pid !== pid || viewChanged(last.v, view)) {
+        lastSavedViewRef.current = { pid, v: view };
+        onViewSaveRef.current?.(pid, view);
+      }
     }, 300);
     return () => clearTimeout(t);
   }, [view]);
@@ -393,20 +471,14 @@ export function Canvas({
     [portalWinMove, portalWinUp],
   );
 
-  const ZOOM_MIN = 0.3, ZOOM_MAX = 2;
-  const clampZoom = (z: number) => Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, z));
-
-  // Zoom toward the viewport center by a multiplicative factor.
+  // Zoom toward the viewport center by a multiplicative factor (the +/-
+  // buttons). Shares `zoomTowardPoint` with wheel-zoom and pinch-zoom
+  // (R-1304) — the same "keep the world point under `screenPoint` fixed"
+  // anchor math, just centered instead of at the cursor/fingers.
   const zoomBy = useCallback((factor: number) => {
     const rect = containerRef.current?.getBoundingClientRect();
-    const cx = rect ? rect.width / 2 : 0;
-    const cy = rect ? rect.height / 2 : 0;
-    setView((prev) => {
-      const nz = clampZoom(prev.zoom * factor);
-      const wx = (cx - prev.x) / prev.zoom;
-      const wy = (cy - prev.y) / prev.zoom;
-      return { zoom: nz, x: cx - wx * nz, y: cy - wy * nz };
-    });
+    const point = { x: rect ? rect.width / 2 : 0, y: rect ? rect.height / 2 : 0 };
+    setView((prev) => zoomTowardPoint(prev, factor, point, ZOOM_MIN, ZOOM_MAX));
   }, []);
 
   // Content-sized cards report height:0 in their layout, so we measure the real
@@ -456,7 +528,7 @@ export function Canvas({
     const ch = b.maxY - b.minY + pad * 2;
     // Never magnify past 100% when fitting — upscaling is what made freshly
     // generated tools look "overly big". We only ever zoom out to fit.
-    const zoom = Math.min(1, clampZoom(Math.min(rect.width / cw, rect.height / ch)));
+    const zoom = Math.min(1, clampZoom(Math.min(rect.width / cw, rect.height / ch), ZOOM_MIN, ZOOM_MAX));
     const cxWorld = (b.minX + b.maxX) / 2;
     const cyWorld = (b.minY + b.maxY) / 2;
     setView({
@@ -661,22 +733,23 @@ export function Canvas({
       const blob = await rasterizeSketch(strokesRef.current, bounds);
       if (!blob) throw new Error("Could not rasterize the sketch.");
       const file = new File([blob], "sketch.png", { type: "image/png" });
-      // The EXISTING image path — prompt "" + the sketch HINT — feeds the same
-      // proposal loop a file upload uses. On a non-vision provider it refuses
-      // honestly (422) instead of degrading to a template.
-      const result = await api.generateModuleFromFile(file, "", activePageId, SKETCH_HINT);
-      const mods = result.modules?.length ? result.modules : result.module ? [result.module] : [];
-      if (result.question || mods.length === 0) {
+      // The EXISTING image path — prompt "" + the sketch HINT — with preview:true,
+      // so the snap feeds the SAME preview→confirm stack a file attach uses
+      // (nothing lands on the canvas until the user accepts). On a non-vision
+      // provider it refuses honestly (422) instead of degrading to a template.
+      const result = await api.generateModuleFromFile(file, "", activePageId, SKETCH_HINT, true);
+      const configs = result.previews ?? [];
+      if (result.question || configs.length === 0) {
         // A clarifying question OR an empty result means the snap produced nothing
-        // to place. Surface it and KEEP the ink — exitSketch would wipe the strokes,
+        // to propose. Surface it and KEEP the ink — exitSketch would wipe the strokes,
         // silently destroying the user's drawing with no way to retry/adjust.
         setSketchError(
           result.question ?? "The model couldn't read this sketch — add labels and try again.",
         );
         return; // strokes persist; overlay stays open (finally still clears `snapping`)
       }
-      onSketchModules?.(mods);
-      exitSketch(); // R-223: sketch consumed on success → clear ink + leave mode
+      onSketchPreviews?.(configs, result.plan ?? null);
+      exitSketch(); // R-223: sketch consumed into a proposal → clear ink + leave mode
     } catch (err) {
       const msg =
         err instanceof ApiError && err.refusal
@@ -688,7 +761,7 @@ export function Canvas({
     } finally {
       setSnapping(false);
     }
-  }, [snapping, activePageId, onSketchModules, exitSketch]);
+  }, [snapping, activePageId, onSketchPreviews, exitSketch]);
 
   // Keyboard: `s` toggles sketch (not while typing / with a modifier); Escape
   // cancels an active sketch. Registered on window so it works anywhere on canvas.
@@ -793,6 +866,7 @@ export function Canvas({
               selected={m.id === selectedId}
               onCommit={onModuleCommit}
               onArchive={onModuleArchive}
+              onArchiveRequest={onModuleArchiveRequest}
               onUndo={onModuleUndo}
               onSelectForRefine={onModuleSelectForRefine}
               onSelect={onModuleSelect}

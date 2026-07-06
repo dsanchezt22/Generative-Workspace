@@ -95,6 +95,21 @@ def _isolate_llm_env(monkeypatch):
         # suite's expectations are deterministic; test_live_data.py opts into
         # "off" explicitly.
         "TRUS_LIVE_DATA",
+        # Live-cache row cap (R-701 hardening) — tests assert the code default
+        # (5000) and opt into small caps explicitly; a dev .env must not leak one.
+        "TRUS_LIVE_CACHE_MAX",
+        # Generate-route rate limit + per-owner daily cost cap (R-1202 completion)
+        # — a developer's local .env must not leak a custom rate/cap/token-price
+        # into tests that assert the code defaults (30/300s, cap unset, $0 rates).
+        "TRUS_GEN_RATE_MAX",
+        "TRUS_GEN_RATE_WINDOW",
+        "TRUS_DAILY_COST_CAP_USD",
+        "TRUS_TOKEN_COST_IN",
+        "TRUS_TOKEN_COST_OUT",
+        # Backup CLI (R-1106) — a developer's local .env must not point tests at a
+        # real backup dir or perturb the retention default (7) under test.
+        "TRUS_BACKUP_DIR",
+        "TRUS_BACKUP_KEEP",
     ):
         monkeypatch.delenv(k, raising=False)
 

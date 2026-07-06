@@ -21,9 +21,10 @@ import { InviteGate } from "@/components/InviteGate";
 import { Icon } from "@/components/Icon";
 import { api, ApiError } from "@/lib/api";
 import { createModuleSaver, type SaveStatus } from "@/lib/moduleSaver";
+import { serverViewOf, type ViewState } from "@/lib/viewPersist";
 import { useAppearance } from "@/lib/appearance";
 import { resolveIconName } from "@/lib/theme";
-import type { CommitModule, Message, Page, Snapshot, StoredModule } from "@/lib/types";
+import type { CommitModule, Message, ModuleConfig, Page, Snapshot, StoredModule } from "@/lib/types";
 
 function HeaderInsights({
   activePageId,
@@ -101,6 +102,13 @@ export default function Home() {
   // R-502: live module count per page, for the child-page portal tiles' cheap
   // "N tools" preview. One grouped COUNT server-side — never loads child configs.
   const [childCounts, setChildCounts] = useState<Record<string, number>>({});
+  // R-221-223 unification: a snapped sketch's proposed tools, in flight from
+  // Canvas to the PromptBar's preview→confirm stack. `n` distinguishes re-snaps.
+  const [sketchPreviews, setSketchPreviews] = useState<{
+    configs: ModuleConfig[];
+    plan: string | null;
+    n: number;
+  } | null>(null);
   // R-801: the "remembers you" profile surface. ProfilePanel fetches + owns its
   // own facts state; page.tsx only toggles visibility and keeps it mutually
   // exclusive with the other right-hand panels.
@@ -110,6 +118,11 @@ export default function Home() {
   // plus its real module ids: `modules` state only covers the ACTIVE page,
   // but any sidebar row can be deleted, so the ids are fetched per-page.
   const [pageDeleteConfirm, setPageDeleteConfirm] = useState<{ page: Page; moduleIds: string[]; archivedCount: number } | null>(null);
+  // R-1306: keyboard Delete on a focused module asks first (ConfirmDialog) —
+  // a key press is easier to fat-finger than the card's ✕ button. On confirm,
+  // focus moves to the canvas <main> (the card is gone), never lost to <body>.
+  const [archiveConfirm, setArchiveConfirm] = useState<StoredModule | null>(null);
+  const mainRef = useRef<HTMLElement | null>(null);
   const [cmdOpen, setCmdOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [allModules, setAllModules] = useState<StoredModule[]>([]);
@@ -261,7 +274,19 @@ export default function Home() {
   const handleStartConversation = useCallback(() => setIntroOpen(true), []);
 
   useEffect(() => {
-    setSidebarCollapsed(localStorage.getItem("trus-sidebar-collapsed") === "1");
+    const isNarrow = typeof window !== "undefined" && window.innerWidth < 640;
+    // R-1304: below Tailwind `sm` the 224px expanded sidebar squeezes the canvas
+    // to a sliver AND pushes the header past the viewport (a real horizontal page
+    // scroll). Always start collapsed on a narrow viewport, overriding even a
+    // stored (desktop) expand preference — the contract is "the sidebar collapses
+    // rather than squeezing the canvas to nothing." Desktop keeps honoring the
+    // stored choice unchanged.
+    if (isNarrow) {
+      setSidebarCollapsed(true);
+    } else {
+      const stored = localStorage.getItem("trus-sidebar-collapsed");
+      if (stored !== null) setSidebarCollapsed(stored === "1");
+    }
   }, []);
   const toggleSidebar = useCallback(() => {
     setSidebarCollapsed((v) => {
@@ -358,11 +383,13 @@ export default function Home() {
         } else if (
           // R-502 discoverability: portal tiles live in a shelf ABOVE the module
           // grid, so a raw {0,0,1} view leaves them above the viewport. On the
-          // FIRST visit of a page that has child portals (no saved view yet), defer
-          // a fit so modules + the portal shelf land framed together. A page the
-          // user has already arranged keeps its saved view (no regression).
+          // FIRST visit of a page that has child portals (no saved view yet —
+          // neither local nor server-side, R-504), defer a fit so modules + the
+          // portal shelf land framed together. A page the user has already
+          // arranged keeps its saved view (no regression).
           pages.some((p) => (p.parent_id ?? null) === activePageId) &&
-          !localStorage.getItem(`trus-view-${activePageId}`)
+          !localStorage.getItem(`trus-view-${activePageId}`) &&
+          serverViewOf(pages.find((p) => p.id === activePageId)) === null
         ) {
           window.setTimeout(() => setFitReq((n) => n + 1), 180);
         }
@@ -482,6 +509,23 @@ export default function Home() {
       flashNotice("Couldn't save the tile's new spot — moved it back.");
     }
   }, [flashNotice]);
+
+  // R-504 completion: Canvas's debounced view save → persist this page's pan/zoom
+  // on its row (owner-scoped server-side) so the view resumes on another device.
+  // localStorage (written by Canvas on the same tick) stays the instant offline
+  // fallback, so a failed PATCH is logged, never surfaced — the local view holds.
+  // `pages` is refreshed in place so returning to this page mid-session reloads
+  // the view just saved, not the stale value fetched at startup.
+  const handleViewSave = useCallback(async (pageId: string, v: ViewState) => {
+    try {
+      await api.updatePage(pageId, { view_x: v.x, view_y: v.y, view_zoom: v.zoom });
+      setPages((prev) =>
+        prev.map((p) => (p.id === pageId ? { ...p, view_x: v.x, view_y: v.y, view_zoom: v.zoom } : p)),
+      );
+    } catch (err) {
+      console.error("Failed to persist page viewport", err);
+    }
+  }, []);
 
   const handleCreatePage = useCallback(async (parentId?: string | null) => {
     try {
@@ -611,6 +655,23 @@ export default function Home() {
     setInspectorId((cur) => (cur === id ? null : cur));
     try { await api.archiveModule(id); } catch (err) { console.error("Failed to archive", err); }
   }, [saver]);
+
+  // R-1306: keyboard-initiated archive — open the confirm, don't act yet.
+  const handleRequestArchive = useCallback((id: string) => {
+    const m = modulesRef.current.find((x) => x.id === id);
+    if (m) setArchiveConfirm(m);
+  }, []);
+
+  const handleConfirmArchive = useCallback(() => {
+    const m = archiveConfirm;
+    setArchiveConfirm(null);
+    if (!m) return;
+    handleArchiveModule(m.id);
+    // The focused card is gone, so ConfirmDialog's restore-to-opener finds a
+    // disconnected node and skips — land focus on the canvas <main> instead
+    // (after React commits the dialog's cleanup, hence the timeout).
+    window.setTimeout(() => mainRef.current?.focus(), 0);
+  }, [archiveConfirm, handleArchiveModule]);
 
   const openArchived = useCallback(async () => {
     setSelectedId(null);
@@ -778,6 +839,16 @@ export default function Home() {
 
   return (
     <div className="flex h-screen w-full">
+      {/* R-1306: the page's FIRST tabbable — jumps a keyboard user straight to
+          the canvas instead of forcing a tour of the sidebar. Visually hidden
+          until focused, then a small on-theme chip (existing tokens only). */}
+      <a
+        href="#canvas-main"
+        onClick={(e) => { e.preventDefault(); mainRef.current?.focus(); }}
+        className="sr-only focus:not-sr-only focus:fixed focus:top-3 focus:left-3 focus:z-[70] focus:rounded-md focus:border focus:border-[var(--accent)] focus:bg-[var(--surface)] focus:px-3 focus:py-1.5 focus:text-sm"
+      >
+        Skip to canvas
+      </a>
       <Sidebar
         pages={pages}
         activePageId={activePageId}
@@ -793,8 +864,20 @@ export default function Home() {
         onOpenSnapshots={openSnapshots}
         onOpenProfile={openProfile}
       />
-      <main className="flex-1 flex flex-col relative min-w-0">
-      <header className="absolute top-0 inset-x-0 z-20 h-14 px-4 sm:px-5 flex items-center gap-3 border-b border-[var(--border)] bg-[var(--background)]/85 backdrop-blur">
+      {/* R-1306: the canvas landmark. tabIndex={-1} makes it a programmatic
+          focus target (skip link, post-archive focus) without joining Tab order;
+          outline-none because landing here is a hand-off, not a highlight. */}
+      <main
+        ref={mainRef}
+        id="canvas-main"
+        tabIndex={-1}
+        aria-label="Canvas"
+        className="flex-1 flex flex-col relative min-w-0 focus:outline-none"
+      >
+      {/* R-1304: tighter gap/padding below `sm` so the icon-only header row
+          (labels are `hidden sm:inline`) fits a 375px phone without forcing a
+          horizontal PAGE scroll; desktop keeps gap-3 / px-5. */}
+      <header className="absolute top-0 inset-x-0 z-20 h-14 px-2 sm:px-5 flex items-center gap-1.5 sm:gap-3 border-b border-[var(--border)] bg-[var(--background)]/85 backdrop-blur">
         <div className="flex items-center gap-1.5 min-w-0">
           {trail.map((p, i) => (
             <span key={p.id} className="flex items-center gap-1.5 min-w-0">
@@ -923,15 +1006,18 @@ export default function Home() {
         onModuleChange={handleModuleChange}
         onModuleCommit={commitModule}
         onModuleArchive={handleArchiveModule}
+        onModuleArchiveRequest={handleRequestArchive}
         onModuleUndo={handleUndoModule}
         onModuleSelectForRefine={handleSelectForRefine}
         focusRequest={focusReq}
         fitRequest={fitReq}
-        onSketchModules={(mods) => mods.forEach(handleNewModule)}
+        onSketchPreviews={(configs, plan) => setSketchPreviews({ configs, plan, n: Date.now() })}
         childPages={childPages}
         childCounts={childCounts}
         onEnterPortal={handleSelectPage}
         onPortalMove={handlePortalMove}
+        serverView={serverViewOf(pages.find((p) => p.id === activePageId))}
+        onViewSave={handleViewSave}
       />
 
       {!loading && activeModules.length === 0 && (
@@ -966,6 +1052,8 @@ export default function Home() {
         focusSignal={promptFocus}
         autoPrompt={entrySubmit}
         onAutoPromptConsumed={() => setEntrySubmit(null)}
+        sketchPreviews={sketchPreviews}
+        onSketchPreviewsConsumed={() => setSketchPreviews(null)}
       />
 
       {convoOpen && (
@@ -1046,6 +1134,15 @@ export default function Home() {
         confirmLabel="Delete"
         onConfirm={handleConfirmDeletePage}
         onCancel={handleCancelDeletePage}
+      />
+      {/* R-1306: keyboard Delete → confirm → archive (undoable, never a raw delete). */}
+      <ConfirmDialog
+        open={archiveConfirm !== null}
+        title={`Archive "${archiveConfirm?.config.title ?? ""}"?`}
+        body="It leaves the canvas but stays restorable from Archived."
+        confirmLabel="Archive"
+        onConfirm={handleConfirmArchive}
+        onCancel={() => setArchiveConfirm(null)}
       />
       {introOpen && <EntryScreen onSubmit={handleEntrySubmit} onSkip={handleEntrySkip} />}
     </div>

@@ -7,10 +7,11 @@ import { clampRefreshSecs, isLiveDataDisabled, providerDisplayName } from "./liv
 
 /** R-701/R-703: the live state a component renders from. `asOf` is the
  * camelCase mapping of the wire payload's `as_of`. `disabled` is set only when
- * the backend returns its `TRUS_LIVE_DATA=off` marker — renderers treat that
- * as "no live chrome at all" (fall back to the plain manual field), which is
- * distinct from `stale`/`error` (render the last value, badge it, stay
- * editable — R-703). */
+ * the backend returns its `TRUS_LIVE_DATA=off` marker (the structured
+ * `disabled: true` boolean — never matched from the error copy) — renderers
+ * treat that as "no live chrome at all" (fall back to the plain manual field),
+ * which is distinct from `stale`/`error` (render the last value, badge it,
+ * stay editable — R-703). */
 export interface LiveValueState {
   value: number | null;
   unit: string | null;
@@ -37,7 +38,10 @@ const INERT_STATE: LiveValueState = {
  * Fetches `GET /api/live/{provider}` on mount and every `refresh_secs`
  * seconds, for as long as `dataSource` is present. Returns an inert state (no
  * fetch, no timer) when it's null/undefined. Cleans up its interval on
- * unmount or whenever the data source changes.
+ * unmount or whenever the data source changes. Once a response says the
+ * feature is disabled (`disabled: true`), the interval is stopped for good —
+ * off-mode can't flip back within a session, so further polls would only
+ * waste the shared rate-limit budget.
  *
  * A failure to reach OUR OWN route (network down, rate-limited, etc.) keeps
  * the last good value in place and marks `stale`/`error` — the route itself
@@ -55,6 +59,13 @@ export function useLiveValue(dataSource: DataSource | null | undefined): LiveVal
       return;
     }
     let cancelled = false;
+    let intervalId: number | null = null;
+    const stopPolling = () => {
+      if (intervalId !== null) {
+        window.clearInterval(intervalId);
+        intervalId = null;
+      }
+    };
     const refreshSecs = clampRefreshSecs(dataSource.refresh_secs);
     const source = providerDisplayName(dataSource.provider);
 
@@ -64,6 +75,11 @@ export function useLiveValue(dataSource: DataSource | null | undefined): LiveVal
       try {
         const payload = await api.liveValue(dataSource.provider, dataSource.query, refreshSecs);
         if (cancelled) return;
+        // Off-mode is the structured `disabled` boolean, never the error copy.
+        // A disabled provider won't un-disable within a session, so stop the
+        // refresh interval — polling would only burn the rate-limit budget.
+        const disabled = isLiveDataDisabled(payload);
+        if (disabled) stopPolling();
         setState({
           value: payload.value,
           unit: payload.unit,
@@ -72,7 +88,7 @@ export function useLiveValue(dataSource: DataSource | null | undefined): LiveVal
           stale: Boolean(payload.stale),
           error: payload.error,
           loading: false,
-          disabled: isLiveDataDisabled(payload.error),
+          disabled,
         });
       } catch {
         if (cancelled) return;
@@ -91,10 +107,10 @@ export function useLiveValue(dataSource: DataSource | null | undefined): LiveVal
     };
 
     tick();
-    const id = window.setInterval(tick, refreshSecs * 1000);
+    intervalId = window.setInterval(tick, refreshSecs * 1000);
     return () => {
       cancelled = true;
-      window.clearInterval(id);
+      stopPolling();
     };
     // dataSource's identity may change every render (a fresh object literal
     // from the parsed config); key the effect off its actual content instead.

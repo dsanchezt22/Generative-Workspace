@@ -153,7 +153,8 @@ export function Sidebar({
 
   if (collapsed) {
     return (
-      <div className="shrink-0 w-12 border-r border-[var(--border)] bg-[var(--surface)]/60 backdrop-blur flex flex-col items-center py-3 gap-2 transition-[width] duration-200 ease-out overflow-hidden">
+      // R-1306: the sidebar is the `nav` landmark in both variants.
+      <nav aria-label="Pages" className="shrink-0 w-12 border-r border-[var(--border)] bg-[var(--surface)]/60 backdrop-blur flex flex-col items-center py-3 gap-2 transition-[width] duration-200 ease-out overflow-hidden">
         <button
           type="button"
           onClick={onToggleCollapse}
@@ -185,12 +186,13 @@ export function Sidebar({
         >
           <Icon name="plus" size={16} />
         </button>
-      </div>
+      </nav>
     );
   }
 
   return (
-    <div className="shrink-0 w-56 border-r border-[var(--border)] bg-[var(--surface)]/60 backdrop-blur flex flex-col transition-[width] duration-200 ease-out overflow-hidden">
+    // R-1306: the sidebar is the `nav` landmark in both variants.
+    <nav aria-label="Pages" className="shrink-0 w-56 border-r border-[var(--border)] bg-[var(--surface)]/60 backdrop-blur flex flex-col transition-[width] duration-200 ease-out overflow-hidden">
       <div className="flex items-center justify-between px-3 h-14 shrink-0">
         <span className="text-sm font-semibold tracking-tight">Trus</span>
         <button
@@ -240,6 +242,6 @@ export function Sidebar({
           <Icon name="user" size={16} /> Profile
         </button>
       </div>
-    </div>
+    </nav>
   );
 }

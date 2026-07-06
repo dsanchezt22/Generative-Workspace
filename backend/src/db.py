@@ -52,6 +52,11 @@ CREATE TABLE IF NOT EXISTS pages (
     -- canvas as an enterable portal tile. Nullable → auto-placed until dragged.
     portal_x    REAL,
     portal_y    REAL,
+    -- R-504 completion: the page's OWN saved viewport (pan offset + zoom), so a
+    -- user's view resumes across devices. Nullable → client default until saved.
+    view_x      REAL,
+    view_y      REAL,
+    view_zoom   REAL,
     created_at  TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_pages_session
@@ -141,7 +146,8 @@ CREATE INDEX IF NOT EXISTS idx_gen_events_owner_day ON gen_events (owner, create
 -- Live external-data cache (R-701/R-704): per-provider+query (NOT per-owner —
 -- weather/nutrition lookups are public data), bounding outbound fetches to the
 -- caller-supplied refresh_secs TTL (enforced in services/live_data.py against
--- fetched_at, not stored here).
+-- fetched_at, not stored here). Row count is capped on write (live_cache_set
+-- prunes the oldest by fetched_at past TRUS_LIVE_CACHE_MAX, default 5000).
 CREATE TABLE IF NOT EXISTS live_cache (
     provider     TEXT NOT NULL,
     query_hash   TEXT NOT NULL,
@@ -223,6 +229,13 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE pages ADD COLUMN portal_x REAL")
     if "portal_y" not in pcols:
         conn.execute("ALTER TABLE pages ADD COLUMN portal_y REAL")
+    # R-504 completion: the page's own saved viewport (pan/zoom, cross-device).
+    if "view_x" not in pcols:
+        conn.execute("ALTER TABLE pages ADD COLUMN view_x REAL")
+    if "view_y" not in pcols:
+        conn.execute("ALTER TABLE pages ADD COLUMN view_y REAL")
+    if "view_zoom" not in pcols:
+        conn.execute("ALTER TABLE pages ADD COLUMN view_zoom REAL")
     # Screenshot-capture metadata on layout_library (all nullable; image never stored).
     lcols = {r[1] for r in conn.execute("PRAGMA table_info(layout_library)").fetchall()}
     for col, decl in (
@@ -375,7 +388,9 @@ def adopt_session_data(old_owner: str, user_id: str) -> None:
 # Pages
 # ---------------------------------------------------------------------------
 
-_PAGE_COLS = "id, name, icon, parent_id, position, portal_x, portal_y, created_at"
+_PAGE_COLS = (
+    "id, name, icon, parent_id, position, portal_x, portal_y, view_x, view_y, view_zoom, created_at"
+)
 
 
 def _page_from_row(r, session_id: str) -> Page:
@@ -387,6 +402,9 @@ def _page_from_row(r, session_id: str) -> Page:
         position=r["position"],
         portal_x=r["portal_x"],
         portal_y=r["portal_y"],
+        view_x=r["view_x"],
+        view_y=r["view_y"],
+        view_zoom=r["view_zoom"],
         session_id=session_id,
         created_at=r["created_at"],
     )
@@ -473,6 +491,9 @@ def update_page(
     parent_id=_UNSET,
     portal_x=_UNSET,
     portal_y=_UNSET,
+    view_x=_UNSET,
+    view_y=_UNSET,
+    view_zoom=_UNSET,
 ) -> Page | None:
     sets, params = [], []
     if name is not _UNSET:
@@ -492,6 +513,17 @@ def update_page(
     if portal_y is not _UNSET:
         sets.append("portal_y = ?")
         params.append(portal_y)
+    # R-504 completion: the page's own viewport (pan/zoom) — same owner-scoped
+    # additive pattern as the portal placement above.
+    if view_x is not _UNSET:
+        sets.append("view_x = ?")
+        params.append(view_x)
+    if view_y is not _UNSET:
+        sets.append("view_y = ?")
+        params.append(view_y)
+    if view_zoom is not _UNSET:
+        sets.append("view_zoom = ?")
+        params.append(view_zoom)
     if not sets:
         return get_page(session_id, page_id)
     params += [page_id, session_id]
@@ -1255,6 +1287,21 @@ def layout_counts(owner: str = "local") -> dict[str, int]:
 # ── Generation telemetry (R-1201/R-1202) ─────────────────────────────────────
 
 
+def _token_cost_rates() -> tuple[float, float]:
+    return (
+        float(os.environ.get("TRUS_TOKEN_COST_IN", "0")),
+        float(os.environ.get("TRUS_TOKEN_COST_OUT", "0")),
+    )
+
+
+def _cost_usd(tokens_in: int, tokens_out: int) -> float:
+    """$ estimate for a token count, per TRUS_TOKEN_COST_IN/OUT (per-1k-token $,
+    both default 0). Unset/zero rates → 0 cost while the token counts stay real
+    (I-1: never show a fake cost derived from unset pricing)."""
+    cost_in, cost_out = _token_cost_rates()
+    return (tokens_in * cost_in + tokens_out * cost_out) / 1000
+
+
 def add_gen_event(
     owner: str,
     kind: str,
@@ -1283,6 +1330,29 @@ def add_gen_event(
                 _now(),
             ),
         )
+
+
+def owner_cost_today(owner: str) -> dict:
+    """This owner's token usage + cost estimate for the current UTC calendar
+    day — feeds the generate routes' optional TRUS_DAILY_COST_CAP_USD gate
+    (R-1202 completion). Scoped to `owner` AND today only: a different owner's
+    spend, or this owner's spend on a prior day, never counts toward it."""
+    day_start = (
+        datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+    )
+    with _conn() as c:
+        row = c.execute(
+            "SELECT SUM(COALESCE(tokens_in,0)) tin, SUM(COALESCE(tokens_out,0)) tout"
+            " FROM gen_events WHERE owner = ? AND created_at >= ?",
+            (owner, day_start),
+        ).fetchone()
+    tokens_in = row["tin"] or 0
+    tokens_out = row["tout"] or 0
+    return {
+        "tokens_in": tokens_in,
+        "tokens_out": tokens_out,
+        "cost_usd": _cost_usd(tokens_in, tokens_out),
+    }
 
 
 def gen_stats(days: int = 7) -> dict:
@@ -1330,6 +1400,22 @@ def live_cache_get(provider: str, query_hash: str) -> dict | None:
     return {"payload": json.loads(row["payload_json"]), "fetched_at": row["fetched_at"]}
 
 
+_LIVE_CACHE_MAX_DEFAULT = 5000
+
+
+def _live_cache_max() -> int:
+    """Row cap for the public live_cache table (R-701 hardening). Every distinct
+    provider+query is a permanent row, so without a bound the table grows forever.
+    Optional TRUS_LIVE_CACHE_MAX overrides the default; unparseable or < 1 falls
+    back to the default rather than disabling the bound."""
+    raw = os.environ.get("TRUS_LIVE_CACHE_MAX", "").strip()
+    try:
+        v = int(raw) if raw else _LIVE_CACHE_MAX_DEFAULT
+    except ValueError:
+        return _LIVE_CACHE_MAX_DEFAULT
+    return v if v >= 1 else _LIVE_CACHE_MAX_DEFAULT
+
+
 def live_cache_set(provider: str, query_hash: str, payload_json: str, fetched_at: str) -> None:
     with _conn() as c:
         c.execute(
@@ -1337,6 +1423,16 @@ def live_cache_set(provider: str, query_hash: str, payload_json: str, fetched_at
             "ON CONFLICT (provider, query_hash) DO UPDATE SET"
             " payload_json = excluded.payload_json, fetched_at = excluded.fetched_at",
             (provider, query_hash, payload_json, fetched_at),
+        )
+        # Bound the table on every write (R-701 hardening): one cheap statement —
+        # deletes nothing while under the cap (LIMIT 0), prunes the oldest
+        # rows-over-cap by fetched_at once exceeded. max(0, …) matters: a negative
+        # LIMIT means "no limit" in SQLite, which would wipe the whole table.
+        c.execute(
+            "DELETE FROM live_cache WHERE rowid IN ("
+            " SELECT rowid FROM live_cache ORDER BY fetched_at ASC, rowid ASC"
+            " LIMIT max(0, (SELECT COUNT(*) FROM live_cache) - ?))",
+            (_live_cache_max(),),
         )
 
 
@@ -1348,13 +1444,19 @@ def last_seen_by_user(days: int = 30) -> list[dict]:
     session id. INNER JOINing against users means an anonymous sid (which has
     no matching users row) is silently excluded: this view only ever shows
     activity attributable to a named person, by construction of the JOIN.
+
+    R-1202 completion: also rolls up tokens_in/tokens_out/cost_usd over the
+    same `days` window, for /api/ops/summary's per-user cost surface — reuses
+    this shape rather than a parallel query (same JOIN, same window).
     """
     cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
     cutoff_7d = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
     with _conn() as c:
         rows = c.execute(
             "SELECT u.id AS user_id, u.name AS name, MAX(g.created_at) AS last_seen,"
-            " COUNT(CASE WHEN g.created_at >= ? THEN 1 END) AS generations_7d"
+            " COUNT(CASE WHEN g.created_at >= ? THEN 1 END) AS generations_7d,"
+            " SUM(COALESCE(g.tokens_in,0)) AS tokens_in,"
+            " SUM(COALESCE(g.tokens_out,0)) AS tokens_out"
             " FROM gen_events g JOIN users u ON g.owner = u.id"
             " WHERE g.created_at >= ?"
             " GROUP BY u.id, u.name"
@@ -1367,6 +1469,9 @@ def last_seen_by_user(days: int = 30) -> list[dict]:
             "name": r["name"],
             "last_seen": r["last_seen"],
             "generations_7d": r["generations_7d"],
+            "tokens_in": r["tokens_in"] or 0,
+            "tokens_out": r["tokens_out"] or 0,
+            "cost_usd": _cost_usd(r["tokens_in"] or 0, r["tokens_out"] or 0),
         }
         for r in rows
     ]

@@ -2,6 +2,8 @@
 
 import logging
 import os
+import threading
+import time
 
 from fastapi import HTTPException, Request
 
@@ -9,6 +11,101 @@ from src import db
 from src.schema import LLMError
 
 _logger = logging.getLogger(__name__)
+
+
+class _RateLimiter:
+    """A per-key, in-memory sliding-window limiter: at most `max_calls` calls
+    per `window_secs` for a given key (both overridable per-`allow()` call —
+    see below). Deliberately generic (not hardcoded to "owner"). Process-local
+    only (fine for the MVP's single-instance deployment; a multi-instance
+    deploy would need a shared store instead).
+
+    Lives here (not in one specific route file) because three route modules
+    now share it: transcribe.py (Stage 2b, where this was first built), live.py
+    (Stage 3), and modules.py (Stage 4's generate-route limiter, R-1202)."""
+
+    def __init__(self, max_calls: int, window_secs: float) -> None:
+        self._max_calls = max_calls
+        self._window_secs = window_secs
+        self._hits: dict[str, list[float]] = {}
+        # These routes are sync (threadpool) and /live fires several parallel
+        # same-owner calls on page load — the shared `_hits` dict and its per-key
+        # lists are touched non-atomically (setdefault→trim→evict→append), so a
+        # bare check-then-`del` could race two callers into a KeyError→500. One
+        # lock makes the whole read-modify-write atomic; it's trivially cheap.
+        self._lock = threading.Lock()
+
+    def allow(
+        self,
+        key: str,
+        now: float | None = None,
+        max_calls: int | None = None,
+        window_secs: float | None = None,
+    ) -> bool:
+        """`max_calls`/`window_secs` override the instance defaults for this one
+        call (added for modules.py's generate limiter, whose TRUS_GEN_RATE_MAX/
+        WINDOW must be re-read from the environment on every request rather than
+        baked in at import time — the same reason semantic_cache.py's thresholds
+        are read via a function instead of a module-level constant: a value read
+        once at import can't be overridden by a test's per-test env isolation,
+        which runs before each test body but after collection-time imports).
+        transcribe.py/live.py don't pass these, so their behavior is unchanged."""
+        now = time.monotonic() if now is None else now
+        max_calls = self._max_calls if max_calls is None else max_calls
+        window_secs = self._window_secs if window_secs is None else window_secs
+        with self._lock:
+            hits = self._hits.setdefault(key, [])
+            cutoff = now - window_secs
+            while hits and hits[0] < cutoff:
+                hits.pop(0)
+            if not hits:
+                # An idle key whose window has fully expired: drop its (now empty)
+                # entry so per-owner rows don't accumulate forever. Re-added below
+                # if this call is allowed. `pop(key, None)` (not `del`) is
+                # idempotent — safe even if a concurrent call already evicted it.
+                self._hits.pop(key, None)
+            if len(hits) >= max_calls:
+                return False
+            hits.append(now)
+            self._hits[key] = hits
+            return True
+
+
+# R-1202 completion: ONE per-owner generation budget shared by EVERY LLM-backed
+# generation surface — modules.py's 5 handlers (generate/preview/
+# generate_from_file/refine/insights) and studio.py's vision-backed
+# import/capture routes (final Stage-4 review: those were the last unmetered
+# spend surfaces). A studio import and a generate draw from the same owner
+# budget — that's deliberate. Its own limiter instance (NOT transcribe.py's or
+# live.py's), so a chatty voice/live session never eats a user's generation
+# budget or vice versa. Lived in modules.py until studio.py needed it too;
+# moved here so studio never imports from a sibling route module.
+def _gen_rate_max() -> int:
+    return int(os.environ.get("TRUS_GEN_RATE_MAX", "30"))
+
+
+def _gen_rate_window() -> float:
+    return float(os.environ.get("TRUS_GEN_RATE_WINDOW", "300"))
+
+
+_gen_limiter = _RateLimiter(max_calls=30, window_secs=300)
+
+
+def _check_gen_budget(sid: str) -> None:
+    """Rate limit + optional per-owner daily cost cap (R-1202 completion) — call
+    this right after `_owner_id` resolves and BEFORE any model call, so an
+    over-budget request never spends a token (fail fast, no spend). Shared
+    across all generation handlers via the module-level `_gen_limiter`."""
+    if not _gen_limiter.allow(sid, max_calls=_gen_rate_max(), window_secs=_gen_rate_window()):
+        raise HTTPException(
+            status_code=429,
+            detail="Too many generations — please wait a few minutes and try again.",
+        )
+    cap_raw = os.environ.get("TRUS_DAILY_COST_CAP_USD", "").strip()
+    if cap_raw:
+        cap = float(cap_raw)
+        if cap > 0 and db.owner_cost_today(sid)["cost_usd"] >= cap:
+            raise HTTPException(status_code=429, detail="You've reached today's usage budget.")
 
 
 def _parse_cors_origins(raw: str) -> list[str]:

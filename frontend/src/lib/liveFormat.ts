@@ -1,4 +1,4 @@
-import type { DataSource } from "./types";
+import type { DataSource, LiveValuePayload } from "./types";
 
 /**
  * Pure helpers for the live-data render path (R-701/R-703): relative-time
@@ -7,14 +7,15 @@ import type { DataSource } from "./types";
  * both import them and vitest can cover them directly.
  */
 
-// The backend's exact disabled-marker error text (`routes/live.py`, `TRUS_LIVE_DATA=off`).
-// Matching on this literal is how the frontend tells "the feature is off" (no
-// live chrome at all) apart from a genuine provider/network failure (stale/
-// unavailable chrome, still manually usable) — the 3-2 deferred Minor (a) fold-in.
-export const LIVE_DATA_DISABLED_ERROR = "Live data is disabled";
-
-export function isLiveDataDisabled(error: string | null | undefined): boolean {
-  return error === LIVE_DATA_DISABLED_ERROR;
+// Off-mode detection (R-701 hardening): the backend's `TRUS_LIVE_DATA=off`
+// marker carries a structured `disabled: true` (`routes/live.py`) — THAT
+// boolean is the signal, never the human-readable error string (the backend
+// keeps "Live data is disabled" in the payload for back-compat, but it's free
+// to be reworded without turning off-mode into error chrome). Off-mode means
+// "no live chrome at all"; a genuine provider/network failure (no flag) keeps
+// the stale/unavailable chrome and stays manually usable.
+export function isLiveDataDisabled(payload: LiveValuePayload | null | undefined): boolean {
+  return payload?.disabled === true;
 }
 
 // Friendly provenance names (3-2 deferred Minor (a)): the backend's disabled

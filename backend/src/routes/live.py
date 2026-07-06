@@ -1,6 +1,6 @@
 """GET /api/live/{provider} (R-701/R-704): the frontend's live-value refresh
 hook calls this for any component carrying a `data_source`. Owner-gated
-(`_owner_id`) and rate-limited (reuses transcribe.py's generic `_RateLimiter`
+(`_owner_id`) and rate-limited (reuses routes/deps.py's generic `_RateLimiter`
 — the pattern that helper was built for). `TRUS_LIVE_DATA=off` short-circuits
 to a disabled marker so components fall back to manual entry instead of
 erroring; this is a GET with no state-changing side effect, so (per
@@ -11,8 +11,7 @@ import os
 
 from fastapi import APIRouter, HTTPException, Query, Request
 
-from src.routes.deps import _owner_id
-from src.routes.transcribe import _RateLimiter
+from src.routes.deps import _owner_id, _RateLimiter
 from src.services import live_data
 
 router = APIRouter()
@@ -49,6 +48,11 @@ def get_live_value(
             "as_of": None,
             "source": provider,
             "stale": False,
+            # `disabled` is the structured off-mode signal the frontend keys on
+            # (R-701 hardening); the human-readable `error` string is kept for
+            # back-compat but nothing should string-match it — it's free to be
+            # reworded.
+            "disabled": True,
             "error": "Live data is disabled",
         }
     if provider not in live_data.ALLOWED_PROVIDERS:

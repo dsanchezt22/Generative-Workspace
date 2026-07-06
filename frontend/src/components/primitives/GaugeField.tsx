@@ -28,21 +28,37 @@ export function GaugeField({ spec, value, onChange }: Props) {
   const C = Math.PI * R; // half circumference
   const cx = 60, cy = 56;
   const unit = showLive ? (live.unit ?? spec.unit) : spec.unit;
+  // First live fetch in flight: keep showing the manual value if there is one
+  // (no blank flash); only skeleton the center number when there's nothing to
+  // show — mirrors MetricField's shimmer loading treatment. The shimmer is an
+  // HTML overlay (not an SVG node) because `.shimmer` animates background-image,
+  // which SVG shapes don't paint.
+  const showSkeleton = showLive && live.loading && !Number.isFinite(manualV);
 
   return (
     <div className="flex flex-col items-center gap-1">
       <span className="text-xs uppercase tracking-wide text-[var(--muted)] self-start">{spec.label}</span>
-      <svg viewBox="0 0 120 64" className="w-full max-w-[180px]">
-        <path d={`M ${cx - R} ${cy} A ${R} ${R} 0 0 1 ${cx + R} ${cy}`} fill="none" stroke="var(--surface-elevated)" strokeWidth="9" strokeLinecap="round" />
-        <path
-          d={`M ${cx - R} ${cy} A ${R} ${R} 0 0 1 ${cx + R} ${cy}`}
-          fill="none" stroke="var(--accent)" strokeWidth="9" strokeLinecap="round"
-          strokeDasharray={C} strokeDashoffset={C * (1 - pct)} style={{ transition: "stroke-dashoffset 0.3s ease" }}
-        />
-        <text x={cx} y={cy - 6} textAnchor="middle" className="fill-[var(--foreground)]" style={{ fontSize: 16, fontWeight: 600 }}>
-          {showLive && live.loading ? "" : formatLiveNumber(v)}
-        </text>
-      </svg>
+      <div className="relative w-full max-w-[180px]">
+        <svg viewBox="0 0 120 64" className="w-full">
+          <path d={`M ${cx - R} ${cy} A ${R} ${R} 0 0 1 ${cx + R} ${cy}`} fill="none" stroke="var(--surface-elevated)" strokeWidth="9" strokeLinecap="round" />
+          <path
+            d={`M ${cx - R} ${cy} A ${R} ${R} 0 0 1 ${cx + R} ${cy}`}
+            fill="none" stroke="var(--accent)" strokeWidth="9" strokeLinecap="round"
+            strokeDasharray={C} strokeDashoffset={C * (1 - pct)} style={{ transition: "stroke-dashoffset 0.3s ease" }}
+          />
+          {!showSkeleton && (
+            <text x={cx} y={cy - 6} textAnchor="middle" className="fill-[var(--foreground)]" style={{ fontSize: 16, fontWeight: 600 }}>
+              {formatLiveNumber(v)}
+            </text>
+          )}
+        </svg>
+        {showSkeleton && (
+          <span
+            aria-hidden
+            className="absolute left-1/2 -translate-x-1/2 bottom-[20%] h-4 w-12 rounded shimmer bg-[var(--surface-elevated)]"
+          />
+        )}
+      </div>
       <div className="flex items-center justify-between w-full text-[10px] text-[var(--muted)] -mt-1">
         <span>{min}</span>
         {unit && <span>{unit}</span>}

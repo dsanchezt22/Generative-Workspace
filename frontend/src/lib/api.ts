@@ -125,6 +125,10 @@ export const api = {
       // R-504: dragging a child's portal tile persists its world placement.
       portal_x?: number | null;
       portal_y?: number | null;
+      // R-504 completion: the page's own viewport (pan/zoom), saved debounced.
+      view_x?: number | null;
+      view_y?: number | null;
+      view_zoom?: number | null;
     },
   ) => request<Page>(`/api/pages/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
   // R-502: live module count per page for the portal tiles' cheap "N tools"

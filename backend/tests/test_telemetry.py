@@ -2,6 +2,7 @@
 
 from datetime import datetime, timedelta, timezone
 
+import pytest
 from fastapi.testclient import TestClient
 from src import db
 from src.main import app
@@ -126,3 +127,41 @@ def test_ops_summary_users_shows_claimed_user_fresh_activity(tmp_path, monkeypat
     assert entry["generations_7d"] >= 1
     seen = datetime.fromisoformat(entry["last_seen"])
     assert datetime.now(timezone.utc) - seen < timedelta(minutes=5)  # fresh
+
+
+# ---------------------------------------------------------------------------
+# R-1202 completion: per-user token/cost rollup on last_seen_by_user (and thus
+# on /api/ops/summary's users[], which reuses this shape) — see
+# test_gen_rate_limit.py for the rate limit + daily cost cap gate itself.
+# ---------------------------------------------------------------------------
+
+
+def test_last_seen_by_user_includes_token_cost_rollup(tmp_path, monkeypatch):
+    monkeypatch.setenv("TRUS_DB_PATH", str(tmp_path / "t.db"))
+    monkeypatch.setenv("TRUS_TOKEN_COST_IN", "1")
+    monkeypatch.setenv("TRUS_TOKEN_COST_OUT", "1")
+    db.init_db()
+    user = db.create_user("Ada")
+    db.add_gen_event(user["id"], "generate", "ok", "stub", "stub", 10, 100, 200)
+
+    rows = db.last_seen_by_user(30)
+
+    assert rows[0]["tokens_in"] == 100
+    assert rows[0]["tokens_out"] == 200
+    assert rows[0]["cost_usd"] == pytest.approx(0.3)  # (100*1 + 200*1) / 1000
+
+
+def test_ops_summary_users_include_cost_rollup(tmp_path, monkeypatch):
+    monkeypatch.setenv("TRUS_DB_PATH", str(tmp_path / "t.db"))
+    monkeypatch.setenv("TRUS_OPS_TOKEN", "sekrit")
+    user = db.create_user("Ada")
+    db.add_gen_event(user["id"], "generate", "ok", "stub", "stub", 10, 100, 200)
+
+    with TestClient(app) as client:
+        summary = client.get("/api/ops/summary?token=sekrit")
+
+    assert summary.status_code == 200
+    entry = summary.json()["users"][0]
+    assert entry["tokens_in"] == 100
+    assert entry["tokens_out"] == 200
+    assert entry["cost_usd"] == 0  # default $0 rates — cost is 0, tokens are real

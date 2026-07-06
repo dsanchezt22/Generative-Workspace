@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "@/lib/api";
 import type { ProfileKind, UserProfileEntry } from "@/lib/types";
+import { useDialog } from "@/lib/useDialog";
 import { ConfirmDialog } from "./ConfirmDialog";
 
 interface Props {
@@ -32,7 +33,17 @@ export function ProfilePanel({ onClose }: Props) {
   const [editValue, setEditValue] = useState("");
   const [addKind, setAddKind] = useState<ProfileKind>("fact");
   const [addText, setAddText] = useState("");
-  const asideRef = useRef<HTMLElement | null>(null);
+  // R-1306 dialog floor, now via the shared useDialog hook (this panel's
+  // inline trap was the hook's source — Stage-4 consolidation): focus enters
+  // on the header ✕ (the first tabbable), Escape closes just this panel, Tab
+  // cycles inside, focus restores to the sidebar's Profile button on close.
+  // Handlers stay container-scoped, so when the clear-all ConfirmDialog is
+  // open focus sits in that SIBLING dialog and this trap never fires (no
+  // duelling traps — same behavior as before).
+  const { ref: asideRef, onKeyDown } = useDialog<HTMLElement>(true, onClose);
+  // Focus-never-lost: deleting a fact (or clearing all) unmounts the button
+  // that held focus — hand focus to the panel ✕ instead (same fix as the
+  // Archived/Snapshots panels this stage).
   const closeRef = useRef<HTMLButtonElement | null>(null);
 
   useEffect(() => {
@@ -45,42 +56,6 @@ export function ProfilePanel({ onClose }: Props) {
       alive = false;
     };
   }, []);
-
-  // R-1306 focus contract: send focus into the panel on open, restore it to the
-  // opener (the Profile button) on close.
-  useEffect(() => {
-    const prev = document.activeElement as HTMLElement | null;
-    closeRef.current?.focus();
-    return () => {
-      if (prev?.isConnected) prev.focus();
-    };
-  }, []);
-
-  // Escape + focus trap live on the ASIDE (bubble): when the clear-all
-  // ConfirmDialog is open, focus sits in that SIBLING dialog, so these handlers
-  // never fire — the dialog owns the keyboard (no duelling traps).
-  const onKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === "Escape") {
-      e.stopPropagation();
-      onClose();
-      return;
-    }
-    if (e.key !== "Tab" || !asideRef.current) return;
-    const nodes = asideRef.current.querySelectorAll<HTMLElement>(
-      'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
-    );
-    const list = Array.from(nodes).filter((el) => el.offsetParent !== null);
-    if (list.length === 0) return;
-    const first = list[0];
-    const last = list[list.length - 1];
-    if (e.shiftKey && document.activeElement === first) {
-      e.preventDefault();
-      last.focus();
-    } else if (!e.shiftKey && document.activeElement === last) {
-      e.preventDefault();
-      first.focus();
-    }
-  };
 
   const submitAdd = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -140,6 +115,10 @@ export function ProfilePanel({ onClose }: Props) {
     setConfirmClear(false);
     const prev = facts ?? [];
     setFacts([]); // optimistic
+    // The confirm's opener ("Delete everything") unmounts with the last fact —
+    // ConfirmDialog's restore skips disconnected nodes, so land focus back on
+    // the panel after its cleanup runs (hence the timeout).
+    window.setTimeout(() => closeRef.current?.focus(), 0);
     setError(null);
     try {
       await api.profileClear();
@@ -159,13 +138,16 @@ export function ProfilePanel({ onClose }: Props) {
     // the aside's slide animation makes it a containing block for position:fixed,
     // which would trap a nested dialog in the 320px column.
     <>
+      {/* R-1304: full-width sheet below `sm` (the fixed 320px column would
+          otherwise leave the canvas a sliver on a 375px phone) — same panel,
+          same tokens/animation, just full-bleed on a narrow viewport. */}
       <aside
         ref={asideRef}
         role="dialog"
         aria-modal="true"
         aria-label="Profile — what Trus remembers about you"
         onKeyDown={onKeyDown}
-        className="fixed top-0 right-0 h-screen w-[320px] max-w-[85vw] z-30 bg-[var(--surface)] border-l border-[var(--border)] shadow-2xl shadow-black/40 flex flex-col animate-slide-right"
+        className="fixed top-0 inset-x-0 sm:inset-x-auto sm:right-0 h-screen w-full sm:w-[320px] sm:max-w-[85vw] z-30 bg-[var(--surface)] border-l border-[var(--border)] shadow-2xl shadow-black/40 flex flex-col animate-slide-right"
       >
         <header className="flex items-center gap-2 px-4 h-14 border-b border-[var(--border)] shrink-0">
           <span className="text-sm font-semibold tracking-tight">Profile</span>
@@ -258,7 +240,7 @@ export function ProfilePanel({ onClose }: Props) {
                     )}
                     <button
                       type="button"
-                      onClick={() => handleDelete(fact.id)}
+                      onClick={() => { handleDelete(fact.id); closeRef.current?.focus(); }}
                       aria-label="Delete fact"
                       className="text-xs text-[var(--muted)] hover:text-[var(--danger)] transition shrink-0"
                     >

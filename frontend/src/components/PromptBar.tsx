@@ -26,6 +26,12 @@ interface Props {
   // then cleared via onAutoPromptConsumed.
   autoPrompt?: string | null;
   onAutoPromptConsumed?: () => void;
+  // R-221-223 unification: a snapped sketch's proposed tools, handed over from
+  // Canvas to land in THIS preview stack (confirm/dismiss like a typed prompt or
+  // file attach). `n` makes a re-snap with identical configs still ingest; cleared
+  // via onSketchPreviewsConsumed so it can never re-fire.
+  sketchPreviews?: { configs: ModuleConfig[]; plan: string | null; n: number } | null;
+  onSketchPreviewsConsumed?: () => void;
 }
 
 interface ExchangeTurnState {
@@ -44,7 +50,7 @@ interface Exchange {
 
 const SKIP_ANSWER = "just build it — use your best judgment";
 
-export function PromptBar({ onModule, activePageId, refineTarget, onRefineModule, onClearRefine, seed, onSeedConsumed, focusSignal, autoPrompt, onAutoPromptConsumed }: Props) {
+export function PromptBar({ onModule, activePageId, refineTarget, onRefineModule, onClearRefine, seed, onSeedConsumed, focusSignal, autoPrompt, onAutoPromptConsumed, sketchPreviews, onSketchPreviewsConsumed }: Props) {
   const [prompt, setPrompt] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -272,6 +278,27 @@ export function PromptBar({ onModule, activePageId, refineTarget, onRefineModule
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autoPrompt]);
 
+  // R-221-223 unification: a snapped sketch arrives as a proposal for THIS
+  // preview stack — confirmed/dismissed exactly like a typed-prompt or file
+  // proposal, never landing straight on the canvas. Interfering state is cleared
+  // first (same rationale as the R-105 fresh handoff above), then the stack is
+  // filled. Accepting flows through the normal addConfigs → insertModules path.
+  useEffect(() => {
+    if (!sketchPreviews || sketchPreviews.configs.length === 0) return;
+    setExchange(null);
+    setFile(null);
+    onClearRefine?.();
+    lastPromptRef.current = "hand-drawn sketch"; // honest origin for the convo log / refine joins
+    setPreviews(sketchPreviews.configs);
+    setPlan(sketchPreviews.plan);
+    setPreviewExchange(null); // sketch-derived — no interview to accrete
+    setPrompt("");
+    setError(null);
+    onSketchPreviewsConsumed?.();
+  // Consume exactly once per snap; the other setters are stable state setters.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sketchPreviews]);
+
   const addConfigs = async (configs: ModuleConfig[], exchange?: ExchangeTurnState[] | null) => {
     try {
       // R-802: pass the interview (if any) so the backend accretes profile facts
@@ -442,7 +469,10 @@ export function PromptBar({ onModule, activePageId, refineTarget, onRefineModule
               type="button"
               onClick={toggleMic}
               disabled={transcribing}
-              className={`shrink-0 w-8 h-8 grid place-items-center rounded-full transition disabled:opacity-40 ${
+              // R-1304: 44px tap target on touch (below `sm`) — the mic is the
+              // one voice affordance in the bar and must be reachable; desktop
+              // keeps the original 32px icon button (`sm:w-8 sm:h-8`).
+              className={`shrink-0 w-11 h-11 sm:w-8 sm:h-8 grid place-items-center rounded-full transition disabled:opacity-40 ${
                 recording ? "bg-[var(--danger)] text-white animate-pulse" : "text-[var(--muted)] hover:text-[var(--foreground)] hover:bg-[var(--surface-elevated)]"
               }`}
               title={recording ? "Stop recording" : transcribing ? "Transcribing…" : "Speak"}
@@ -454,7 +484,9 @@ export function PromptBar({ onModule, activePageId, refineTarget, onRefineModule
           <button
             type="button"
             onClick={() => fileRef.current?.click()}
-            className="shrink-0 w-8 h-8 grid place-items-center rounded-full text-[var(--muted)] hover:text-[var(--foreground)] hover:bg-[var(--surface-elevated)] transition"
+            // R-1304: same 44px-on-touch treatment as the mic so the row reads
+            // consistently sized (desktop unchanged at 32px via `sm:`).
+            className="shrink-0 w-11 h-11 sm:w-8 sm:h-8 grid place-items-center rounded-full text-[var(--muted)] hover:text-[var(--foreground)] hover:bg-[var(--surface-elevated)] transition"
             title="Attach a document or image"
             aria-label="Attach file"
           >
@@ -474,7 +506,11 @@ export function PromptBar({ onModule, activePageId, refineTarget, onRefineModule
             onKeyDown={handleKeyDown}
             disabled={loading}
             placeholder={placeholder}
-            className="flex-1 bg-transparent text-sm placeholder:text-[var(--muted)] focus:outline-none disabled:opacity-50"
+            // R-1304: min-w-0 lets the input shrink below its UA default (~170px)
+            // so the submit button never gets pushed past the card's
+            // overflow-hidden edge on a 375px phone (esp. with the 44px touch
+            // targets on the mic/attach buttons to its left).
+            className="flex-1 min-w-0 bg-transparent text-sm placeholder:text-[var(--muted)] focus:outline-none disabled:opacity-50"
             autoFocus
           />
           <button

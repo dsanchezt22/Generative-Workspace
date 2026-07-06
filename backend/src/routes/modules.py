@@ -1,11 +1,17 @@
 import contextlib
+import re
 import time
 from typing import Literal
 
 from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile
 
 from src import db, llm
-from src.routes.deps import _llm_error_detail, _owner_id, _require_trusted_origin
+from src.routes.deps import (
+    _check_gen_budget,
+    _llm_error_detail,
+    _owner_id,
+    _require_trusted_origin,
+)
 from src.schema import (
     ClarifyingQuestion,
     CreateSnapshotRequest,
@@ -26,6 +32,11 @@ from src.services import orchestrator
 from src.stub_templates import pick_template
 
 router = APIRouter()
+
+# The R-1202 generation budget (`_check_gen_budget` + its shared `_gen_limiter`)
+# lived here until the final Stage-4 review gated studio.py's vision routes with
+# the same budget — it now lives in routes/deps.py, imported above.
+
 
 # R-102: once 4 questions in a chain have been answered, the route (not just the
 # system prompt) forces the model to stop asking and build its best interpretation.
@@ -55,22 +66,100 @@ def _fold_exchange(exchange: list[ExchangeTurn] | None) -> str | None:
 # heuristic tags "goal" vs "fact"; bounded to the first 3 answered turns.
 _PROFILE_GOAL_WORDS = ("want", "goal", "track")
 
+# R-802 completion: prompt-derived accretion. A GATE, not a tagger — a prompt
+# that doesn't state a durable goal/preference accretes nothing at all
+# (conservative > eager; a plain build instruction like "add a notes field" must
+# never become a fact). Keywords match on WORD boundaries (see _prompt_goal_fact)
+# so "tracking"/"trackpad"/"racetrack"/"unwanted" don't seed noise facts.
+_PROMPT_GOAL_WORDS = frozenset({"want", "goal", "track", "prefer"})
+# Multi-word cues are matched as adjacent-token phrases, not substrings.
+_PROMPT_GOAL_PHRASES: tuple[tuple[str, ...], ...] = (("trying", "to"),)
 
-def _accrete_profile_facts(sid: str, exchange: list[ExchangeTurn] | None) -> None:
-    """Fires on a CONFIRMED insert (POST /api/modules) that carries the exchange
-    which produced the accepted tools — so only a proposal the user actually
-    accepted accretes anything; a discarded preview draft never does. (Preview/
-    generate deliberately do NOT accrete: the user hasn't committed there yet.)
-    Best-effort: a profile write must never break the insert response."""
-    if not exchange:
-        return
-    for turn in exchange[:3]:
+# R-802 completion: workspace-activity accretion. A SMALL known set of domain
+# patterns matched against the inserted tools' title words; anything outside it
+# accretes nothing (no guessing, no noise). Keywords are matched as whole words
+# (plus a naive plural fold) so e.g. "booking" never matches "book".
+_ACTIVITY_DOMAINS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("nutrition", ("nutrition", "calorie", "macro", "meal", "diet")),
+    ("workouts", ("workout", "exercise", "gym", "fitness", "training")),
+    ("budget/finances", ("budget", "expense", "spending", "finance", "saving")),
+    ("habits", ("habit",)),
+    ("sleep", ("sleep",)),
+    # NOTE: bare "book" is deliberately NOT a reading cue — "Recipe Book" /
+    # "Address Book" would accrete a wrong "Tracks reading" fact.
+    ("reading", ("reading",)),
+    ("mood", ("mood",)),
+)
+
+
+def _prompt_goal_fact(prompt: str | None) -> tuple[str, str] | None:
+    """("goal", text) when the originating prompt states a durable goal or
+    preference; None otherwise. Text is trimmed and bounded to 200 chars.
+    Keywords match on WORD boundaries (regex token extraction + a naive plural
+    fold, mirroring `_activity_fact`) so build prompts like "add a tracking
+    number field" or "unwanted side effects widget" don't seed noise facts,
+    while "I want to track my reading" / "I'm trying to save money" still do.
+    Pure — unit-tested directly."""
+    if not prompt:
+        return None
+    text = prompt.strip()[:200].strip()
+    if not text:
+        return None
+    words = re.findall(r"[a-z]+", text.lower())
+    tokens = set(words)
+    tokens |= {w[:-1] for w in tokens if w.endswith("s")}  # "goals" → "goal"
+    if tokens & _PROMPT_GOAL_WORDS:
+        return ("goal", text)
+    for phrase in _PROMPT_GOAL_PHRASES:
+        if any(tuple(words[i : i + len(phrase)]) == phrase for i in range(len(words))):
+            return ("goal", text)
+    return None
+
+
+def _activity_fact(configs: list[ModuleConfig]) -> tuple[str, str] | None:
+    """("pattern", "Tracks {domain}") when the inserted tools' titles match one
+    of the known `_ACTIVITY_DOMAINS`; None when nothing matches confidently.
+    Pure — unit-tested directly."""
+    words: set[str] = set()
+    for config in configs:
+        words.update(re.findall(r"[a-z]+", config.title.lower()))
+    words |= {w[:-1] for w in words if w.endswith("s")}  # "calories" → "calorie"
+    for domain, keywords in _ACTIVITY_DOMAINS:
+        if any(k in words for k in keywords):
+            return ("pattern", f"Tracks {domain}")
+    return None
+
+
+def _accrete_profile_facts(
+    sid: str,
+    exchange: list[ExchangeTurn] | None,
+    prompt: str | None = None,
+    configs: list[ModuleConfig] | None = None,
+) -> None:
+    """Fires on a CONFIRMED insert (POST /api/modules) — so only a proposal the
+    user actually accepted accretes anything; a discarded preview draft never
+    does. (Preview/generate deliberately do NOT accrete: the user hasn't
+    committed there yet.) Three sources, each independently best-effort so one
+    failing can never block the others or the insert response:
+    - interview (Stage 3): the exchange answers, verbatim, first 3 turns;
+    - prompt (R-802 completion): ≤1 fact, only a goal/preference-stating prompt;
+    - activity (R-802 completion): ≤1 fact, only a recognized tool domain.
+    All land in the same owner-scoped, deduped, cap-50, user-inspectable store."""
+    for turn in (exchange or [])[:3]:
         answer = turn.answer.strip()
         if not answer:
             continue
         kind = "goal" if any(w in answer.lower() for w in _PROFILE_GOAL_WORDS) else "fact"
         with contextlib.suppress(Exception):
             db.profile_add(sid, kind, answer[:500], source="interview")
+    with contextlib.suppress(Exception):
+        prompt_fact = _prompt_goal_fact(prompt)
+        if prompt_fact:
+            db.profile_add(sid, prompt_fact[0], prompt_fact[1], source="prompt")
+    with contextlib.suppress(Exception):
+        activity_fact = _activity_fact(configs or [])
+        if activity_fact:
+            db.profile_add(sid, activity_fact[0], activity_fact[1], source="activity")
 
 
 def _log(
@@ -130,6 +219,7 @@ def generate_module(
     if not prompt:
         raise HTTPException(status_code=422, detail="Prompt cannot be empty")
     sid = _owner_id(request)
+    _check_gen_budget(sid)
     existing = [m.config for m in db.list_modules(sid)]
     exchange_context = _fold_exchange(body.exchange)
     # R-302: the owner's recent conversation on this page feeds generation
@@ -178,6 +268,7 @@ def preview_modules(
     if not prompt:
         raise HTTPException(status_code=422, detail="Prompt cannot be empty")
     sid = _owner_id(request)
+    _check_gen_budget(sid)
     existing = [m.config for m in db.list_modules(sid)]
     exchange_context = _fold_exchange(body.exchange)
     # R-302: the owner's recent conversation on this page feeds generation
@@ -218,9 +309,10 @@ async def insert_modules(
     """Persist accepted preview tools onto the canvas."""
     sid = _owner_id(request)
     stored = [db.insert_module(sid, c, page_id=page_id) for c in body.configs]
-    # R-802: accrete profile facts from the interview that produced these tools —
-    # only now, on a confirmed accept, so discarded drafts never enter the profile.
-    _accrete_profile_facts(sid, body.exchange)
+    # R-802: accrete profile facts from the interview, the originating prompt,
+    # and the accepted tools themselves (workspace activity) — only now, on a
+    # confirmed accept, so discarded drafts never enter the profile.
+    _accrete_profile_facts(sid, body.exchange, prompt=body.prompt, configs=body.configs)
     if stored and body.prompt:
         _log(sid, "user", body.prompt, page_id=stored[0].page_id)
     for s in stored:
@@ -239,6 +331,7 @@ def generate_from_file(
 ) -> GenerateResponse:
     _require_trusted_origin(request)
     sid = _owner_id(request)
+    _check_gen_budget(sid)
     # Cap the read before materializing the whole upload in memory: read one byte
     # past the limit so the size check below still fires for oversized files.
     data = file.file.read(15 * 1024 * 1024 + 1)
@@ -397,6 +490,7 @@ def refine_module(module_id: str, body: RefineRequest, request: Request) -> Stor
     if not prompt:
         raise HTTPException(status_code=422, detail="Prompt cannot be empty")
     sid = _owner_id(request)
+    _check_gen_budget(sid)
     existing = db.get_module(sid, module_id)
     if existing is None:
         raise HTTPException(status_code=404, detail="Module not found")
@@ -487,6 +581,7 @@ def workspace_insights(
 ) -> GenerateResponse:
     _require_trusted_origin(request)
     sid = _owner_id(request)
+    _check_gen_budget(sid)
     modules = db.list_modules(sid, page_id=page_id)
     if not modules:
         raise HTTPException(status_code=422, detail="No modules on canvas to synthesize.")
