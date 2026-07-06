@@ -71,6 +71,43 @@ class _RateLimiter:
             return True
 
 
+# R-1202 completion: ONE per-owner generation budget shared by EVERY LLM-backed
+# generation surface — modules.py's 5 handlers (generate/preview/
+# generate_from_file/refine/insights) and studio.py's vision-backed
+# import/capture routes (final Stage-4 review: those were the last unmetered
+# spend surfaces). A studio import and a generate draw from the same owner
+# budget — that's deliberate. Its own limiter instance (NOT transcribe.py's or
+# live.py's), so a chatty voice/live session never eats a user's generation
+# budget or vice versa. Lived in modules.py until studio.py needed it too;
+# moved here so studio never imports from a sibling route module.
+def _gen_rate_max() -> int:
+    return int(os.environ.get("TRUS_GEN_RATE_MAX", "30"))
+
+
+def _gen_rate_window() -> float:
+    return float(os.environ.get("TRUS_GEN_RATE_WINDOW", "300"))
+
+
+_gen_limiter = _RateLimiter(max_calls=30, window_secs=300)
+
+
+def _check_gen_budget(sid: str) -> None:
+    """Rate limit + optional per-owner daily cost cap (R-1202 completion) — call
+    this right after `_owner_id` resolves and BEFORE any model call, so an
+    over-budget request never spends a token (fail fast, no spend). Shared
+    across all generation handlers via the module-level `_gen_limiter`."""
+    if not _gen_limiter.allow(sid, max_calls=_gen_rate_max(), window_secs=_gen_rate_window()):
+        raise HTTPException(
+            status_code=429,
+            detail="Too many generations — please wait a few minutes and try again.",
+        )
+    cap_raw = os.environ.get("TRUS_DAILY_COST_CAP_USD", "").strip()
+    if cap_raw:
+        cap = float(cap_raw)
+        if cap > 0 and db.owner_cost_today(sid)["cost_usd"] >= cap:
+            raise HTTPException(status_code=429, detail="You've reached today's usage budget.")
+
+
 def _parse_cors_origins(raw: str) -> list[str]:
     """Comma-separated origin list, tolerant of whitespace/trailing commas/blanks.
 

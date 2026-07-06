@@ -103,6 +103,59 @@ def test_gen_rate_limit_window_is_configurable(client, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Layout Studio vision routes draw from the SAME budget (final Stage-4 review:
+# import/capture were the last unmetered spend surfaces — R-1202 completion).
+# ---------------------------------------------------------------------------
+
+_PNG = b"\x89PNG\r\n\x1a\n"  # minimal header — the gate fires before any image work
+
+
+def test_studio_import_and_capture_draw_from_the_gen_budget(client, monkeypatch):
+    """A 4th studio call in-window is refused with the same 429 the modules.py
+    handlers give, and capture shares the same exhausted budget as import."""
+    monkeypatch.setenv("TRUS_GEN_RATE_MAX", "3")
+    monkeypatch.setenv("TRUS_VISION_MODEL", "fake-vlm")
+    from src.services import studio as studio_service
+
+    monkeypatch.setattr(
+        studio_service.llm,
+        "vision_describe",
+        lambda *a, **k: '{"title":"X","components":[{"id":"a","type":"text_input","label":"A"}]}',
+    )
+    for _ in range(3):
+        r = client.post(
+            "/api/studio/use-cases/calorie/import",
+            files={"file": ("ui.png", _PNG, "image/png")},
+        )
+        assert r.status_code == 200, r.text
+    blocked = client.post(
+        "/api/studio/use-cases/calorie/import", files={"file": ("ui.png", _PNG, "image/png")}
+    )
+    assert blocked.status_code == 429
+    assert "too many generations" in blocked.json()["detail"].lower()
+    # capture draws from the SAME per-owner budget — also blocked, and blocked
+    # BEFORE any vision work (no mock needed: the gate must fire first).
+    blocked_capture = client.post(
+        "/api/studio/use-cases/calorie/capture", files={"file": ("ui.png", _PNG, "image/png")}
+    )
+    assert blocked_capture.status_code == 429
+
+
+def test_studio_and_generate_share_one_owner_budget(client, monkeypatch):
+    """3 generates then a studio import → 429. The 429 (not the 503 an
+    unconfigured vision model would give) proves the gate fires fail-fast,
+    before any vision/LLM call."""
+    monkeypatch.setenv("TRUS_GEN_RATE_MAX", "3")
+    for _ in range(3):
+        resp = client.post("/api/modules/generate", json={"prompt": "track my workouts"})
+        assert resp.status_code != 429, resp.text
+    r = client.post(
+        "/api/studio/use-cases/calorie/import", files={"file": ("ui.png", _PNG, "image/png")}
+    )
+    assert r.status_code == 429
+
+
+# ---------------------------------------------------------------------------
 # Optional per-owner daily cost cap.
 # ---------------------------------------------------------------------------
 
