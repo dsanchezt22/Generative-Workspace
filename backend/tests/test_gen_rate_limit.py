@@ -91,15 +91,18 @@ def test_gen_rate_limit_shared_with_file_refine_and_insights(client, monkeypatch
 
 def test_gen_rate_limit_window_is_configurable(client, monkeypatch):
     """TRUS_GEN_RATE_WINDOW is read fresh per request (not baked in at import),
-    so a test (or an operator) can override it without a process restart."""
+    so a test (or an operator) can override it without a process restart. The
+    block assertion uses a deliberately HUGE window so the 2nd call is in-window
+    no matter how slowly this test runs under load/coverage (a 10ms window +
+    real sleeps flaked). The sliding/aging behavior itself is owned by the
+    injected-clock `_RateLimiter.allow(now=...)` unit test below."""
     monkeypatch.setenv("TRUS_GEN_RATE_MAX", "1")
-    monkeypatch.setenv("TRUS_GEN_RATE_WINDOW", "0.01")
+    monkeypatch.setenv("TRUS_GEN_RATE_WINDOW", "3600")
+    from src.routes.deps import _gen_rate_window
+
+    assert _gen_rate_window() == 3600.0  # env re-read now, not baked at import
     assert client.post("/api/modules/preview", json={"prompt": "a"}).status_code != 429
     assert client.post("/api/modules/preview", json={"prompt": "b"}).status_code == 429
-    import time
-
-    time.sleep(0.02)  # window has slid past — the budget resets
-    assert client.post("/api/modules/preview", json={"prompt": "c"}).status_code != 429
 
 
 # ---------------------------------------------------------------------------
