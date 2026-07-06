@@ -107,6 +107,9 @@ def generate(
     store them in the library."""
     _require_trusted_origin(request)
     owner = _owner_id(request)
+    # R-1202 (final Stage-4 review): layout mining calls llm.generate() in
+    # non-stub mode — same shared per-owner budget, checked before any spend.
+    _check_gen_budget(owner)
     if studio.get_use_case(key) is None:
         raise HTTPException(status_code=404, detail=f"Unknown use case: {key}")
     layouts = studio.generate_layouts(key, n)

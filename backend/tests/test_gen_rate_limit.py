@@ -144,6 +144,47 @@ def test_studio_import_and_capture_draw_from_the_gen_budget(client, monkeypatch)
     assert blocked_capture.status_code == 429
 
 
+def test_studio_generate_route_draws_from_the_gen_budget(client, monkeypatch):
+    """Layout mining (POST /use-cases/{key}/generate) calls llm.generate() in
+    non-stub mode — same R-1202 spend hole — so a 4th in-window call is 429.
+    Stub mode is enough: the gate fires before any generation work."""
+    monkeypatch.setenv("TRUS_GEN_RATE_MAX", "3")
+    for _ in range(3):
+        r = client.post("/api/studio/use-cases/calorie/generate?n=2")
+        assert r.status_code != 429, r.text
+    blocked = client.post("/api/studio/use-cases/calorie/generate?n=2")
+    assert blocked.status_code == 429
+    assert "too many generations" in blocked.json()["detail"].lower()
+
+
+def test_all_studio_gen_routes_share_the_modules_budget(client, monkeypatch):
+    """One owner budget across modules-generate + studio generate/import/capture:
+    generate + layout-mine + import spend it (MAX=3), then capture → 429."""
+    monkeypatch.setenv("TRUS_GEN_RATE_MAX", "3")
+    monkeypatch.setenv("TRUS_VISION_MODEL", "fake-vlm")
+    from src.services import studio as studio_service
+
+    monkeypatch.setattr(
+        studio_service.llm,
+        "vision_describe",
+        lambda *a, **k: '{"title":"X","components":[{"id":"a","type":"text_input","label":"A"}]}',
+    )
+    assert client.post("/api/modules/generate", json={"prompt": "track x"}).status_code != 429
+    assert client.post("/api/studio/use-cases/calorie/generate?n=2").status_code != 429
+    assert (
+        client.post(
+            "/api/studio/use-cases/calorie/import",
+            files={"file": ("ui.png", _PNG, "image/png")},
+        ).status_code
+        != 429
+    )
+    # Budget (3) spent across three different generation surfaces — capture 429s.
+    blocked = client.post(
+        "/api/studio/use-cases/calorie/capture", files={"file": ("ui.png", _PNG, "image/png")}
+    )
+    assert blocked.status_code == 429
+
+
 def test_studio_and_generate_share_one_owner_budget(client, monkeypatch):
     """3 generates then a studio import → 429. The 429 (not the 503 an
     unconfigured vision model would give) proves the gate fires fail-fast,
