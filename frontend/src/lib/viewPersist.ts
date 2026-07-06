@@ -15,17 +15,25 @@ export const DEFAULT_VIEW: ViewState = { x: 0, y: 0, zoom: 1 };
 
 const isFiniteNum = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
 
+// Canvas.tsx's ZOOM_MIN/ZOOM_MAX (the +/- buttons' clamp). The PATCH that saves
+// a view is hand-craftable, so a persisted view_zoom can be anything — loading
+// it back unclamped (e.g. 500) would open an unusable viewport.
+const ZOOM_MIN = 0.3;
+const ZOOM_MAX = 2;
+const clampZoom = (z: number): number => Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, z));
+
 /**
  * The page's server-saved viewport, or null when it has none. All three fields
  * must be present and finite, and zoom positive — a partial or corrupt triple is
  * treated as unset (a zoom of 0/negative would render nothing / mirror the world).
+ * A positive but out-of-range zoom is clamped to the canvas range.
  */
 export function serverViewOf(
   page: { view_x?: number | null; view_y?: number | null; view_zoom?: number | null } | null | undefined,
 ): ViewState | null {
   if (!page) return null;
   if (isFiniteNum(page.view_x) && isFiniteNum(page.view_y) && isFiniteNum(page.view_zoom) && page.view_zoom > 0) {
-    return { x: page.view_x, y: page.view_y, zoom: page.view_zoom };
+    return { x: page.view_x, y: page.view_y, zoom: clampZoom(page.view_zoom) };
   }
   return null;
 }

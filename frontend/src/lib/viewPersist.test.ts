@@ -33,6 +33,13 @@ describe("serverViewOf (R-504: the page row's saved viewport)", () => {
     expect(serverViewOf({ view_x: 0, view_y: 0, view_zoom: -1 })).toBeNull();
     expect(serverViewOf({ view_x: 0, view_y: 0, view_zoom: NaN })).toBeNull();
   });
+
+  it("clamps an out-of-range zoom to the canvas range (a hand-crafted PATCH can persist anything)", () => {
+    expect(serverViewOf({ view_x: 0, view_y: 0, view_zoom: 500 })).toEqual({ x: 0, y: 0, zoom: 2 });
+    expect(serverViewOf({ view_x: 0, view_y: 0, view_zoom: 0.01 })).toEqual({ x: 0, y: 0, zoom: 0.3 });
+    // in-range zoom passes through untouched
+    expect(serverViewOf({ view_x: 0, view_y: 0, view_zoom: 1.5 })).toEqual({ x: 0, y: 0, zoom: 1.5 });
+  });
 });
 
 describe("parseStoredView (localStorage offline fallback)", () => {
