@@ -75,6 +75,25 @@ fly volumes create trus_data --size 1        # matches [mounts] in fly.toml
 `TRUS_DB_PATH=/data/trus.db` points into that mount; `TRUS_BACKUP_DIR` defaults
 to `/data/backups`, a subdirectory of the same mount — no second volume needed.
 
+### Run EXACTLY ONE machine (`fly scale count 1`)
+
+Fly's HA default leans toward **2 machines** — for this app that is split-brain,
+not redundancy. Two things pin the deployment to a single machine:
+
+1. **SQLite on one volume.** Volumes attach to one machine; a second machine
+   gets its own (empty) volume and a **divergent database** — two users' data
+   silently forks depending on which machine served them.
+2. **The rate limiter is in-process.** Each machine enforces its own copy of
+   the per-owner budgets (generate/transcribe/live), so with 2 machines every
+   limit is effectively doubled — the limits are silently halved in strength.
+
+```bash
+fly scale count 1        # after first deploy; verify with `fly scale show`
+```
+
+Multi-instance needs a shared DB and a shared limiter store — a Stage-5
+concern, not a knob to flip here. This is also a `PREFLIGHT.md` checkbox.
+
 ### The Fly-volume-ownership gotcha (Stage-1 review)
 
 The image's `Dockerfile` creates `/data` and `chown`s it to the non-root `trus`
@@ -177,6 +196,11 @@ daily cap also gets a 429 with an honest "today's usage budget" message. Leave
 the cap unset for the alpha if you'd rather rely on the rate limit alone — token
 counts still show in `/api/ops/summary` either way (cost is $0 if the rates are
 unset).
+
+Note: voice transcription (`/api/transcribe`) is **exempt from the cost cap** —
+STT calls log no token counts (tokens recorded as `None`), so their spend never
+appears in the cost rollup and is bounded only by transcription's own
+20-calls/5-min per-owner rate limiter.
 
 ## 8. Post-deploy smoke test (R-906 AC)
 

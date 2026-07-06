@@ -44,6 +44,13 @@ fly ssh console -C "su trus -c 'touch /data/.write-test && rm /data/.write-test 
 - [ ] Prints `OK`. If not: `fly ssh console -C "chown -R 1000:1000 /data"`, then
       re-run the check. (If your console session is already uid 1000 rather
       than root, drop the `su trus -c` wrapper and run the `touch`/`rm` directly.)
+- [ ] **Exactly ONE machine is running**: `fly scale count 1`, then verify
+      `fly scale show` / `fly machines list` reports 1. Fly's HA default of 2
+      is split-brain here: SQLite lives on one volume (a 2nd machine gets its
+      own empty volume → divergent databases) and the rate limiter is
+      in-process (each machine enforces its own copy → every per-owner limit
+      silently doubled). Multi-instance is a Stage-5 concern
+      (`deploy/README.md` §2).
 
 ## 3. WAL active
 
@@ -122,6 +129,9 @@ alpha as-is — this step is a **conscious decision**, not necessarily a change.
       ```bash
       curl -s "https://<backend>/api/ops/summary?token=$TRUS_OPS_TOKEN" | python3 -m json.tool
       ```
+      Know the blind spot: STT/transcribe spend is **cap-exempt** (tokens
+      logged as `None`, invisible in the cost rollup) — it's bounded only by
+      its own 20-calls/5-min per-owner limiter.
 
 ## 8. `TRUS_LIVE_DATA` decision
 
