@@ -130,17 +130,45 @@ def prune(keep: int | None = None) -> list[Path]:
     return doomed
 
 
+def _ensure_not_in_use(live: Path) -> None:
+    """Refuse to swap files under a database another connection is writing to.
+
+    restore() unlinks the -wal/-shm sidecars and os.replace()s the main file —
+    done against a RUNNING app that's silent data loss/corruption. The docstring
+    already said "run this with the app stopped"; this makes that mechanical:
+    take an EXCLUSIVE transaction with a zero busy timeout, which fails
+    immediately with "database is locked" when any other connection holds a
+    write lock. (WAL readers don't block it, so a stopped-but-recently-read db
+    still passes — the dangerous case caught here is a live app mid-write.)
+    The probe lock is released (rollback + close) before any restore work."""
+    conn = sqlite3.connect(live)
+    try:
+        conn.execute("PRAGMA busy_timeout = 0")
+        try:
+            conn.execute("BEGIN EXCLUSIVE")
+        except sqlite3.OperationalError as exc:
+            raise BackupError(
+                f"database is in use — stop the app first, then re-run the restore ({live})"
+            ) from exc
+        conn.execute("ROLLBACK")
+    finally:
+        conn.close()
+
+
 def restore(backup_file: Path, now: datetime | None = None) -> Path | None:
     """Replace the live DB with `backup_file`. Returns the safety snapshot taken
     of the pre-restore state (None if there was no live DB to snapshot).
 
     Order matters: validate first (a bad file must leave everything untouched),
-    then safety-snapshot the current DB (a bad restore is itself recoverable),
-    then stage the backup into a temp file in the LIVE db's directory, clear the
-    -wal/-shm sidecars (a stale WAL must not shadow the restored data), and finally
-    `os.replace(tmp, live)` — atomic on the same filesystem, so a crash mid-restore
-    (OOM, machine-stop timeout, power loss) leaves the OLD live db intact rather
-    than a truncated/missing one. Run this with the app stopped; see deploy/BACKUP.md.
+    then prove no other connection is writing the live DB (`_ensure_not_in_use`
+    — restoring under a running app is silent loss; abort with the current DB
+    untouched), then safety-snapshot the current DB (a bad restore is itself
+    recoverable), then stage the backup into a temp file in the LIVE db's
+    directory, clear the -wal/-shm sidecars (a stale WAL must not shadow the
+    restored data), and finally `os.replace(tmp, live)` — atomic on the same
+    filesystem, so a crash mid-restore (OOM, machine-stop timeout, power loss)
+    leaves the OLD live db intact rather than a truncated/missing one. Run this
+    with the app stopped; see deploy/BACKUP.md.
     """
     backup_file = Path(backup_file)
     _validate_sqlite(backup_file)
@@ -150,6 +178,7 @@ def restore(backup_file: Path, now: datetime | None = None) -> Path | None:
 
     safety: Path | None = None
     if live.is_file():
+        _ensure_not_in_use(live)
         backup_dir = _backup_dir()
         backup_dir.mkdir(parents=True, exist_ok=True)
         safety = backup_dir / f"pre-restore-{_stamp(now)}.db"

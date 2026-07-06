@@ -469,9 +469,13 @@ def test_activity_fact_recognizes_known_domains(title, text):
     assert _activity_fact([_cfg(title)]) == ("pattern", text)
 
 
-@pytest.mark.parametrize("title", ["Notes", "Party Planner", "Booking Dashboard"])
+@pytest.mark.parametrize(
+    "title", ["Notes", "Party Planner", "Booking Dashboard", "Recipe Book", "Address Book"]
+)
 def test_activity_fact_unrecognized_domain_returns_none(title):
-    # "Booking Dashboard" also proves token matching: "booking" must NOT match "book".
+    # "Booking Dashboard" also proves token matching ("booking" must not match a
+    # "book" cue), and "Recipe Book"/"Address Book" prove bare "book" is no
+    # longer a reading cue (final Stage-4 review: it accreted wrong facts).
     assert _activity_fact([_cfg(title)]) is None
 
 

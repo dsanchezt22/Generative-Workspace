@@ -201,6 +201,44 @@ def test_restore_refuses_non_sqlite_file(backup_dir, tmp_path, capsys):
     assert list(backup_dir.glob("pre-restore-*.db")) == []  # refused BEFORE snapshotting
 
 
+def test_restore_aborts_when_db_is_in_use(backup_dir, capsys):
+    """Final Stage-4 review: unlinking sidecars + os.replace under a RUNNING app
+    risks silent loss/corruption — restore must refuse while another connection
+    holds a write lock, nonzero exit, live db untouched, no safety snapshot."""
+    db.create_user("Backup Era")
+    snap = backup.create_backup(now=T0)
+    db.create_user("Current Era")
+    live = db._db_path()
+
+    holder = sqlite3.connect(live)
+    try:
+        holder.execute("BEGIN IMMEDIATE")  # a running app mid-write
+        with pytest.raises(backup.BackupError, match="in use"):
+            backup.restore(snap, now=T1)
+        rc = backup.main(["restore", str(snap)])  # the CLI path exits nonzero too
+        assert rc == 1
+        assert "stop the app" in capsys.readouterr().err
+    finally:
+        holder.rollback()
+        holder.close()
+
+    assert _user_names(live) == ["Backup Era", "Current Era"]  # live db untouched
+    assert list(backup_dir.glob("pre-restore-*.db")) == []  # aborted BEFORE snapshotting
+
+
+def test_restore_succeeds_after_the_lock_is_released(backup_dir):
+    """The in-use guard must not leave its own lock behind — an idle db restores."""
+    db.create_user("Backup Era")
+    snap = backup.create_backup(now=T0)
+    holder = sqlite3.connect(db._db_path())
+    holder.execute("BEGIN IMMEDIATE")
+    holder.rollback()
+    holder.close()  # app stopped
+
+    assert backup.restore(snap, now=T1) is not None
+    assert _user_names(db._db_path()) == ["Backup Era"]
+
+
 def test_restore_refuses_missing_file(backup_dir, tmp_path):
     with pytest.raises(backup.BackupError):
         backup.restore(tmp_path / "does-not-exist.db")

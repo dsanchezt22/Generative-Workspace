@@ -85,7 +85,9 @@ _ACTIVITY_DOMAINS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("budget/finances", ("budget", "expense", "spending", "finance", "saving")),
     ("habits", ("habit",)),
     ("sleep", ("sleep",)),
-    ("reading", ("reading", "book")),
+    # NOTE: bare "book" is deliberately NOT a reading cue — "Recipe Book" /
+    # "Address Book" would accrete a wrong "Tracks reading" fact.
+    ("reading", ("reading",)),
     ("mood", ("mood",)),
 )
 
