@@ -2,9 +2,9 @@
 
 _An AI-orchestrated personal operating system: describe what you want to organize, and the system generates the exact tool for it._
 
-**Last updated:** 2026-07-05
+**Last updated:** 2026-07-07
 **Repo:** https://github.com/dsanchezt22/Generative-Workspace
-**Branch state:** Stage 1 + 2a + 2b are merged into `main` (merge commit `24f22e3`). Stage 3 (`stage3/differentiators`) is complete at `89f70d6`; final whole-branch review and merge decision remain open. Stage 4 (`stage4/hosted-alpha`, branched off `main` at `5ece326`) is now at `75445c0` with this exit task's evidence recorded below; final whole-branch review and merge decision remain open.
+**Branch state:** Stage 1 + 2a + 2b are merged into `main` (merge commit `24f22e3`). Stage 3 (`stage3/differentiators`) is complete at `89f70d6`; final whole-branch review and merge decision remain open. Stage 4 (`stage4/hosted-alpha`, branched off `main` at `5ece326`) is now at `75445c0` with this exit task's evidence recorded below; final whole-branch review and merge decision remain open. **`V2` (branched off `main` at this Stage-4 state) implements the vision in `VISION.md` — see the "V2" section below; final review/merge into `main` remains open, same as Stage 3/4.**
 
 ---
 
@@ -126,3 +126,39 @@ API-level smoke against a fresh backend on a spare port (8120, isolated `TRUS_DB
 ## Next
 
 Stage 4 remaining = **Task 10, OPERATOR DEPLOY** (needs Janus's Fly/Railway + Vercel accounts, not agent-executable) + the carried Stage-4-tail backlog. Stage 3's and Stage 4's final whole-branch reviews and merge decisions remain open.
+
+---
+
+## V2 — self-composing, always-on personal OS
+
+**Branch:** `V2` (off `main` at the Stage-4 state above). **Status:** every buildable
+VISION-DOD.md criterion is met (40/40 — see the pass table below); final whole-branch
+review and merge decision into `main` remain open, same posture as Stage 3/4.
+
+Ships the ceiling-raise `VISION.md` describes: an always-on per-owner automation
+runtime (a scheduler thread ticking real, persistent automations with zero browser
+involvement); a 12-type tiered-by-reversibility action registry with a hard floor —
+real-world irreversible actions (send/message/pay) can never run autonomously,
+always park for a tap, and their executors are honestly-badged simulated stubs, never
+a real send; the "Pulse" tap surface (what ran / what needs you, one-tap
+approve/reject); self-composing structures (one prompt → multiple wired app-pages +
+real automations, previewed before anything lands); app-grade zoomable surfaces
+(portal tiles read as apps, entering one is a spatial zoom-launch, not a hard cut);
+the accreting profile as a real input to automation behavior; and per-surface
+read-only sharing via an unguessable, revocable link.
+
+- `VISION.md` — the north star. `VISION-DOD.md` — the 40-criterion measurable contract.
+- `docs/superpowers/plans/v2/DESIGN-RECONCILED.md` — the authoritative architecture
+  (rules over the four per-fork `DESIGN-{runtime,autonomy,surfaces,sharing}.md` docs
+  where they conflict).
+- `docs/superpowers/plans/v2/VISION-DOD-PASS.md` — the full pass table, one row per
+  criterion, with evidence (test name + what it asserts, or a live API drive).
+- `docs/LESSONS-v2.md` — accumulated build gotchas, read before extending V2.
+- **Gates:** `python -m pytest -q` → 848 passed, 93.70% coverage (80% gate) · mypy/ruff
+  clean · frontend 163 tests · `tsc`/`next build` clean.
+- **Needs a human:** (1) real send/message/pay credentials, if those stubs are ever
+  wired to real providers — not required for anything shipped here; (2) optionally,
+  `ollama serve` (a local model is already configured in `.env`, just not running) for
+  local, non-cascaded generation — a real Gemini key already configured there means
+  live (non-stub) generation works today via cascade; (3) the pre-existing Stage-4
+  Task 10 operator deploy, unaffected by V2.
