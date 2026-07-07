@@ -1343,8 +1343,10 @@ export default function Home() {
       )}
 
       {/* The can't-miss home indicator — the home screen's single magenta
-          accent, absent at 0. Opens Pulse. */}
-      <ApprovalBadge count={pendingCount} onOpen={openActivity} />
+          accent, absent at 0. Hidden while Pulse is open: the panel's own
+          Approve button is the one magenta action on screen at that point
+          (one-accent-per-screen, not one-accent-ever). */}
+      {!activityOpen && <ApprovalBadge count={pendingCount} onOpen={openActivity} />}
       </main>
 
       <CommandPalette
