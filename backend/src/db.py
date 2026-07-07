@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import secrets
 import sqlite3
 import threading
 import uuid
@@ -227,6 +228,22 @@ CREATE TABLE IF NOT EXISTS activity (
     created_at    TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_activity_owner ON activity(owner, created_at);
+-- Per-surface read-only share links (SHARE-1..3). ONE ACTIVE link per page,
+-- enforced by the partial unique index (DB guarantee) and by share_create's
+-- revoke-then-insert transaction. Revoked rows are kept as audit history.
+-- owner is the same _owner_id key as everywhere else (claimed uid, or dev-only
+-- anon sid). token is secrets.token_urlsafe(32) — 256 bits, unguessable;
+-- UNIQUE gives the indexed lookup for the public path.
+CREATE TABLE IF NOT EXISTS share_links (
+    id          TEXT PRIMARY KEY,
+    token       TEXT NOT NULL UNIQUE,
+    owner       TEXT NOT NULL,
+    page_id     TEXT NOT NULL REFERENCES pages(id) ON DELETE CASCADE,
+    created_at  TEXT NOT NULL,
+    revoked_at  TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_share_links_active
+    ON share_links(page_id) WHERE revoked_at IS NULL;
 """
 
 # Tracks which db file has had its schema ensured this process, so we re-run the
@@ -446,6 +463,10 @@ def adopt_session_data(old_owner: str, user_id: str) -> None:
         c.execute("UPDATE automations SET owner = ? WHERE owner = ?", (user_id, old_owner))
         c.execute("UPDATE approvals SET owner = ? WHERE owner = ?", (user_id, old_owner))
         c.execute("UPDATE activity SET owner = ? WHERE owner = ?", (user_id, old_owner))
+        # SHARE: without this a pre-claim share link dies on claim AND the still-
+        # active orphan row makes the next share_create violate the partial unique
+        # index → 500.
+        c.execute("UPDATE share_links SET owner = ? WHERE owner = ?", (user_id, old_owner))
 
 
 # ---------------------------------------------------------------------------
@@ -2073,3 +2094,71 @@ def recent_user_messages(owner: str, since_iso: str, limit: int = 50) -> list[st
             (owner, since_iso, limit),
         ).fetchall()
     return [r["text"] for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# Share links (SHARE-1..3)
+# ---------------------------------------------------------------------------
+
+
+def share_create(owner: str, page_id: str) -> dict | None:
+    """Create-or-rotate: revokes any active link for this page, mints a new one,
+    all in ONE transaction (the partial unique index never trips mid-rotate).
+    Returns None when the page isn't this owner's — indistinguishable from
+    nonexistent, matching the _require_own_parent stance."""
+    with _conn() as c:
+        if not c.execute(
+            "SELECT 1 FROM pages WHERE id = ? AND session_id = ?", (page_id, owner)
+        ).fetchone():
+            return None
+        now = _now()
+        c.execute(
+            "UPDATE share_links SET revoked_at = ? WHERE page_id = ? AND owner = ? AND revoked_at IS NULL",
+            (now, page_id, owner),
+        )
+        token = secrets.token_urlsafe(32)
+        c.execute(
+            "INSERT INTO share_links (id, token, owner, page_id, created_at) VALUES (?, ?, ?, ?, ?)",
+            (str(uuid.uuid4()), token, owner, page_id, now),
+        )
+    return {"token": token, "created_at": now}
+
+
+def share_status(owner: str, page_id: str) -> dict | None:
+    with _conn() as c:
+        r = c.execute(
+            "SELECT token, created_at FROM share_links"
+            " WHERE page_id = ? AND owner = ? AND revoked_at IS NULL",
+            (page_id, owner),
+        ).fetchone()
+    return dict(r) if r else None
+
+
+def share_revoke(owner: str, page_id: str) -> bool:
+    with _conn() as c:
+        cur = c.execute(
+            "UPDATE share_links SET revoked_at = ? WHERE page_id = ? AND owner = ? AND revoked_at IS NULL",
+            (_now(), page_id, owner),
+        )
+        return cur.rowcount > 0
+
+
+def share_resolve(token: str) -> dict | None:
+    """Public-path lookup — the ONLY function that reads a token; its ONLY
+    caller is GET /api/share/{token}. Joins pages (name/icon in one query) and
+    LEFT JOINs users so a REVOKED owner's shares die with them (R-905 — the
+    public path bypasses _owner_id's per-request revocation check, so it must
+    re-check here). Anon (dev) owners have no users row → LEFT JOIN passes.
+    None for unknown token, revoked link, cascade-deleted page, or revoked
+    owner — one indistinguishable outcome."""
+    with _conn() as c:
+        r = c.execute(
+            "SELECT s.owner, s.page_id, p.name, p.icon, u.revoked_at AS user_revoked"
+            " FROM share_links s JOIN pages p ON p.id = s.page_id"
+            " LEFT JOIN users u ON u.id = s.owner"
+            " WHERE s.token = ? AND s.revoked_at IS NULL",
+            (token,),
+        ).fetchone()
+    if r is None or r["user_revoked"]:
+        return None
+    return {"owner": r["owner"], "page_id": r["page_id"], "name": r["name"], "icon": r["icon"]}

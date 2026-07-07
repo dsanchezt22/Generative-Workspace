@@ -202,6 +202,15 @@ STT calls log no token counts (tokens recorded as `None`), so their spend never
 appears in the cost rollup and is bounded only by transcription's own
 20-calls/5-min per-owner rate limiter.
 
+Public share links (`/api/share/{token}`, SHARE-1..3): the read path is
+sessionless and revocation is checked on every resolve, so **do not let any CDN
+or reverse proxy cache `/api/share/*` responses** — a cached page would keep
+serving after a revoke/rotate. That path is rate-limited **per client IP**
+(`TRUS_SHARE_RATE_MAX`/`TRUS_SHARE_RATE_WINDOW`, default 60/60s); behind a
+reverse proxy you MUST run `uvicorn --proxy-headers` (and trust the proxy) so
+`request.client.host` is the real viewer IP, otherwise every viewer shares one
+bucket keyed to the proxy.
+
 ## 8. Post-deploy smoke test (R-906 AC)
 
 From a **phone on cellular** (not your wifi — that's the point), as a

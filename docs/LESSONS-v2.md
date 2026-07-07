@@ -125,3 +125,18 @@ already records (STATUS.md, plans, CLAUDE.md).
   tiles extend the `overflow-auto` scroll area past it. Reuses the `.canvas-grid`
   dot-grid class for the charcoal texture. SharePanel's ConfirmDialog is a SIBLING of
   the `animate-slide-right` aside (the containing-block lesson, again).
+
+- **A2 sharing: the server-side `data_source` strip needs `# type: ignore[union-attr]`.**
+  DESIGN-sharing §3's verbatim `comp.data_source = None` (guarded by a `getattr`
+  existence check) does NOT pass mypy as-is — only Metric/Kpi/Ring/Gauge/ProgressBar
+  in the 30-member `Component` union declare the field, so mypy raises union-attr on
+  the other 25. The `getattr(comp, "data_source", None) is not None` guard makes the
+  assignment always valid at runtime; the type-ignore is the intended tweak (setattr
+  would trip ruff B010). The public path is otherwise 100% covered.
+
+- **A2 gotcha: the public share path is sessionless BY OMISSION, not by a flag.**
+  `read_shared` never calls `_owner_id` and never touches `request.session`, so
+  Starlette's SessionMiddleware emits no Set-Cookie and mints no `sessions` row — it
+  works under `TRUS_ALLOW_ANON=0`. If you ever add a `request.session[...]` read/write
+  on that handler, you silently break test_share's no-cookie / no-session-row / anon-
+  disabled guarantees. Keep it read-only and cookie-free.

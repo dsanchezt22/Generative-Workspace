@@ -122,6 +122,10 @@ def _isolate_llm_env(monkeypatch):
         "TRUS_RUNTIME_GEN_RATE_WINDOW",
         "TRUS_ACTIVITY_MAX",
         "TRUS_APPROVAL_TTL_HOURS",
+        # Per-surface sharing (SHARE-1..3): the public read path's own per-IP rate
+        # limiter knobs. A dev .env must not perturb the 60/60s defaults under test.
+        "TRUS_SHARE_RATE_MAX",
+        "TRUS_SHARE_RATE_WINDOW",
     ):
         monkeypatch.delenv(k, raising=False)
     # No test starts the runtime thread implicitly — a TestClient's lifespan must

@@ -16,6 +16,7 @@ from src.routes import (
     modules,
     pages,
     profile,
+    share,
     studio,
     suggestions,
     transcribe,
@@ -112,6 +113,7 @@ app.include_router(transcribe.router, prefix="/api")
 app.include_router(live.router, prefix="/api")
 app.include_router(profile.router, prefix="/api")
 app.include_router(automations.router, prefix="/api")
+app.include_router(share.router, prefix="/api")
 
 
 @app.get("/api/health")

@@ -359,6 +359,33 @@ class StoredModule(BaseModel):
     rev: int = 0
 
 
+# ── Per-surface read-only sharing (SHARE-1..3) ──
+# Whitelist by construction — NEVER reuse Page (serializes session_id/parent_id/
+# position/portal_*/view_*) or StoredModule (serializes page_id/rev/archived).
+
+
+class ShareStatus(BaseModel):
+    active: bool
+    token: str | None = None
+    created_at: str | None = None
+
+
+class SharedPage(BaseModel):
+    name: str
+    icon: str | None = None
+
+
+class SharedModule(BaseModel):
+    id: str  # needed: React keys + same-page cross-module bindings
+    config: ModuleConfig  # data_source stripped by the route before construction
+    updated_at: str  # the "as of" honesty stamp
+
+
+class SharedPageResponse(BaseModel):
+    page: SharedPage
+    modules: list[SharedModule]
+
+
 class Page(BaseModel):
     id: str
     session_id: str
