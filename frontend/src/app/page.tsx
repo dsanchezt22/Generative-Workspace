@@ -10,6 +10,7 @@ import { ProfilePanel } from "@/components/ProfilePanel";
 import { SharePanel } from "@/components/SharePanel";
 import { ActivityPanel } from "@/components/ActivityPanel";
 import { ApprovalBadge } from "@/components/ApprovalBadge";
+import { AppFrame } from "@/components/AppFrame";
 import { Inspector } from "@/components/Inspector";
 import { DetailView } from "@/components/DetailView";
 import { Sidebar } from "@/components/Sidebar";
@@ -27,7 +28,7 @@ import { createModuleSaver, type SaveStatus } from "@/lib/moduleSaver";
 import { serverViewOf, type ViewState } from "@/lib/viewPersist";
 import { useAppearance } from "@/lib/appearance";
 import { resolveIconName } from "@/lib/theme";
-import type { CommitModule, Message, ModuleConfig, Page, Snapshot, StoredModule } from "@/lib/types";
+import type { CommitModule, InsertStructureResponse, Message, ModuleConfig, Page, PageOverview, Snapshot, StoredModule } from "@/lib/types";
 
 function HeaderInsights({
   activePageId,
@@ -104,7 +105,13 @@ export default function Home() {
   const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
   // R-502: live module count per page, for the child-page portal tiles' cheap
   // "N tools" preview. One grouped COUNT server-side — never loads child configs.
-  const [childCounts, setChildCounts] = useState<Record<string, number>>({});
+  // V2 SURF: one grouped overview per page (modules/agents/last run), keyed by
+  // page id — feeds the portal tiles + AppFrame. `now` is refreshed alongside so
+  // the tiles' relative "agent ran …" stays fresh without impurity in render.
+  const [overviews, setOverviews] = useState<Record<string, PageOverview>>({});
+  const [now, setNow] = useState(() => Date.now());
+  // V2 SURF §6: bumped on "back" — Canvas seeds the reverse zoom from this child.
+  const [portalReturnReq, setPortalReturnReq] = useState<{ childId: string; n: number } | undefined>(undefined);
   // R-221-223 unification: a snapped sketch's proposed tools, in flight from
   // Canvas to the PromptBar's preview→confirm stack. `n` distinguishes re-snaps.
   const [sketchPreviews, setSketchPreviews] = useState<{
@@ -318,10 +325,11 @@ export default function Home() {
     api.listConversation(pageId).then(setMessages).catch(() => {});
   }, []);
 
-  // R-502: refresh the per-page module counts for the portal tiles. Cheap
-  // (grouped COUNT), so it's fine to re-fetch on navigation and after generation.
-  const refreshChildCounts = useCallback(() => {
-    api.pageModuleCounts().then(setChildCounts).catch(() => {});
+  // V2 SURF: refresh the per-page overviews for the portal tiles + AppFrame. One
+  // grouped owner-scoped query; re-fetched on navigation and after generation.
+  // Fetch failure leaves tiles rendering name+icon only — never fabricated data.
+  const refreshOverview = useCallback(() => {
+    api.pagesOverview().then((o) => { setOverviews(o); setNow(Date.now()); }).catch(() => {});
   }, []);
 
   // V2 Pulse: the badge's freshness. One indexed COUNT (approvalCount) — cheap
@@ -425,8 +433,8 @@ export default function Home() {
   // returning to a parent after building in a child).
   useEffect(() => {
     if (!activePageId) return;
-    refreshChildCounts();
-  }, [activePageId, refreshChildCounts]);
+    refreshOverview();
+  }, [activePageId, refreshOverview]);
 
   // V2 Pulse: poll the pending-approval count every 30s (the freshness ceiling
   // for the home badge), skipping while the tab is hidden, plus an immediate
@@ -524,6 +532,33 @@ export default function Home() {
     setActivePageId(id);
     setRefineTarget(null);
   }, []);
+
+  // V2 SURF §6: leaving an app (AppFrame back / breadcrumb) switches to the parent
+  // AND bumps portalReturnReq in the same commit — Canvas plays the reverse zoom
+  // (seed inside the child's tile → animate out to the parent's saved view).
+  const handleBack = useCallback((childId: string, parentId: string) => {
+    setActivePageId(parentId);
+    setRefineTarget(null);
+    setPortalReturnReq((p) => ({ childId, n: (p?.n ?? 0) + 1 }));
+  }, []);
+
+  // V2 SURF (ONB-1): a confirmed structure landed real pages/modules/automations.
+  // Merge the returned pages (they surface as portal tiles), refresh the overview,
+  // frame the new shelf, and honestly report anything the server had to drop.
+  const handleStructureConfirmed = useCallback((res: InsertStructureResponse) => {
+    setPages((prev) => {
+      const byId = new Map(prev.map((p) => [p.id, p]));
+      for (const p of res.pages) byId.set(p.id, p);
+      return Array.from(byId.values());
+    });
+    refreshOverview();
+    window.setTimeout(() => setFitReq((n) => n + 1), 160);
+    if (res.dropped.length > 0) {
+      flashNotice(
+        `Couldn't build ${res.dropped.length} item${res.dropped.length === 1 ? "" : "s"}: ${res.dropped.join(", ")}.`,
+      );
+    }
+  }, [refreshOverview, flashNotice]);
 
   // R-504: dragging a child's portal tile persists its placement on the page row
   // (owner-scoped server-side). Optimistic — the tile stays where the user dropped
@@ -1112,6 +1147,23 @@ export default function Home() {
         <AppearanceMenu />
       </header>
 
+      {/* V2 SURF §7: the in-app frame — shown ONLY inside a child page (an "app"),
+          giving it a back affordance + identity + live status. Root canvas is
+          untouched. */}
+      {activePage?.parent_id && (() => {
+        const parent = pages.find((p) => p.id === activePage.parent_id);
+        if (!parent) return null;
+        return (
+          <AppFrame
+            page={activePage}
+            parent={parent}
+            overview={overviews[activePage.id]}
+            now={now}
+            onBack={() => handleBack(activePage.id, parent.id)}
+          />
+        );
+      })()}
+
       {/* Save-status pill (R-602). Ethos: Geist Mono "machine" register, sentence
           case, restrained — the muted "Saving…" carries no accent (magenta is
           rationed for the one primary action); errors use the muted terracotta
@@ -1170,9 +1222,11 @@ export default function Home() {
         fitRequest={fitReq}
         onSketchPreviews={(configs, plan) => setSketchPreviews({ configs, plan, n: Date.now() })}
         childPages={childPages}
-        childCounts={childCounts}
+        childOverviews={overviews}
+        now={now}
         onEnterPortal={handleSelectPage}
         onPortalMove={handlePortalMove}
+        portalReturnReq={portalReturnReq}
         serverView={serverViewOf(pages.find((p) => p.id === activePageId))}
         onViewSave={handleViewSave}
       />
@@ -1211,6 +1265,7 @@ export default function Home() {
         onAutoPromptConsumed={() => setEntrySubmit(null)}
         sketchPreviews={sketchPreviews}
         onSketchPreviewsConsumed={() => setSketchPreviews(null)}
+        onStructureConfirmed={handleStructureConfirmed}
       />
 
       {convoOpen && (

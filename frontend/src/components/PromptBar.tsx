@@ -2,7 +2,9 @@
 
 import { useEffect, useRef, useState } from "react";
 import { ApiError, api } from "@/lib/api";
-import type { ModuleConfig, StoredModule } from "@/lib/types";
+import type { InsertStructureResponse, ModuleConfig, StoredModule, StructureProposal } from "@/lib/types";
+import { deriveTier, tierLabel } from "@/lib/structure";
+import { resolveIconName, resolvePageAccent } from "@/lib/theme";
 import { appendTranscript, formatElapsed } from "@/lib/voiceRamble";
 import { useVoiceRamble } from "@/lib/useVoiceRamble";
 import { Icon } from "./Icon";
@@ -32,6 +34,9 @@ interface Props {
   // via onSketchPreviewsConsumed so it can never re-fire.
   sketchPreviews?: { configs: ModuleConfig[]; plan: string | null; n: number } | null;
   onSketchPreviewsConsumed?: () => void;
+  // V2 SURF (ONB-1): a confirmed structure landed real pages/modules/automations —
+  // page.tsx merges the returned pages, refreshes overview, and frames the shelf.
+  onStructureConfirmed?: (res: InsertStructureResponse) => void;
 }
 
 interface ExchangeTurnState {
@@ -50,10 +55,14 @@ interface Exchange {
 
 const SKIP_ANSWER = "just build it — use your best judgment";
 
-export function PromptBar({ onModule, activePageId, refineTarget, onRefineModule, onClearRefine, seed, onSeedConsumed, focusSignal, autoPrompt, onAutoPromptConsumed, sketchPreviews, onSketchPreviewsConsumed }: Props) {
+export function PromptBar({ onModule, activePageId, refineTarget, onRefineModule, onClearRefine, seed, onSeedConsumed, focusSignal, autoPrompt, onAutoPromptConsumed, sketchPreviews, onSketchPreviewsConsumed, onStructureConfirmed }: Props) {
   const [prompt, setPrompt] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // V2 SURF (ONB-1): a broad prompt can come back as a multi-page structure — the
+  // proposal card replaces the flat preview stack until confirmed or dismissed.
+  const [structure, setStructure] = useState<StructureProposal | null>(null);
+  const [confirmingStructure, setConfirmingStructure] = useState(false);
   // Clarifying-interview state: when the AI needs one more answer before generating.
   const [exchange, setExchange] = useState<Exchange | null>(null);
   const pendingQuestion = exchange ? exchange.turns[exchange.turns.length - 1].question : null;
@@ -128,7 +137,17 @@ export function PromptBar({ onModule, activePageId, refineTarget, onRefineModule
       setExchange({ original, turns: [...turnsToSend, { question: result.question, answer: "" }] });
       setPrompt("");
       setTimeout(() => inputRef.current?.focus(), 0);
+    } else if (result.structure) {
+      // ONB-1: the interview resolved into a whole structure of surfaces.
+      setStructure(result.structure);
+      setPreviews([]);
+      setPlan(result.structure.plan ?? null);
+      setPreviewExchange(turnsToSend);
+      lastPromptRef.current = original;
+      setPrompt("");
+      setExchange(null);
     } else if (result.previews?.length) {
+      setStructure(null);
       setPreviews(result.previews);
       setPlan(result.plan ?? null);
       // Remember the resolved interview so accepting THIS preview accretes it (R-802).
@@ -150,9 +169,18 @@ export function PromptBar({ onModule, activePageId, refineTarget, onRefineModule
       setExchange({ original: v, turns: [{ question: result.question, answer: "" }] });
       setPrompt("");
       setTimeout(() => inputRef.current?.focus(), 0);
+    } else if (result.structure) {
+      // ONB-1: a broad prompt → a whole structure of surfaces (proposal card).
+      lastPromptRef.current = v;
+      setStructure(result.structure);
+      setPreviews([]);
+      setPlan(result.structure.plan ?? null);
+      setPreviewExchange(null);
+      setPrompt("");
     } else if (result.previews?.length) {
       // Show a preview stack to accept before anything lands on the canvas.
       lastPromptRef.current = v;
+      setStructure(null);
       setPreviews(result.previews);
       setPlan(result.plan ?? null);
       setPreviewExchange(null); // a fresh proposal — no interview to accrete
@@ -182,6 +210,7 @@ export function PromptBar({ onModule, activePageId, refineTarget, onRefineModule
         // refine-join or sent as the answer to a stale question. Clear the
         // interfering state first, then run the default preview path.
         setPreviews([]);
+        setStructure(null);
         setPlan(null);
         setExchange(null);
         setPreviewExchange(null);
@@ -315,6 +344,27 @@ export function PromptBar({ onModule, activePageId, refineTarget, onRefineModule
   const addOne = async (i: number) => { await addConfigs([previews[i]], previewExchange); setPreviews((p) => p.filter((_, idx) => idx !== i)); setPreviewExchange(null); };
   const dismissOne = (i: number) => setPreviews((p) => p.filter((_, idx) => idx !== i));
   const dismissAll = () => { setPreviews([]); setPlan(null); setPreviewExchange(null); };
+
+  // ONB-1: confirm the structure — the server creates real pages/modules/enabled
+  // automations in one transaction and returns what landed. Double-submit is
+  // prevented by disabling Confirm in flight (parity with insert_modules).
+  const confirmStructure = async () => {
+    if (!structure || confirmingStructure) return;
+    setConfirmingStructure(true);
+    setError(null);
+    try {
+      const res = await api.insertStructure(structure, lastPromptRef.current, activePageId, previewExchange ?? undefined);
+      onStructureConfirmed?.(res);
+      setStructure(null);
+      setPlan(null);
+      setPreviewExchange(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Couldn't create these pages.");
+    } finally {
+      setConfirmingStructure(false);
+    }
+  };
+  const dismissStructure = () => { setStructure(null); setPlan(null); setPreviewExchange(null); };
   // Inline edits to a preview (typing into its fields) flow back into the config.
   const updatePreview = (i: number, m: StoredModule) => setPreviews((p) => p.map((c, idx) => (idx === i ? m.config : c)));
 
@@ -352,6 +402,76 @@ export function PromptBar({ onModule, activePageId, refineTarget, onRefineModule
       className="absolute left-1/2 -translate-x-1/2 bottom-6 w-[min(720px,calc(100%-2rem))] z-10"
     >
       <div className="flex flex-col rounded-2xl border border-[var(--border)] bg-[var(--surface)]/95 backdrop-blur shadow-2xl shadow-black/40 overflow-hidden">
+
+        {/* V2 SURF (ONB-1): the structure proposal card — a whole organization of
+            app pages + the agents that run on them. Replaces the flat preview
+            stack. Confirm is the single magenta; Dismiss discards (nothing lands). */}
+        {structure && (
+          <div className="flex flex-col gap-3 px-3 pt-3 pb-1 max-h-[60vh] overflow-y-auto">
+            {(structure.plan || plan) && (
+              <p className="px-1 text-xs text-[var(--muted)] leading-relaxed">{structure.plan ?? plan}</p>
+            )}
+            <div className="flex items-center gap-2 px-1">
+              <span className="text-[10px] uppercase tracking-wide text-[var(--muted)] font-mono">
+                Creates {structure.pages.length} app page{structure.pages.length === 1 ? "" : "s"} on your canvas
+              </span>
+              <button type="button" onClick={confirmStructure} disabled={confirmingStructure}
+                className="ml-auto rounded-md bg-[var(--accent)] text-[var(--accent-fg)] px-2.5 py-1 text-xs font-medium hover:brightness-110 transition disabled:opacity-40 disabled:cursor-not-allowed">
+                {confirmingStructure ? "Creating…" : "Confirm"}
+              </button>
+              <button type="button" onClick={dismissStructure}
+                className="text-xs text-[var(--muted)] hover:text-[var(--foreground)] transition">Dismiss</button>
+            </div>
+
+            <div className="flex flex-col gap-1.5">
+              {structure.pages.map((pg, i) => {
+                const theme = resolvePageAccent(pg.accent, pg.name);
+                return (
+                  <div key={i} className="flex items-center gap-2.5 rounded-lg border border-[var(--border)] bg-[var(--surface-elevated)] px-3 py-2">
+                    <span className="grid place-items-center w-7 h-7 shrink-0 rounded-md"
+                      style={{ background: `color-mix(in srgb, ${theme.accent} 20%, transparent)`, color: theme.accent }}>
+                      <Icon name={resolveIconName(pg.icon, pg.name)} size={15} />
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block text-sm font-medium truncate">{pg.name}</span>
+                      {pg.purpose && <span className="block text-xs text-[var(--muted)] truncate">{pg.purpose}</span>}
+                    </span>
+                    <span className="shrink-0 font-mono text-[10px] text-[var(--muted)]">
+                      {pg.modules.length} tool{pg.modules.length === 1 ? "" : "s"}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+
+            {structure.automations.length > 0 && (
+              <div className="flex flex-col gap-1.5">
+                <span className="px-1 text-[10px] uppercase tracking-wide text-[var(--muted)] font-mono">Agents</span>
+                {structure.automations.map((a, i) => {
+                  const tier = deriveTier(a.action_type);
+                  return (
+                    <div key={i} className="flex flex-col gap-1 rounded-lg border border-[var(--border)] bg-[var(--surface-elevated)] px-3 py-2">
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-medium flex-1 min-w-0 truncate">{a.name}</span>
+                        <span className={`shrink-0 font-mono text-[9px] uppercase tracking-wide rounded px-1.5 py-0.5 ${
+                          tier === "autonomous"
+                            ? "bg-[var(--surface)] text-[var(--muted)]"
+                            : "border border-[var(--status-hold)] text-[var(--status-hold)]"
+                        }`}>
+                          {tierLabel(tier)}
+                        </span>
+                      </div>
+                      {a.description && <p className="text-xs text-[var(--muted)] leading-relaxed">{a.description}</p>}
+                      <span className="font-mono text-[10px] text-[var(--muted)]">
+                        {a.schedule ? `runs ${a.schedule} once created` : "runs on its schedule once created"}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
 
         {previews.length > 0 && (
           <div className="flex flex-col gap-3 px-3 pt-3 pb-1 max-h-[60vh] overflow-y-auto">
