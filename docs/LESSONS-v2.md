@@ -42,3 +42,25 @@ already records (STATUS.md, plans, CLAUDE.md).
 
 - **Zoom clamp [0.3, 2] is duplicated** in Canvas.tsx:166 AND lib/viewPersist.ts:21
   — change both or neither.
+
+- **The status palette only had terracotta + sage; "held/needs-tap" needed a
+  third.** The Pulse design calls for amber on `held`/`skipped` journal rows and
+  the "needs your tap" header, but globals.css had no amber token (only
+  `--status-err`/`--status-ok`). Added `--status-hold` (#cf9f52, muted amber) +
+  `--status-hold-dim` in the `:root` ethos block, same muted family as the other
+  two (never neon). Reach for it for any future "pending your attention" state so
+  it stays distinct from `failed` (terracotta). `--gray-mid` is the "dim gray"
+  used for `expired` — a step below `--muted`.
+
+- **Pulse rows construct-in via `lib/useAssembly.ts`, not a bespoke gate.** It
+  wraps `runAssembly` with the exact reduced-motion gate from Module.tsx:102-111.
+  `runAssembly` skips whichever `data-assembly` beats a row omits, so a card only
+  needs the scaffold it renders (ApprovalCard/AutomationRow carry border-svg +
+  scan; ActivityRow is lighter — label + body only, calmer for a dense feed).
+
+- **`Date.now()` in render trips `react-hooks/purity`.** For relative-time
+  registers, capture the clock once with a lazy `useState(() => Date.now())` in
+  the panel and pass `now` down as a prop — children stay pure and every "ago"
+  reads consistently as of panel-open. (Backend endpoints for a surface may not
+  exist yet while building the frontend — build to the contract; `npm run build`
+  is static, it never hits the server.)
