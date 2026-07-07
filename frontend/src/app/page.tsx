@@ -7,6 +7,7 @@ import { ConversationPanel } from "@/components/ConversationPanel";
 import { ArchivedPanel } from "@/components/ArchivedPanel";
 import { SnapshotsPanel } from "@/components/SnapshotsPanel";
 import { ProfilePanel } from "@/components/ProfilePanel";
+import { SharePanel } from "@/components/SharePanel";
 import { ActivityPanel } from "@/components/ActivityPanel";
 import { ApprovalBadge } from "@/components/ApprovalBadge";
 import { Inspector } from "@/components/Inspector";
@@ -121,6 +122,11 @@ export default function Home() {
   // focus and after any panel mutation.
   const [activityOpen, setActivityOpen] = useState(false);
   const [pendingCount, setPendingCount] = useState(0);
+  // Per-surface sharing (SHARE-1..3). `shareOpen` toggles the SharePanel (joins
+  // the mutually-exclusive right-aside set); `shareActive` drives the always-
+  // visible header pip — refreshed on page change and lifted from the panel.
+  const [shareOpen, setShareOpen] = useState(false);
+  const [shareActive, setShareActive] = useState(false);
   // R-1102: page delete is the most destructive action (cascades every module
   // on the page) — always confirmed, stating the module count. Holds the page
   // plus its real module ids: `modules` state only covers the ACTIVE page,
@@ -504,6 +510,7 @@ export default function Home() {
     setSnapshotsOpen(false);
     setProfileOpen(false);
     setActivityOpen(false);
+    setShareOpen(false);
   }, []);
 
   const handleRefinedModule = useCallback((updated: StoredModule) => {
@@ -714,6 +721,7 @@ export default function Home() {
     setSnapshotsOpen(false);
     setProfileOpen(false);
     setActivityOpen(false);
+    setShareOpen(false);
     try { setArchived(await api.listArchived()); } catch { setArchived([]); }
     setArchivedOpen(true);
   }, []);
@@ -742,6 +750,7 @@ export default function Home() {
     setArchivedOpen(false);
     setProfileOpen(false);
     setActivityOpen(false);
+    setShareOpen(false);
     try { setSnapshots(await api.listSnapshots(activePageId)); } catch { setSnapshots([]); }
     setSnapshotsOpen(true);
   }, [activePageId]);
@@ -755,6 +764,7 @@ export default function Home() {
     setArchivedOpen(false);
     setSnapshotsOpen(false);
     setActivityOpen(false);
+    setShareOpen(false);
     setProfileOpen(true);
   }, []);
 
@@ -769,8 +779,32 @@ export default function Home() {
     setArchivedOpen(false);
     setSnapshotsOpen(false);
     setProfileOpen(false);
+    setShareOpen(false);
     setActivityOpen(true);
   }, []);
+
+  // Share opens like the other right-hand panels (mutually exclusive). The panel
+  // fetches its own status on mount, so this just clears selection and closes the
+  // siblings.
+  const openShare = useCallback(() => {
+    setSelectedId(null);
+    setInspectorId(null);
+    setConvoOpen(false);
+    setArchivedOpen(false);
+    setSnapshotsOpen(false);
+    setProfileOpen(false);
+    setActivityOpen(false);
+    setShareOpen(true);
+  }, []);
+
+  // SHARE-2: the always-visible share state. Re-check on every page change (and
+  // on first resolve); the panel lifts subsequent changes via onStateChange so
+  // the pip stays in sync without a re-fetch. A pre-share page or unreachable
+  // endpoint reads as not-shared.
+  useEffect(() => {
+    if (!activePageId) { setShareActive(false); return; }
+    api.shareStatus(activePageId).then((s) => setShareActive(s.active)).catch(() => setShareActive(false));
+  }, [activePageId]);
 
   // A journal deep-link was tapped: close Pulse and go to what the automation
   // touched — focus the module if it's on this page, else switch to its page
@@ -835,6 +869,7 @@ export default function Home() {
     setConvoOpen(false);
     setArchivedOpen(false);
     setActivityOpen(false);
+    setShareOpen(false);
     if (m.page_id && m.page_id !== activePageId) {
       pendingFocusRef.current = m.id; // applied once the page's modules load
       setActivePageId(m.page_id);
@@ -870,7 +905,7 @@ export default function Home() {
       if (mod && e.key === "/") { e.preventDefault(); setPromptFocus((n) => n + 1); return; }
       if (mod && e.key.toLowerCase() === "d" && selectedId) { e.preventDefault(); handleDuplicateModule(selectedId); return; }
       if (mod && e.key.toLowerCase() === "z" && selectedId && !typing) { e.preventDefault(); handleUndoModule(selectedId); return; }
-      if (e.key === "Escape") { setCmdOpen(false); setShortcutsOpen(false); setArchivedOpen(false); setSnapshotsOpen(false); setProfileOpen(false); setActivityOpen(false); setDetailId(null); setSelectedId(null); setInspectorId(null); setConvoOpen(false); return; }
+      if (e.key === "Escape") { setCmdOpen(false); setShortcutsOpen(false); setArchivedOpen(false); setSnapshotsOpen(false); setProfileOpen(false); setActivityOpen(false); setShareOpen(false); setDetailId(null); setSelectedId(null); setInspectorId(null); setConvoOpen(false); return; }
       if (!typing && !mod) {
         if (e.key === "?" || (e.shiftKey && e.key === "/")) setShortcutsOpen(true);
         else if (e.key.toLowerCase() === "f") setFitReq((n) => n + 1);
@@ -970,6 +1005,30 @@ export default function Home() {
             </span>
           ))}
           <span className="hidden lg:inline text-xs text-[var(--muted)] ml-1 shrink-0">· {statusText}</span>
+          {activePageId && (
+            <button
+              type="button"
+              onClick={() => (shareOpen ? setShareOpen(false) : openShare())}
+              className={`shrink-0 ml-1 flex items-center justify-center w-6 h-6 rounded-md border transition ${
+                shareOpen
+                  ? "border-[var(--accent)] text-[var(--foreground)]"
+                  : "border-transparent text-[var(--muted)] hover:text-[var(--foreground)]"
+              }`}
+              title="Share this surface (read-only link)"
+              aria-label="Share this surface"
+            >
+              <Icon name="link" size={14} />
+            </button>
+          )}
+          {/* SHARE-2: always-visible state — muted mono, never the magenta accent. */}
+          {shareActive && (
+            <span
+              className="shrink-0 text-[10px] font-mono uppercase tracking-wide text-[var(--muted)] rounded border border-[var(--border)] px-1.5 py-0.5"
+              title="A read-only share link is active"
+            >
+              Shared
+            </span>
+          )}
         </div>
 
         <div className="flex-1 flex justify-center px-2 min-w-0">
@@ -991,7 +1050,7 @@ export default function Home() {
 
         <button
           type="button"
-          onClick={() => setConvoOpen((v) => { const n = !v; if (n) { setSelectedId(null); setInspectorId(null); setArchivedOpen(false); setSnapshotsOpen(false); setProfileOpen(false); setActivityOpen(false); } return n; })}
+          onClick={() => setConvoOpen((v) => { const n = !v; if (n) { setSelectedId(null); setInspectorId(null); setArchivedOpen(false); setSnapshotsOpen(false); setProfileOpen(false); setActivityOpen(false); setShareOpen(false); } return n; })}
           className={`shrink-0 flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs transition ${
             convoOpen
               ? "border-[var(--accent)] text-[var(--foreground)]"
@@ -1098,8 +1157,8 @@ export default function Home() {
         modules={activeModules}
         activePageId={activePageId ?? undefined}
         selectedId={selectedId}
-        onModuleSelect={(id) => { setSelectedId(id); setInspectorId(null); if (id) { setConvoOpen(false); setArchivedOpen(false); setSnapshotsOpen(false); setProfileOpen(false); setActivityOpen(false); } }}
-        onModuleEdit={(id) => { setSelectedId(id); setInspectorId(id); setConvoOpen(false); setArchivedOpen(false); setSnapshotsOpen(false); setProfileOpen(false); setActivityOpen(false); }}
+        onModuleSelect={(id) => { setSelectedId(id); setInspectorId(null); if (id) { setConvoOpen(false); setArchivedOpen(false); setSnapshotsOpen(false); setProfileOpen(false); setActivityOpen(false); setShareOpen(false); } }}
+        onModuleEdit={(id) => { setSelectedId(id); setInspectorId(id); setConvoOpen(false); setArchivedOpen(false); setSnapshotsOpen(false); setProfileOpen(false); setActivityOpen(false); setShareOpen(false); }}
         onModuleExpand={handleExpand}
         onModuleChange={handleModuleChange}
         onModuleCommit={commitModule}
@@ -1211,6 +1270,14 @@ export default function Home() {
       )}
 
       {profileOpen && <ProfilePanel onClose={() => setProfileOpen(false)} />}
+
+      {shareOpen && activePageId && (
+        <SharePanel
+          pageId={activePageId}
+          onClose={() => setShareOpen(false)}
+          onStateChange={setShareActive}
+        />
+      )}
 
       {activityOpen && (
         <ActivityPanel

@@ -65,7 +65,7 @@ interface Props {
   onDragStart: (e: React.PointerEvent, moduleId: string) => void;
   onResizeStart: (e: React.PointerEvent, moduleId: string) => void;
   onExpand?: (id: string) => void;
-  variant?: "canvas" | "detail" | "preview";
+  variant?: "canvas" | "detail" | "preview" | "shared";
   index?: number;
   onMeasure?: (id: string, height: number) => void;
 }
@@ -77,6 +77,10 @@ export function Module({
 }: Props) {
   const isCanvas = variant === "canvas";
   const preview = variant === "preview";
+  // Read-only public share view: edits are structurally inert (setField early
+  // return, below) AND the fields sit in a disabled fieldset (a11y-honest, out of
+  // tab order); the header action cluster is gone too (DESIGN-sharing §4d).
+  const shared = variant === "shared";
   // Single source of truth: render straight from module.config.state. The parent
   // updates it optimistically on every commit (R-601), so there is no local
   // mirror to fall out of sync and revert keystrokes (R-602).
@@ -112,6 +116,9 @@ export function Module({
 
   const setField = useCallback(
     (id: string, value: unknown) => {
+      // Shared view is read-only: swallow every write before it can reach the
+      // host — covers all primitives AND the button-action dispatcher below.
+      if (shared) return;
       // Apply the field write (+ any "increment" automation it fires) to a
       // config. Canvas/detail pass this as an UPDATER so the merge runs against
       // the freshest config inside the parent's state update — two same-tick
@@ -133,7 +140,7 @@ export function Module({
       if (preview) onChange?.({ ...module, config: apply(module.config) });
       else onCommit?.(module.id, apply);
     },
-    [module, preview, onChange, onCommit],
+    [module, preview, shared, onChange, onCommit],
   );
 
   const renderComponent = (c: Component) => {
@@ -394,7 +401,7 @@ export function Module({
           {title}
         </h3>
 
-        {!preview && (
+        {!preview && !shared && (
           <>
             <button type="button" onClick={() => onUndo(module.id)} className={iconBtn}
               aria-label="Undo last change" title="Undo last change"><Icon name="undo" size={14} /></button>
@@ -420,23 +427,28 @@ export function Module({
         <div data-assembly="body" className={twoCol
           ? "grid grid-cols-2 gap-[var(--mod-gap)] p-[var(--mod-pad)] items-start"
           : "flex flex-col p-[var(--mod-pad)] gap-[var(--mod-gap)]"}>
-          {components.map((c) => {
-            const inner = flagged.has(c.id) ? (
-              <div className="rounded-lg ring-1 ring-[var(--danger)] bg-[var(--danger)]/5 p-2">
-                <div className="flex items-center gap-1 text-[10px] text-[var(--danger)] mb-1">⚠ flagged</div>
-                {renderComponent(c)}
-              </div>
-            ) : renderComponent(c);
-            const wide = c.span === "full" || (c.span !== "half" && WIDE_TYPES.has(c.type));
-            return (
-              <div key={c.id} className={`min-w-0 ${twoCol && wide ? "col-span-2" : ""}`}>
-                {inner}
-              </div>
-            );
-          })}
-          {components.length === 0 && (
-            <p className="text-xs text-[var(--muted)] italic col-span-2">No fields yet — open the inspector to add some.</p>
-          )}
+          {/* `contents` keeps the fieldset layout-neutral (canvas/detail/preview
+              unchanged); on the shared view `disabled` takes every native control
+              out of tab order and inert — honest read-only, not pointer theater. */}
+          <fieldset disabled={shared} className="contents">
+            {components.map((c) => {
+              const inner = flagged.has(c.id) ? (
+                <div className="rounded-lg ring-1 ring-[var(--danger)] bg-[var(--danger)]/5 p-2">
+                  <div className="flex items-center gap-1 text-[10px] text-[var(--danger)] mb-1">⚠ flagged</div>
+                  {renderComponent(c)}
+                </div>
+              ) : renderComponent(c);
+              const wide = c.span === "full" || (c.span !== "half" && WIDE_TYPES.has(c.type));
+              return (
+                <div key={c.id} className={`min-w-0 ${twoCol && wide ? "col-span-2" : ""}`}>
+                  {inner}
+                </div>
+              );
+            })}
+            {components.length === 0 && (
+              <p className="text-xs text-[var(--muted)] italic col-span-2">No fields yet — open the inspector to add some.</p>
+            )}
+          </fieldset>
         </div>
       )}
     </div>

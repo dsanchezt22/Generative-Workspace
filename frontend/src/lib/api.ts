@@ -1,4 +1,4 @@
-import type { ActivityEntry, ApprovalOut, AutomationCreate, AutomationOut, AutomationPatch, DataSource, LiveValuePayload, Message, ModuleConfig, Page, ProfileKind, Snapshot, StoredModule, StudioLayout, StudioUseCase, UserProfileEntry } from "./types";
+import type { ActivityEntry, ApprovalOut, AutomationCreate, AutomationOut, AutomationPatch, DataSource, LiveValuePayload, Message, ModuleConfig, Page, ProfileKind, ShareStatus, SharedPageResponse, Snapshot, StoredModule, StudioLayout, StudioUseCase, UserProfileEntry } from "./types";
 import { buildLiveQueryParams } from "./liveFormat";
 
 const BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";
@@ -290,6 +290,16 @@ export const api = {
     request<void>(`/api/snapshots/${id}/restore`, { method: "POST" }),
   deleteSnapshot: (id: string) =>
     request<void>(`/api/snapshots/${id}`, { method: "DELETE" }),
+
+  // Per-surface read-only sharing (SHARE-1..3). The three management calls are
+  // owner-gated by the session cookie request() already sends; POST is
+  // create-or-rotate (one active link per page). fetchShared is the public read
+  // path — request() sends the cookie but the handler ignores it (sessionless).
+  shareStatus: (pageId: string) => request<ShareStatus>(`/api/pages/${pageId}/share`),
+  shareCreate: (pageId: string) => request<ShareStatus>(`/api/pages/${pageId}/share`, { method: "POST" }),
+  shareRevoke: (pageId: string) => request<void>(`/api/pages/${pageId}/share`, { method: "DELETE" }),
+  fetchShared: (token: string) => request<SharedPageResponse>(`/api/share/${encodeURIComponent(token)}`),
+
   listConversation: (pageId?: string) =>
     request<Message[]>(`/api/conversations${pageId ? `?page_id=${pageId}` : ""}`),
   clearConversation: (pageId?: string) =>

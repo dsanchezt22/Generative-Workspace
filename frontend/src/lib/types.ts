@@ -271,6 +271,24 @@ export interface StoredModule {
   rev: number;
 }
 
+// Per-surface read-only sharing (SHARE-1..3). Additive, whitelisted shapes —
+// the public payload never carries session/owner/page ids, rev, or archived rows
+// (see DESIGN-sharing §2). `data_source` is stripped server-side before delivery.
+export interface ShareStatus {
+  active: boolean;
+  token: string | null;
+  created_at: string | null;
+}
+export interface SharedModule {
+  id: string;
+  config: ModuleConfig;
+  updated_at: string;
+}
+export interface SharedPageResponse {
+  page: { name: string; icon: string | null };
+  modules: SharedModule[];
+}
+
 // A functional commit: the next config is derived from the CURRENT one inside
 // the parent's state update, so same-tick edits chain off fresh state rather
 // than a stale props snapshot (R-602 same-tick hardening).
