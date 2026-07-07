@@ -138,6 +138,15 @@ describe("approvalReducer — optimistic approve/reject", () => {
     expect(state.approvals).toHaveLength(1); // still present, honest in-place failure
   });
 
+  it("activity/prepend adds a run-now result to the feed, deduping repeats", () => {
+    let state = withApprovals("a");
+    state = approvalReducer(state, { type: "activity/prepend", entry: entry("ran-1", "ran") });
+    expect(state.activity[0].id).toBe("ran-1");
+    state = approvalReducer(state, { type: "activity/prepend", entry: entry("ran-1", "ran") });
+    expect(state.activity.filter((e) => e.id === "ran-1")).toHaveLength(1);
+    expect(state.approvals).toHaveLength(1); // untouched
+  });
+
   it("refetch/clear lowers the flag once the panel has re-synced", () => {
     let state = approvalReducer(withApprovals("a"), { type: "decision/conflict", id: "a" });
     state = approvalReducer(state, { type: "refetch/clear" });

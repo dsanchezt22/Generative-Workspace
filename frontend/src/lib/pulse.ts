@@ -89,6 +89,7 @@ export interface PulseState {
 export type PulseAction =
   | { type: "approvals/loaded"; approvals: ApprovalOut[] }
   | { type: "activity/loaded"; entries: ActivityEntry[]; append: boolean }
+  | { type: "activity/prepend"; entry: ActivityEntry } // a run-now that executed
   | { type: "decision/submit"; id: string; mode: "approve" | "reject" }
   | { type: "decision/success"; id: string; activity: ActivityEntry }
   | { type: "decision/conflict"; id: string }
@@ -121,6 +122,13 @@ export function approvalReducer(state: PulseState, action: PulseAction): PulseSt
         activity: dedupeById(merged),
         activityDone: action.entries.length < ACTIVITY_PAGE,
       };
+    }
+
+    case "activity/prepend": {
+      const activity = state.activity.some((e) => e.id === action.entry.id)
+        ? state.activity
+        : [action.entry, ...state.activity];
+      return { ...state, activity };
     }
 
     case "decision/submit":
