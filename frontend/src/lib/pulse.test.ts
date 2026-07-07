@@ -4,6 +4,8 @@ import {
   ACTIVITY_KINDS,
   ACTIVITY_PAGE,
   approvalReducer,
+  EXPIRES_URGENT_MS,
+  expiresRegister,
   initialPulseState,
   kindRegister,
   relativeTime,
@@ -91,6 +93,35 @@ describe("relativeTime — injected clock, no fabrication", () => {
 
   it("returns '' for an unparseable timestamp (no fabricated time)", () => {
     expect(relativeTime("not-a-date", now)).toBe("");
+  });
+});
+
+// ── expiresRegister ─────────────────────────────────────────────────────────
+describe("expiresRegister — nearing-expiry escalation, injected clock", () => {
+  const now = Date.parse("2026-07-06T12:00:00Z");
+  const inMs = (ms: number) => new Date(now + ms).toISOString();
+
+  it("phrases the remaining window in days/hours/soon, not urgent when far off", () => {
+    expect(expiresRegister(inMs(3 * 86_400_000), now)).toEqual({ text: "expires in 3d", urgent: false });
+    expect(expiresRegister(inMs(10 * 3_600_000), now)).toEqual({ text: "expires in 10h", urgent: false });
+  });
+
+  it("flips urgent within the escalation window so the card can go amber", () => {
+    const r = expiresRegister(inMs(EXPIRES_URGENT_MS - 60_000), now);
+    expect(r.urgent).toBe(true);
+    expect(r.text).toBe("expires in 5h");
+  });
+
+  it("sub-hour reads 'expires soon' and is urgent", () => {
+    expect(expiresRegister(inMs(30 * 60_000), now)).toEqual({ text: "expires soon", urgent: true });
+  });
+
+  it("a past deadline reads 'expired' and is urgent", () => {
+    expect(expiresRegister(inMs(-1000), now)).toEqual({ text: "expired", urgent: true });
+  });
+
+  it("returns empty + not-urgent for an unparseable timestamp (no fabricated countdown)", () => {
+    expect(expiresRegister("not-a-date", now)).toEqual({ text: "", urgent: false });
   });
 });
 

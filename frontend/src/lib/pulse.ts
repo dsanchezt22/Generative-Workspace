@@ -62,6 +62,27 @@ export function relativeTime(iso: string, now: number): string {
   return `${Math.floor(diff / WEEK)}w ago`;
 }
 
+// ── Expiry register ────────────────────────────────────────────────────────
+// A parked consequential fire silently expires if the owner never taps. There's
+// no push/email channel on a single-machine build, so the only honest escalation
+// is heightened prominence in the surface the owner already looks at: within
+// EXPIRES_URGENT_MS of the frozen server deadline, `urgent` flips true so the
+// card can move the register from muted grey into the amber "needs your tap"
+// channel. `now` is injected (ms epoch) for deterministic tests; an unparseable
+// iso returns "" (no fabricated countdown). Never re-reads the clock.
+export const EXPIRES_URGENT_MS = 6 * HOUR;
+
+export function expiresRegister(iso: string, now: number): { text: string; urgent: boolean } {
+  const t = Date.parse(iso);
+  if (Number.isNaN(t)) return { text: "", urgent: false };
+  const diff = t - now;
+  if (diff <= 0) return { text: "expired", urgent: true };
+  const urgent = diff <= EXPIRES_URGENT_MS;
+  if (diff < HOUR) return { text: "expires soon", urgent };
+  if (diff < DAY) return { text: `expires in ${Math.floor(diff / HOUR)}h`, urgent };
+  return { text: `expires in ${Math.floor(diff / DAY)}d`, urgent };
+}
+
 // ── Optimistic approve/reject flow ─────────────────────────────────────────
 // The panel's single store for the two live lists. All mutations flow through
 // this reducer so the optimistic tap flow is one tested seam:

@@ -229,6 +229,18 @@ already records (STATUS.md, plans, CLAUDE.md).
   outcome; only a hard process death leaves it set, and Scheduler.start()
   reconciles those into one honest 'failed' row. Don't add it to AutomationOut.
 
+- **Nearing-expiry approvals escalate via amber prominence, not a channel.** A
+  parked consequential fire silently expires if the owner never taps, and a
+  single-machine build has no push/email channel — so `lib/pulse.ts`'s
+  `expiresRegister(iso, now)` returns `{text, urgent}` and flips `urgent` within
+  `EXPIRES_URGENT_MS` (6h) of the frozen deadline; ApprovalCard then moves the
+  register from `--muted` into the `--status-hold` amber "needs your tap"
+  channel. The honest escalation is heightened prominence in the surface the
+  owner already looks at, plus the `expired_summary` "Expired unanswered: …"
+  journal row on next open. Real notification/step-up-auth is a connector-
+  milestone item (there's nothing irreversible to guard while the executors are
+  stubbed). Keep the helper pure (injected `now`) so it stays testable.
+
 - **Per-item primary is a documented exception to one-magenta-per-screen.** With
   N pending approvals the Pulse panel shows N filled-magenta Approve buttons (one
   per card). Reviewed against DESIGN-ETHOS §2.4 and accepted deliberately: Approve

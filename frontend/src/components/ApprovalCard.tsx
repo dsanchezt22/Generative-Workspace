@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import type { ApprovalItem } from "@/lib/pulse";
+import { expiresRegister, type ApprovalItem } from "@/lib/pulse";
 import { useAssembly } from "@/lib/useAssembly";
 
 interface Props {
@@ -11,19 +11,6 @@ interface Props {
   // The panel's open-time clock (captured once) — keeps this component pure.
   now: number;
   index: number;
-}
-
-// EXPIRES register — muted, honest. Frozen expiry from the server; we only
-// phrase the remaining window ("expires in 2d" / "expires soon" / "expired").
-function expiresRegister(iso: string, now: number): string {
-  const t = Date.parse(iso);
-  if (Number.isNaN(t)) return "";
-  const diff = t - now;
-  if (diff <= 0) return "expired";
-  const hours = diff / 3_600_000;
-  if (hours < 1) return "expires soon";
-  if (hours < 24) return `expires in ${Math.floor(hours)}h`;
-  return `expires in ${Math.floor(hours / 24)}d`;
 }
 
 // A parked consequential fire, waiting for the owner's tap. Shows the frozen
@@ -78,9 +65,12 @@ export function ApprovalCard({ item, onApprove, onDismiss, now, index }: Props) 
           <span className="font-mono text-[10px] uppercase tracking-wide text-[var(--muted)] rounded bg-[var(--surface)] border border-[var(--border)] px-1.5 py-0.5">
             {approval.action_type}
           </span>
-          {expires && (
-            <span className="font-mono text-[10px] uppercase tracking-wide text-[var(--muted)]">
-              {expires}
+          {expires.text && (
+            <span
+              className="font-mono text-[10px] uppercase tracking-wide"
+              style={{ color: expires.urgent ? "var(--status-hold)" : "var(--muted)" }}
+            >
+              {expires.text}
             </span>
           )}
           {preview && (

@@ -141,7 +141,11 @@ all of it landed:
   in-app override, structure-card construct-in, single-magenta in every screen
   state, TrustDial ARIA keyboard contract + honest dial-2 copy, share-page
   `Referrer-Policy`/`X-Robots-Tag` headers); two standing invariants written
-  into VISION-DOD itself.
+  into VISION-DOD itself; and the nearing-expiry approval escalation (an amber
+  `--status-hold` "expires soon" register within 6h of a parked action's frozen
+  deadline — the honest single-machine substitute for a push/email channel,
+  since nothing irreversible actually fires while the executors are stubbed).
+  That closes the council's last remaining act-now item.
 - **Re-proofs at `fe19d79`:** RUN-1 re-proven with zero HTTP (backdated
   `next_run_at` directly in SQLite; the thread claimed, executed, journaled
   `ran`, rescheduled). The 24-check integration smoke passes end-to-end on the
