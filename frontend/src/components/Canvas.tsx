@@ -1,9 +1,9 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { gsap } from "gsap";
 import { api, ApiError } from "@/lib/api";
-import type { CommitModule, ModuleConfig, Page, StoredModule } from "@/lib/types";
-import { resolveIconName } from "@/lib/theme";
+import type { CommitModule, ModuleConfig, Page, PageOverview, StoredModule } from "@/lib/types";
 import {
   rasterScale,
   screenToWorld,
@@ -19,11 +19,17 @@ import {
   pointerMidpoint,
   zoomTowardPoint,
 } from "@/lib/pinchZoom";
-import { PORTAL_H, PORTAL_W, portalPosition } from "@/lib/portalLayout";
+import { launchTargetView, PORTAL_H, PORTAL_W, portalPosition, type PortalPoint } from "@/lib/portalLayout";
 import { crossModuleValues } from "@/lib/crossModule";
 import { resolveInitialView, viewChanged, type ViewState } from "@/lib/viewPersist";
 import { Icon } from "./Icon";
 import { Module } from "./Module";
+import { PortalTile } from "./PortalTile";
+
+// SURF §6: honour reduced motion — the zoom-launch (both directions) collapses
+// to today's instant page swap, a complete static end state (ETHOS-3).
+const prefersReducedMotion = () =>
+  typeof window !== "undefined" && !!window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
 
 // R-221: the sketch snap's interpretation instruction, sent as the `hint` the
 // backend folds into the vision model's message (bounded server-side to ~200).
@@ -68,14 +74,19 @@ interface Props {
   // Canvas renders without it (the Sketch toggle simply won't reach generation).
   onSketchPreviews?: (configs: ModuleConfig[], plan: string | null) => void;
   // R-502/R-504: child pages (parent_id === activePageId) render as enterable
-  // world-coord portal tiles BELOW the module layer. `childCounts` feeds each
-  // tile's cheap "N tools" preview; enter switches to that page; a drag persists
-  // the tile's placement (portal_x/portal_y). All optional so Canvas renders
-  // without portal wiring.
+  // world-coord portal tiles BELOW the module layer. `childOverviews` (keyed by
+  // page id) feeds each tile's status line (modules/agents/last run); entering
+  // LAUNCHES via the zoom tween (SURF §6); a drag persists the tile's placement
+  // (portal_x/portal_y). All optional so Canvas renders without portal wiring.
   childPages?: Page[];
-  childCounts?: Record<string, number>;
+  childOverviews?: Record<string, PageOverview>;
   onEnterPortal?: (pageId: string) => void;
   onPortalMove?: (pageId: string, x: number, y: number) => void;
+  // SURF §6: a breadcrumb/AppFrame "back" bumps this counter → the reverse tween
+  // seeds the view inside the child's tile and animates out to the parent view.
+  portalReturnReq?: { childId: string; n: number };
+  // Open-time clock for the tiles' relative "agent ran …" (kept out of render).
+  now?: number;
   // R-504 completion: the active page's server-saved viewport (null when it has
   // none) and the debounced persist callback — pan/zoom resumes cross-device.
   // Optional so Canvas renders without the wiring (localStorage still applies).
@@ -106,15 +117,33 @@ export function Canvas({
   fitRequest,
   onSketchPreviews,
   childPages,
-  childCounts,
+  childOverviews,
   onEnterPortal,
   onPortalMove,
+  portalReturnReq,
+  now = 0,
   serverView,
   onViewSave,
 }: Props) {
   const [view, setView] = useState<View>({ x: 0, y: 0, zoom: 1 });
   const [draggingModule, setDraggingModule] = useState<string | null>(null);
   const [showMiniMap, setShowMiniMap] = useState(false);
+  // SURF §6: zoom-in-is-launching. `launchingRef` guards re-entrancy (a
+  // double-click can't double-enter) AND suppresses the debounced view save so
+  // mid-tween frames never PATCH the parent's viewport. `scrim` is a dim overlay
+  // that fades in over the last beat to mask the hard page swap.
+  const launchingRef = useRef(false);
+  const launchTweenRef = useRef<gsap.core.Tween | null>(null);
+  const launchTargetPageRef = useRef<string | null>(null);
+  const launchPortalRef = useRef<((pageId: string, pos: PortalPoint) => void) | null>(null);
+  const [scrim, setScrim] = useState(false);
+  // Latched portal props — declared here (before the pointer/wheel handlers that
+  // read onEnterPortalRef in the launch-interrupt path) so the window-scoped up
+  // handler and interrupts never fire a stale callback.
+  const onEnterPortalRef = useRef(onEnterPortal);
+  const onPortalMoveRef = useRef(onPortalMove);
+  useEffect(() => { onEnterPortalRef.current = onEnterPortal; }, [onEnterPortal]);
+  useEffect(() => { onPortalMoveRef.current = onPortalMove; }, [onPortalMove]);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const panRef = useRef<{ x: number; y: number; vx: number; vy: number } | null>(
     null,
@@ -142,6 +171,14 @@ export function Canvas({
 
   const onPointerDown = useCallback(
     (e: React.PointerEvent) => {
+      // SURF §6 interrupt: a pointer down mid-launch kills the tween and enters
+      // immediately — never strand a half-zoomed parent.
+      if (launchingRef.current) {
+        launchTweenRef.current?.kill();
+        launchingRef.current = false;
+        if (launchTargetPageRef.current) onEnterPortalRef.current?.(launchTargetPageRef.current);
+        return;
+      }
       if (e.target !== e.currentTarget) return;
       (e.currentTarget as Element).setPointerCapture(e.pointerId);
       activePointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
@@ -205,6 +242,13 @@ export function Canvas({
   }, []);
 
   const onWheel = useCallback((e: React.WheelEvent) => {
+    // SURF §6 interrupt: a zoom gesture mid-launch kills the tween and enters.
+    if (launchingRef.current) {
+      launchTweenRef.current?.kill();
+      launchingRef.current = false;
+      if (launchTargetPageRef.current) onEnterPortalRef.current?.(launchTargetPageRef.current);
+      return;
+    }
     if (!e.ctrlKey && !e.metaKey) return;
     e.preventDefault();
     const factor = Math.exp(-e.deltaY * 0.0015);
@@ -248,6 +292,7 @@ export function Canvas({
   useEffect(() => {
     currentPageRef.current = activePageId;
     if (!activePageId) return;
+    setScrim(false); // SURF §6 arrival: reveal the freshly-swapped page
     let raw: string | null = null;
     try { raw = localStorage.getItem(`trus-view-${activePageId}`); } catch {}
     const v = resolveInitialView(serverViewRef.current ?? null, raw);
@@ -257,6 +302,9 @@ export function Canvas({
   useEffect(() => {
     const pid = currentPageRef.current;
     if (!pid) return;
+    // SURF §6: mid-launch tween frames must never write localStorage or PATCH
+    // the parent's saved viewport (the zoomed-into-tile view isn't a real edit).
+    if (launchingRef.current) return;
     const t = setTimeout(() => {
       try { localStorage.setItem(`trus-view-${pid}`, JSON.stringify(view)); } catch {}
       // Cross-device persist (R-504), same debounce tick. Skipped when the view
@@ -269,6 +317,35 @@ export function Canvas({
     }, 300);
     return () => clearTimeout(t);
   }, [view]);
+
+  // SURF §6 reverse: on "back", page.tsx set activePageId=parent AND bumped
+  // portalReturnReq in one commit. This effect is declared AFTER the [activePageId]
+  // load effect, so by the time it runs the load effect has already resolved and
+  // latched the parent's saved view into lastSavedViewRef (read that — setView is
+  // async, so latestViewRef still holds the child's view here). Seed the view
+  // "inside" the child's tile, then tween out to the parent's saved view. The
+  // final target is re-latched so the settle never echoes back a PATCH.
+  useEffect(() => {
+    if (!portalReturnReq) return;
+    const rect = containerRef.current?.getBoundingClientRect();
+    const kids = childPages ?? [];
+    const i = kids.findIndex((p) => p.id === portalReturnReq.childId);
+    if (!rect || i < 0 || prefersReducedMotion()) return; // static: parent view already applied
+    const saved: View = lastSavedViewRef.current?.v ?? latestViewRef.current;
+    const start = launchTargetView(portalPosition(kids[i], i), rect);
+    if (activePageId) lastSavedViewRef.current = { pid: activePageId, v: saved };
+    launchingRef.current = true;
+    setView(start);
+    const v = { ...start };
+    gsap.to(v, {
+      ...saved,
+      duration: 0.4,
+      ease: "power2.inOut",
+      onUpdate: () => setView({ x: v.x, y: v.y, zoom: v.zoom }),
+      onComplete: () => { launchingRef.current = false; },
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [portalReturnReq?.n]);
 
   const latestModulesRef = useRef(modules);
   useEffect(() => {
@@ -382,11 +459,6 @@ export function Canvas({
     cur: { x: number; y: number };
     moved: boolean;
   } | null>(null);
-  // Latched props so the window-scoped up handler never fires a stale callback.
-  const onEnterPortalRef = useRef(onEnterPortal);
-  const onPortalMoveRef = useRef(onPortalMove);
-  useEffect(() => { onEnterPortalRef.current = onEnterPortal; }, [onEnterPortal]);
-  useEffect(() => { onPortalMoveRef.current = onPortalMove; }, [onPortalMove]);
 
   const portalWinMove = useCallback((e: PointerEvent) => {
     const ref = portalDragRef.current;
@@ -414,7 +486,10 @@ export function Canvas({
     setPortalDrag(null);
     if (!ref) return;
     if (ref.moved) onPortalMoveRef.current?.(ref.pageId, ref.cur.x, ref.cur.y);
-    else if (e.type !== "pointercancel") onEnterPortalRef.current?.(ref.pageId);
+    // A no-move pointerup LAUNCHES the page (SURF §6) from the gesture's captured
+    // startPos — never a recomputed index. launchPortal is reached via a ref
+    // because this handler is window-scoped and defined before it.
+    else if (e.type !== "pointercancel") launchPortalRef.current?.(ref.pageId, ref.startPos);
   }, [portalWinMove]);
 
   const startPortalDrag = useCallback(
@@ -435,6 +510,30 @@ export function Canvas({
     },
     [portalWinMove, portalWinUp],
   );
+
+  // SURF §6: entering a portal is a ZOOM, not a cut. Tween the canvas view to the
+  // tile centered at LAUNCH_ZOOM (== ZOOM_MAX, never overshoots the clamp), fade a
+  // scrim in over the last beat, then swap the page under it. Re-entrancy guarded;
+  // reduced motion / no-rect fall back to today's instant swap. `pos` is the
+  // tile's world position captured from the gesture — never a recomputed index.
+  const launchPortal = useCallback((pageId: string, pos: PortalPoint) => {
+    if (launchingRef.current) return;
+    const rect = containerRef.current?.getBoundingClientRect();
+    if (!rect || prefersReducedMotion()) { onEnterPortalRef.current?.(pageId); return; }
+    launchingRef.current = true;
+    launchTargetPageRef.current = pageId;
+    const target = launchTargetView(pos, rect);
+    const v = { ...latestViewRef.current };
+    launchTweenRef.current = gsap.to(v, {
+      ...target,
+      duration: 0.4,
+      ease: "power2.inOut",
+      onUpdate: () => setView({ x: v.x, y: v.y, zoom: v.zoom }),
+      onStart: () => window.setTimeout(() => setScrim(true), 280),
+      onComplete: () => { launchingRef.current = false; onEnterPortalRef.current?.(pageId); },
+    });
+  }, []);
+  useEffect(() => { launchPortalRef.current = launchPortal; }, [launchPortal]);
 
   // Zoom toward the viewport center by a multiplicative factor (the +/-
   // buttons). Shares `zoomTowardPoint` with wheel-zoom and pinch-zoom
@@ -772,49 +871,19 @@ export function Canvas({
           <div style={{ pointerEvents: "auto" }} className="relative">
             {childPages.map((page, i) => {
               const dragging = portalDrag?.id === page.id;
-              const pos = dragging ? portalDrag : portalPosition(page, i);
-              const count = childCounts?.[page.id] ?? 0;
+              const pos = dragging ? { x: portalDrag.x, y: portalDrag.y } : portalPosition(page, i);
               return (
-                <div
+                <PortalTile
                   key={page.id}
-                  role="button"
-                  tabIndex={0}
-                  aria-label={`Enter ${page.name}, ${count} ${count === 1 ? "tool" : "tools"}`}
-                  title={`Enter ${page.name}`}
+                  page={page}
+                  pos={pos}
+                  dragging={dragging}
+                  overview={childOverviews?.[page.id]}
+                  now={now}
+                  index={i}
                   onPointerDown={(e) => startPortalDrag(e, page.id, portalPosition(page, i))}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" || e.key === " ") {
-                      e.preventDefault();
-                      onEnterPortal?.(page.id);
-                    }
-                  }}
-                  className={`portal-tile group absolute flex flex-col justify-between select-none rounded-xl border border-dashed p-3 backdrop-blur-sm bg-[var(--surface-elevated)]/40 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] transition ${
-                    dragging
-                      ? "border-[var(--accent)] cursor-grabbing shadow-lg"
-                      : "border-[var(--border)] cursor-pointer hover:border-[var(--accent)]"
-                  }`}
-                  style={{ left: pos.x, top: pos.y, width: PORTAL_W, height: PORTAL_H }}
-                >
-                  <div className="flex items-center gap-2 min-w-0">
-                    <span className="grid place-items-center w-8 h-8 shrink-0 rounded-lg bg-[var(--surface)] text-[var(--accent)]">
-                      <Icon name={resolveIconName(page.icon, page.name)} size={18} />
-                    </span>
-                    <span className="min-w-0">
-                      <span className="block truncate text-sm font-medium text-[var(--foreground)]">
-                        {page.name}
-                      </span>
-                      <span className="block text-[11px] text-[var(--muted)]">
-                        {count} {count === 1 ? "tool" : "tools"}
-                      </span>
-                    </span>
-                  </div>
-                  <div className="flex items-center justify-between text-[10px] uppercase tracking-wide text-[var(--muted)]">
-                    <span aria-hidden>Page</span>
-                    <span className="flex items-center gap-0.5 normal-case tracking-normal text-[11px] text-[var(--muted)] group-hover:text-[var(--accent)] group-focus-visible:text-[var(--accent)] transition">
-                      Enter <Icon name="chevronRight" size={12} />
-                    </span>
-                  </div>
-                </div>
+                  onEnter={() => launchPortal(page.id, portalPosition(page, i))}
+                />
               );
             })}
           </div>
@@ -843,6 +912,16 @@ export function Canvas({
           ))}
         </div>
       </div>
+
+      {/* SURF §6: the launch scrim — a dim overlay that fades in over the last
+          beat of the forward zoom to mask the hard page swap (arrival clears it
+          in the [activePageId] effect). pointer-events-none so a mid-tween tap
+          still reaches the container's interrupt handler. */}
+      <div
+        aria-hidden
+        className="pointer-events-none absolute inset-0 z-30 bg-[var(--bg-overlay)] transition-opacity duration-150"
+        style={{ opacity: scrim ? 1 : 0 }}
+      />
 
       {/* R-221: the sketch overlay sits above modules and controls; while active
           it captures every pointer, suspending pan/drag/module interaction. */}
