@@ -155,33 +155,58 @@ def list_automations(request: Request) -> dict:
     return {"automations": [a for a in out if a is not None]}
 
 
+def create_automation_row(
+    owner: str,
+    *,
+    name: str,
+    description: str,
+    page_id: str | None,
+    action,
+    schedule_kind: str,
+    interval_secs: int | None,
+    daily_at: str | None,
+    trust_dial: int,
+) -> dict:
+    """The ONE creation path shared by POST /api/automations and the structure
+    confirm route. Validates every module/page target is owner-owned (raises
+    HTTPException 422), computes the initial next_run from now, and inserts
+    (db.automation_create clamps the dial to <= 1). Returns the row dict. The
+    structure route catches the 422 to DROP an unresolvable automation."""
+    if page_id is not None and db.get_page(owner, page_id) is None:
+        raise HTTPException(status_code=422, detail=f"Unknown page: {page_id}")
+    _validate_targets(owner, action)
+    next_run = runtime._compute_next_run(
+        {"schedule_kind": schedule_kind, "interval_secs": interval_secs, "daily_at": daily_at},
+        _now_dt(),
+    )
+    return db.automation_create(
+        owner,
+        page_id=page_id,
+        name=name,
+        description=description,
+        action_type=action.type,
+        action_json=action.model_dump_json(),
+        schedule_kind=schedule_kind,
+        interval_secs=interval_secs,
+        daily_at=daily_at,
+        trust_dial=trust_dial,
+        next_run_at=next_run.isoformat(),
+    )
+
+
 @router.post("/automations", response_model=AutomationOut, status_code=201)
 def create_automation(body: AutomationCreate, request: Request) -> AutomationOut:
     owner = _owner_id(request)
-    if body.page_id is not None and db.get_page(owner, body.page_id) is None:
-        raise HTTPException(status_code=422, detail=f"Unknown page: {body.page_id}")
-    _validate_targets(owner, body.action)
-    now = _now_dt()
-    next_run = runtime._compute_next_run(
-        {
-            "schedule_kind": body.schedule_kind,
-            "interval_secs": body.interval_secs,
-            "daily_at": body.daily_at,
-        },
-        now,
-    )
-    row = db.automation_create(
+    row = create_automation_row(
         owner,
-        page_id=body.page_id,
         name=body.name,
         description=body.description,
-        action_type=body.action.type,
-        action_json=body.action.model_dump_json(),
+        page_id=body.page_id,
+        action=body.action,
         schedule_kind=body.schedule_kind,
         interval_secs=body.interval_secs,
         daily_at=body.daily_at,
         trust_dial=body.trust_dial,
-        next_run_at=next_run.isoformat(),
     )
     out = _automation_out(row)
     if out is None:  # unreachable — a just-created row is always readable

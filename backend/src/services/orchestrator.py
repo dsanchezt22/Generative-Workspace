@@ -16,7 +16,16 @@ from typing import TypeVar
 from pydantic import ValidationError
 
 from src import db, llm
-from src.schema import ClarifyingQuestion, DataSource, LLMError, ModuleConfig, RefusalError
+from src.schema import (
+    ClarifyingQuestion,
+    DataSource,
+    LLMError,
+    ModuleConfig,
+    RefusalError,
+    StructureAutomation,
+    StructurePage,
+    StructureProposal,
+)
 from src.services import extract
 from src.services.live_data import ALLOWED_PROVIDERS
 
@@ -30,6 +39,14 @@ _T = TypeVar("_T")
 # upload path does not read it.
 last_plan: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "orchestrator_last_plan", default=None
+)
+
+# SURF/ONB-1: the multi-surface structure proposal parsed alongside the last
+# generate_modules() call, surfaced the same side-channel way as last_plan so the
+# return type stays list[ModuleConfig] and every existing caller is untouched. A
+# structure result returns [] and sets this instead; the route reads it.
+last_structure: contextvars.ContextVar[StructureProposal | None] = contextvars.ContextVar(
+    "orchestrator_last_structure", default=None
 )
 
 
@@ -106,6 +123,8 @@ _COMPONENT_DOCS = """Available component types (use exactly these "type" values)
                  PREFER THIS over a lone checkbox+streak whenever the user tracks SEVERAL
                  things over time (habits, routines, daily disciplines, per-person check-ins) —
                  it individualises the metrics per subject instead of one shared number.
+- feed         — newest-first entries an automation writes into. Fields: id, label, type, max_items?.
+                 Use as the landing surface for a digest/watcher/reminder automation product.
 
 Also: set "columns": 2 on a module to lay its components out in a TWO-COLUMN grid (great for dashboards and forms). Wide components (section, divider, table, chart, calendar, kanban, heatmap, timeline, gallery, note) automatically span both columns.
 AVOID WASTED SPACE: if a tool has 4+ short fields (number/text/kpi/rating/slider/date/dropdown/color), set "columns": 2 so it reads as a compact grid instead of a tall sparse column. Don't pad a tool with empty or redundant fields. Keep one clear primary block per tool.
@@ -376,6 +395,35 @@ HOW MANY TOOLS:
   • "my semester" → [Class Schedule (calendar), Assignment Tracker (table), GPA (kpi), Study Habits (calendar)]
   • "moving house" → [Moving Checklist (list), Budget (chart), Address Change (table), Timeline (calendar)]
 
+STRUCTURES (multi-surface systems): when the request is a whole life-area or an ongoing
+operation that needs DISTINCT surfaces ("organize my whole life", "run my freelance
+business", "manage the family"), output this OBJECT instead of "modules":
+{{
+  "plan": "<one short paragraph: the system you will build and why>",
+  "pages": [ 2-4 objects, each an APP SURFACE:
+    {{ "name": "<short app name>", "icon": "<one icon name from the list above>",
+      "accent": "<one accent token from the list above>",
+      "purpose": "<one sentence: what this surface is for>",
+      "modules": [ 1-6 ModuleConfig objects, exactly the shape above ] }} ],
+  "automations": [ 0-6 objects, each a proposed always-on agent for ONE page:
+    {{ "name": "...", "description": "<plain language: exactly what it does each run>",
+      "schedule": "hourly|daily|weekly", "action_type": "watch|summarize|track|remind|draft",
+      "page": <index into pages>,
+      "target_component_id": "<a component id on that page it writes into, usually a feed>",
+      <action-specific fields, see below> }} ]
+}}
+- A focused request still gets the flat {{"plan","modules"}} shape — never force pages.
+- Give a page a "feed" component when an automation reports into it; point target_component_id at it.
+- action_type — what the agent does each run:
+  • summarize — an LLM digest of the page's tools into the target feed/note (the default choice).
+  • watch — check a live value and flag a threshold; REQUIRES "provider" (weather|nutrition),
+    "query", and "op" (over|under) + "threshold".
+  • track — append a source number into a target chart/series; REQUIRES "source_component_id"
+    (a number component id on the SAME page).
+  • remind — list what is still pending on a tracker/checklist into the feed.
+  • draft — an LLM-composed message into the feed; provide "instruction".
+- When unsure whether an automation is warranted, emit NO automation.
+
 LIVE DATA BINDINGS (R-701/R-702/R-705): Metric, Kpi, Ring, Gauge, and ProgressBar MAY carry an
 optional "data_source" field — but ONLY when the user's intent clearly falls into one of these
 TWO launched domains. There are no others:
@@ -497,10 +545,13 @@ def _seeded_system(
 @dataclass
 class _Decomposition:
     """Parsed result of a DECOMPOSE_SYSTEM_PROMPT response: the modules to build
-    plus the optional plan paragraph the model gave for them (R-103/R-301)."""
+    plus the optional plan paragraph the model gave for them (R-103/R-301). SURF:
+    a broad-request answer instead carries a `structure` (pages + modules +
+    proposed automations); `modules` is then [] and the route reads `structure`."""
 
     plan: str | None
     modules: list[ModuleConfig]
+    structure: StructureProposal | None = None
 
 
 def _sanitize_data_source(component: dict) -> None:
@@ -539,6 +590,99 @@ def _sanitize_module_data_sources(item: dict) -> None:
             _sanitize_data_source(component)
 
 
+def _flatten(parsed: _Decomposition) -> list[ModuleConfig]:
+    """The file/grounded paths never produce structures (v1): a structure parse
+    degrades to its flattened modules (≤6), tools land flat with no pages."""
+    if parsed.structure is not None:
+        return [m for p in parsed.structure.pages for m in p.modules][:6]
+    return parsed.modules
+
+
+def _parse_structure(data: dict) -> _Decomposition:
+    """SURF/ONB-1: parse a {"plan","pages","automations"} structure answer.
+    Strip-don't-reject — one bad item costs only that item:
+    - pages clipped to 4, each page's raw modules to 6 (BEFORE Pydantic);
+    - invalid modules dropped individually; a 0-module page dropped;
+    - each automation validated individually (garbage action_type → dropped: the
+      parser can never emit an action_type the JSON didn't state), its `page`
+      remapped through original→surviving index (dropped/out-of-range → dropped),
+      and an unknown target_component_id set to None (confirm drops it if still
+      unresolvable);
+    - zero surviving pages → degrade to flat modules if any existed, else invalid.
+    """
+    plan_val = data.get("plan")
+    plan = plan_val.strip() if isinstance(plan_val, str) and plan_val.strip() else None
+
+    raw_pages = data.get("pages")
+    raw_pages = raw_pages[:4] if isinstance(raw_pages, list) else []
+    pages: list[StructurePage] = []
+    all_valid_modules: list[ModuleConfig] = []
+    surviving_index: dict[int, int] = {}
+    for orig_idx, rp in enumerate(raw_pages):
+        if not isinstance(rp, dict):
+            continue
+        raw_mods = rp.get("modules")
+        raw_mods = raw_mods[:6] if isinstance(raw_mods, list) else []
+        mods: list[ModuleConfig] = []
+        for rm in raw_mods:
+            if not isinstance(rm, dict):
+                continue
+            _sanitize_module_data_sources(rm)
+            try:
+                mc = ModuleConfig.model_validate(rm)
+            except ValidationError:
+                continue
+            mods.append(mc)
+            all_valid_modules.append(mc)
+        if not mods:
+            continue  # drop an emptied page
+        try:
+            page = StructurePage(
+                name=rp.get("name") or "Untitled",
+                icon=rp.get("icon"),
+                accent=rp.get("accent"),
+                purpose=rp.get("purpose"),
+                modules=mods,
+            )
+        except ValidationError:
+            continue
+        surviving_index[orig_idx] = len(pages)
+        pages.append(page)
+
+    if not pages:
+        # Zero surviving pages: degrade to flat modules (plan kept, automations
+        # dropped) if any valid modules existed; else fall to the retry-once loop.
+        if all_valid_modules:
+            return _Decomposition(plan=plan, modules=all_valid_modules[:6])
+        raise _InvalidOutput("structure produced no valid pages.")
+
+    autos: list[StructureAutomation] = []
+    for ra in data.get("automations") or []:
+        if not isinstance(ra, dict):
+            continue
+        page_ref = ra.get("page")
+        if not isinstance(page_ref, int) or isinstance(page_ref, bool):
+            continue  # non-int page ref (str/float/list/None) → drop
+        new_idx = surviving_index.get(page_ref)  # None → dropped/out-of-range page
+        if new_idx is None:
+            continue
+        candidate = {**ra, "page": new_idx}
+        comp_ids = {c.id for m in pages[new_idx].modules for c in m.components}
+        if candidate.get("target_component_id") not in comp_ids:
+            candidate["target_component_id"] = None
+        try:
+            autos.append(StructureAutomation.model_validate(candidate))
+        except ValidationError:
+            continue
+    autos = autos[:6]
+
+    try:
+        structure = StructureProposal(plan=plan, pages=pages, automations=autos)
+    except ValidationError as e:
+        raise _InvalidOutput(f"invalid structure: {e.errors()[0]['msg']}") from e
+    return _Decomposition(plan=plan, modules=[], structure=structure)
+
+
 def _parse_modules(raw: str) -> _Decomposition:
     cleaned = _strip_codefence(raw)
     try:
@@ -551,6 +695,9 @@ def _parse_modules(raw: str) -> _Decomposition:
             raise RefusalError(str(data["refusal"]))
         if "question" in data and len(data) == 1:
             raise ClarifyingQuestion(str(data["question"]))
+        # SURF/ONB-1: a {"pages": [...]} answer is a multi-surface structure.
+        if isinstance(data.get("pages"), list):
+            return _parse_structure(data)
         if isinstance(data.get("modules"), list):
             # {"plan": str, "modules": [...]} (new) or {"modules": [...]} (already tolerated)
             plan_val = data.get("plan")
@@ -624,9 +771,18 @@ def generate_modules(
     grounded-file path (_generate_modules_grounded doesn't thread an owner
     through at all — document content already dominates there)."""
     last_plan.set(None)
+    last_structure.set(None)
     if llm.is_stub_mode():
-        from src.stub_templates import pick_system
+        from src.stub_templates import pick_structure, pick_system
 
+        # ONB-1 A-flow offline: a clearly-broad prompt yields a deterministic
+        # structure (feed + a summarize automation wired via action_type).
+        struct = pick_structure(prompt)
+        if struct is not None:
+            proposal = StructureProposal.model_validate(struct)
+            last_plan.set(proposal.plan)
+            last_structure.set(proposal)
+            return []
         return [ModuleConfig.model_validate(c) for c in pick_system(prompt)]
     from src import semantic_cache
 
@@ -675,6 +831,12 @@ def generate_modules(
         except ClarifyingQuestion as e:
             raise RefusalError(_QUESTION_CAP_REFUSAL) from e
     last_plan.set(parsed.plan)
+    # SURF/ONB-1: a structure result returns [] and is surfaced via last_structure.
+    # It is NEVER stored in the semantic cache (the cache value shape stays a flat
+    # config list); returning here before the store guard guarantees that.
+    if parsed.structure is not None:
+        last_structure.set(parsed.structure)
+        return []
     result = parsed.modules
     last = llm.last_call.get()
     # R-403: only a definitely-non-degraded call may seed the cache — an unknown
@@ -738,7 +900,7 @@ def _generate_modules_grounded(
     last = llm.last_call.get()
     if last is None or last.provider == "stub":
         raise RefusalError(_UNREADABLE_FILE_REFUSAL)
-    return parsed.modules
+    return _flatten(parsed)
 
 
 def generate_modules_from_file(
@@ -784,7 +946,7 @@ def generate_modules_from_file(
         if not raw or raw.strip() in ("{}", ""):
             raise RefusalError(_UNREADABLE_FILE_REFUSAL)
         try:
-            return _parse_modules(raw).modules
+            return _flatten(_parse_modules(raw))
         except _InvalidOutput as e:
             last = e
     raise RefusalError(f"The model could not produce a valid result ({last}).")

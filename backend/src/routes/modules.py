@@ -4,8 +4,10 @@ import time
 from typing import Literal
 
 from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile
+from pydantic import ValidationError
 
 from src import db, llm
+from src.routes.automations import create_automation_row
 from src.routes.deps import (
     _check_gen_budget,
     _llm_error_detail,
@@ -19,6 +21,8 @@ from src.schema import (
     GenerateRequest,
     GenerateResponse,
     InsertModulesRequest,
+    InsertStructureRequest,
+    InsertStructureResponse,
     LLMError,
     ModuleConfig,
     ModuleVersion,
@@ -27,6 +31,13 @@ from src.schema import (
     RefusalError,
     Snapshot,
     StoredModule,
+)
+from src.schema_automations import (
+    AutoActionDraft,
+    AutoActionRemind,
+    AutoActionSummarize,
+    AutoActionTrack,
+    AutoActionWatch,
 )
 from src.services import orchestrator
 from src.stub_templates import pick_template
@@ -246,6 +257,17 @@ def generate_module(
         raise HTTPException(status_code=422, detail={"refusal": e.reason}) from e
     except LLMError as e:
         raise HTTPException(status_code=503, detail=_llm_error_detail(e)) from None
+    # SURF/ONB-1: a structure proposal is returned WITHOUT persisting anything —
+    # it only ever lands via POST /api/structure (confirm). Both generate and
+    # preview passthrough here before the flat persist below.
+    structure = orchestrator.last_structure.get()
+    if structure is not None:
+        deg = llm.last_call.get()
+        return GenerateResponse(
+            structure=structure,
+            plan=orchestrator.last_plan.get(),
+            degraded=bool(deg and deg.degraded),
+        )
     plan = orchestrator.last_plan.get()
     stored = [db.insert_module(sid, c, page_id=page_id) for c in configs]
     _log(sid, "user", prompt, page_id=stored[0].page_id)
@@ -295,6 +317,14 @@ def preview_modules(
         raise HTTPException(status_code=422, detail={"refusal": e.reason}) from e
     except LLMError as e:
         raise HTTPException(status_code=503, detail=_llm_error_detail(e)) from None
+    structure = orchestrator.last_structure.get()
+    if structure is not None:
+        sdeg = llm.last_call.get()
+        return GenerateResponse(
+            structure=structure,
+            plan=orchestrator.last_plan.get(),
+            degraded=bool(sdeg and sdeg.degraded),
+        )
     plan = orchestrator.last_plan.get()
     deg = llm.last_call.get()
     return GenerateResponse(previews=configs, degraded=bool(deg and deg.degraded), plan=plan)
@@ -318,6 +348,146 @@ async def insert_modules(
     for s in stored:
         _log(sid, "assistant", f"Created {s.config.title}", page_id=s.page_id, module_id=s.id)
     return stored
+
+
+# ── SURF/ONB-1: structure confirm — compose proposed automations into REAL ────
+# typed AutoActions wired to the just-created pages/modules, then create them
+# (enabled, trust_dial=1) through the SAME path POST /api/automations uses.
+
+_SCHEDULE_MAP: dict[str, tuple[str, int | None, str | None]] = {
+    "hourly": ("interval", 3600, None),
+    "daily": ("daily", None, "07:00"),
+    "weekly": ("interval", 604800, None),
+}
+
+
+class _DropAutomation(Exception):
+    """A proposed automation can't be resolved to real targets — drop it (and
+    report its name), never the pages/modules."""
+
+
+def _find_component_module(page_mods: list[StoredModule], component_id: str | None):
+    """The created module on this page whose config declares `component_id`."""
+    if component_id is None:
+        return None
+    for m in page_mods:
+        if any(c.id == component_id for c in m.config.components):
+            return m
+    return None
+
+
+def _compose_action(sa, target: StoredModule, page_mods: list[StoredModule]):
+    """Compose one StructureAutomation into a typed AutoAction. Raises
+    _DropAutomation when the action-specific inputs can't be resolved."""
+    tc = sa.target_component_id
+    if sa.action_type == "watch":
+        if not sa.provider or not sa.query:
+            raise _DropAutomation()
+        return AutoActionWatch(
+            module_id=target.id,
+            component_id=tc,
+            provider=sa.provider,
+            query=sa.query,
+            op=sa.op,
+            threshold=sa.threshold,
+        )
+    if sa.action_type == "summarize":
+        source_ids = [m.id for m in page_mods if m.id != target.id][:10]
+        return AutoActionSummarize(
+            module_id=target.id, component_id=tc, source_module_ids=source_ids
+        )
+    if sa.action_type == "track":
+        src = _find_component_module(page_mods, sa.source_component_id)
+        if src is None:
+            raise _DropAutomation()
+        return AutoActionTrack(
+            module_id=target.id,
+            component_id=tc,
+            source_module_id=src.id,
+            source_component_id=sa.source_component_id,
+        )
+    if sa.action_type == "remind":
+        return AutoActionRemind(module_id=target.id, component_id=tc)
+    # draft
+    return AutoActionDraft(
+        module_id=target.id,
+        component_id=tc,
+        recipient="",
+        instruction=(sa.instruction or sa.description),
+    )
+
+
+def _compose_structure_automations(
+    owner: str, structure, pages: list, modules: list[StoredModule]
+) -> tuple[list[str], list[str]]:
+    """Returns (automation_ids, dropped_names). Any unresolvable reference or
+    validation failure drops that single automation — pages/modules always land."""
+    by_page: dict[str, list[StoredModule]] = {}
+    for m in modules:
+        if m.page_id is not None:  # insert_structure always sets it; guard for the type
+            by_page.setdefault(m.page_id, []).append(m)
+    ids: list[str] = []
+    dropped: list[str] = []
+    for sa in structure.automations:
+        try:
+            if sa.page >= len(pages):
+                raise _DropAutomation()
+            page = pages[sa.page]
+            page_mods = by_page.get(page.id, [])
+            target = _find_component_module(page_mods, sa.target_component_id)
+            if target is None:
+                raise _DropAutomation()
+            action = _compose_action(sa, target, page_mods)
+            schedule_kind, interval_secs, daily_at = _SCHEDULE_MAP[sa.schedule]
+            row = create_automation_row(
+                owner,
+                name=sa.name,
+                description=sa.description,
+                page_id=page.id,
+                action=action,
+                schedule_kind=schedule_kind,
+                interval_secs=interval_secs,
+                daily_at=daily_at,
+                trust_dial=1,
+            )
+            ids.append(row["id"])
+        except (_DropAutomation, ValidationError, HTTPException):
+            dropped.append(sa.name)
+    return ids, dropped
+
+
+@router.post("/structure", response_model=InsertStructureResponse)
+async def insert_structure(
+    body: InsertStructureRequest,
+    request: Request,
+    page_id: str | None = Query(default=None),
+) -> InsertStructureResponse:
+    """Confirm a structure proposal: pages + modules land in ONE transaction, then
+    the proposed automations are composed into real enabled automations (dropped
+    ones reported). Zero LLM calls → no gen budget. Accretion + logging fire HERE
+    (on confirm), never on preview. No client-supplied id ever lands."""
+    sid = _owner_id(request)
+    if page_id is None:
+        page_id = db.ensure_default_page(sid).id
+    pages, modules = db.insert_structure(sid, body.structure, page_id)
+    automation_ids, dropped = _compose_structure_automations(sid, body.structure, pages, modules)
+    _accrete_profile_facts(
+        sid, body.exchange, prompt=body.prompt, configs=[m.config for m in modules]
+    )
+    for page in pages:
+        n = sum(1 for m in modules if m.page_id == page.id)
+        _log(sid, "assistant", f"Created {page.name} — {n} tools", page_id=page.id)
+    return InsertStructureResponse(
+        pages=pages, modules=modules, automation_ids=automation_ids, dropped=dropped
+    )
+
+
+@router.get("/pages/overview")
+async def pages_overview(request: Request) -> dict:
+    """Per-page {modules, automations, last_run_at} — one owner-scoped query set
+    (SURF portal tiles / AppFrame status lines)."""
+    sid = _owner_id(request)
+    return db.page_overview(sid)
 
 
 @router.post("/modules/generate_from_file", response_model=GenerateResponse)

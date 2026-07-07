@@ -1695,3 +1695,92 @@ def pick_system(prompt: str) -> list[dict]:
         if any(_matches(k, lower) for k in keywords):
             return [_finalize(b()) for b in builders]  # type: ignore[operator]
     return [pick_template(prompt)]
+
+
+# SURF/ONB-1: clearly-broad "whole system" prompts get a deterministic multi-page
+# STRUCTURE offline (not a flat tool list), so the structure A-flow is drivable
+# without a live model. Phrase matches (not the whole-word _matches) keep it
+# conservative — a focused prompt never trips it.
+_STRUCTURE_KEYWORDS = (
+    "run my business",
+    "run my freelance",
+    "my freelance business",
+    "organize my whole life",
+    "organize my life",
+    "manage my life",
+    "whole life",
+    "life admin",
+    "run my whole life",
+)
+
+
+def pick_structure(prompt: str) -> dict | None:
+    """A deterministic 2-page structure (Operations + Clients) with a feed
+    component and a summarize automation wired to it via action_type — enough to
+    drive the full confirm flow offline. None → the flat pick_system path."""
+    low = prompt.lower()
+    if not any(k in low for k in _STRUCTURE_KEYWORDS):
+        return None
+    return {
+        "plan": "A two-surface system: an Operations hub with a daily brief feed, "
+        "and a Clients directory.",
+        "pages": [
+            {
+                "name": "Operations",
+                "icon": "briefcase",
+                "accent": "sky",
+                "purpose": "Your day-to-day command center.",
+                "modules": [
+                    _finalize(
+                        _mod(
+                            "Daily Brief",
+                            "sparkles",
+                            "sky",
+                            [{"id": "brief", "type": "feed", "label": "Brief"}],
+                        )
+                    ),
+                    _finalize(
+                        _mod(
+                            "Today",
+                            "check",
+                            "emerald",
+                            [{"id": "today", "type": "checklist", "label": "Today"}],
+                        )
+                    ),
+                ],
+            },
+            {
+                "name": "Clients",
+                "icon": "folder",
+                "accent": "violet",
+                "purpose": "Everyone you work with.",
+                "modules": [
+                    _finalize(
+                        _mod(
+                            "Client List",
+                            "folder",
+                            "violet",
+                            [
+                                {
+                                    "id": "clients",
+                                    "type": "table",
+                                    "label": "Clients",
+                                    "columns": ["Name", "Status"],
+                                }
+                            ],
+                        )
+                    ),
+                ],
+            },
+        ],
+        "automations": [
+            {
+                "name": "Daily brief",
+                "description": "Summarize your operations into the Daily Brief feed each morning.",
+                "schedule": "daily",
+                "action_type": "summarize",
+                "page": 0,
+                "target_component_id": "brief",
+            }
+        ],
+    }

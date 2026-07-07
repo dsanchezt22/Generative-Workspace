@@ -269,6 +269,16 @@ class Tracker(ComponentBase):
     goal: int | None = None  # optional per-subject target (e.g. 30-day goal)
 
 
+class Feed(ComponentBase):
+    """Newest-first entries an automation run appends to (SURF-3/RUN-6).
+    state[id] = list[{"ts": ISO str, "title": str, "body": str|None,
+    "badge": "draft"|"simulated"|"failed"|None}]. Entries are PLAIN TEXT —
+    the renderer never interprets markup."""
+
+    type: Literal["feed"] = "feed"
+    max_items: int = Field(default=20, ge=1, le=100)
+
+
 Component = Annotated[
     TextInput
     | NumberInput
@@ -299,7 +309,8 @@ Component = Annotated[
     | Checklist
     | Gallery
     | Note
-    | Tracker,
+    | Tracker
+    | Feed,
     Field(discriminator="type"),
 ]
 
@@ -391,6 +402,9 @@ class Page(BaseModel):
     session_id: str
     name: str
     icon: str | None = None
+    # SURF: an app-surface accent (same trusted-palette-token contract as
+    # ModuleConfig.accent) so a structure page reads as a colour-coded app tile.
+    accent: str | None = None
     parent_id: str | None = None
     position: int
     # R-502/R-504: a child page's portal placement (world coords) on its parent's
@@ -408,12 +422,14 @@ class Page(BaseModel):
 class CreatePageRequest(BaseModel):
     name: str
     icon: str | None = None
+    accent: str | None = None
     parent_id: str | None = None
 
 
 class RenamePageRequest(BaseModel):
     name: str | None = None
     icon: str | None = None
+    accent: str | None = None
     parent_id: str | None = None
     # R-504: dragging a child's portal tile persists its placement here.
     portal_x: float | None = None
@@ -492,6 +508,64 @@ class GenerateResponse(BaseModel):
     # only on a fresh (non-stub, non-cached) model response; None otherwise so
     # the app never fabricates a rationale it didn't actually generate.
     plan: str | None = None
+    # SURF/ONB-1: a multi-surface structure proposal (pages + modules + proposed
+    # automations) when the request is a whole life-area. Set INSTEAD of previews/
+    # modules; a structure only ever lands via POST /api/structure (confirm).
+    structure: StructureProposal | None = None
+
+
+# ── Self-composing structure of surfaces (SURF/ONB-1..2) ──
+# A "surface/app" IS a child Page. A structure generation composes Pages +
+# ModuleConfigs + proposed automations (composed into real typed AutoActions at
+# confirm time — the runtime concept, NOT ModuleConfig.automations).
+
+
+class StructureAutomation(BaseModel):
+    """A PROPOSED runtime automation wired to one page of a structure proposal.
+    Composed into a real typed AutoAction at confirm time; the server mints ids,
+    the model never emits one. NOT ModuleConfig.automations (client-side rules)."""
+
+    name: str = Field(max_length=80)
+    description: str = Field(max_length=300)  # ONB-2: plain-language "exactly what it does"
+    schedule: Literal["hourly", "daily", "weekly"] = "daily"
+    action_type: Literal["watch", "summarize", "track", "remind", "draft"] = "summarize"
+    page: int = Field(ge=0)  # index into StructureProposal.pages — never a DB id
+    target_component_id: str | None = None  # component on that page the run writes into
+    # Action-specific composition inputs (resolved at confirm; unusable ones drop
+    # the single automation, never the pages/modules).
+    provider: Literal["weather", "nutrition"] | None = None  # watch
+    query: dict[str, str | float] | None = None  # watch
+    op: Literal["over", "under"] | None = None  # watch
+    threshold: float | None = None  # watch
+    instruction: str | None = Field(default=None, max_length=500)  # draft
+    source_component_id: str | None = None  # track: the number source on the same page
+
+
+class StructurePage(BaseModel):
+    name: str = Field(max_length=60)
+    icon: str | None = None  # same open-string + frontend-fallback contract as ModuleConfig.icon
+    accent: str | None = None  # same trusted-palette-token contract as ModuleConfig.accent
+    purpose: str | None = Field(default=None, max_length=200)  # ONB-2: what this surface is for
+    modules: list[ModuleConfig] = Field(min_length=1, max_length=6)
+
+
+class StructureProposal(BaseModel):
+    plan: str | None = None
+    pages: list[StructurePage] = Field(min_length=1, max_length=4)
+    automations: list[StructureAutomation] = Field(default_factory=list, max_length=6)
+
+
+class InsertStructureRequest(BaseModel):
+    structure: StructureProposal
+    prompt: str | None = None
+    exchange: list[ExchangeTurn] | None = Field(default=None, max_length=6)
+
+
+class InsertStructureResponse(BaseModel):
+    pages: list[Page]
+    modules: list[StoredModule]
+    automation_ids: list[str]
+    dropped: list[str]  # names of proposed automations dropped as unresolvable at confirm
 
 
 class InsertModulesRequest(BaseModel):

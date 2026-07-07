@@ -169,3 +169,27 @@ already records (STATUS.md, plans, CLAUDE.md).
   types are all autonomous, everything else needs your tap). Components stay untested;
   these carry the logic. `PageOverview.last_run_at` is real from day one (ruling 6), so
   the "agent ran …" line renders whenever it's non-null — never a fabricated stub.
+
+- **A3 backend: the structure passthrough MUST run before the flat persist.** In
+  `generate_module`/`preview_modules`, `orchestrator.generate_modules` returns `[]` and
+  sets `last_structure` for a broad prompt. The `if orchestrator.last_structure.get():
+  return GenerateResponse(structure=...)` check has to sit BEFORE the `stored =
+  [db.insert_module(...)]` / `stored[0]` line, or generate IndexErrors on the empty
+  config list. A structure NEVER persists on generate/preview — only POST /api/structure
+  (confirm) lands it.
+
+- **A3: confirm composes REAL automations, not `status='proposed'` rows** (reconciled
+  ruling 2 supersedes DESIGN-surfaces §2). There is NO proposed-status column and NO new
+  automations DDL — the A1 table already has the full runtime shape. `routes/modules.py`
+  imports `create_automation_row` from `routes/automations.py` (sibling-route import, no
+  cycle: automations never imports modules) so structure confirm and POST /api/automations
+  share ONE validate+insert path. `insert_structure` commits pages+modules in one txn;
+  automations are composed AFTER (a `_DropAutomation`/`ValidationError`/`HTTPException`
+  drops that one automation and appends its name to `dropped` — pages/modules always land).
+
+- **A3: `StructureAutomation.action_type` defaults to `"summarize"`** (the fail-closed
+  replacement for tier — all five structure action types are autonomous-floor, so there's
+  no "consequential" default to reach for). At parse an unknown `target_component_id` is
+  nulled (not dropped); confirm then drops the automation only if it's still unresolvable.
+  Garbage `action_type` fails the Literal and drops the automation — the parser can never
+  invent a type the model didn't state.

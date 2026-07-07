@@ -15,7 +15,15 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Literal, cast
 
-from src.schema import Message, ModuleConfig, ModuleVersion, Page, Snapshot, StoredModule
+from src.schema import (
+    Message,
+    ModuleConfig,
+    ModuleVersion,
+    Page,
+    Snapshot,
+    StoredModule,
+    StructureProposal,
+)
 
 _log = logging.getLogger(__name__)
 
@@ -300,6 +308,9 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE pages ADD COLUMN icon TEXT")
     if "parent_id" not in pcols:
         conn.execute("ALTER TABLE pages ADD COLUMN parent_id TEXT")
+    # SURF: an app-surface accent token on a (child) page — additive, nullable.
+    if "accent" not in pcols:
+        conn.execute("ALTER TABLE pages ADD COLUMN accent TEXT")
     # R-502/R-504: portal placement of a child page on its parent's canvas.
     if "portal_x" not in pcols:
         conn.execute("ALTER TABLE pages ADD COLUMN portal_x REAL")
@@ -474,7 +485,8 @@ def adopt_session_data(old_owner: str, user_id: str) -> None:
 # ---------------------------------------------------------------------------
 
 _PAGE_COLS = (
-    "id, name, icon, parent_id, position, portal_x, portal_y, view_x, view_y, view_zoom, created_at"
+    "id, name, icon, accent, parent_id, position, "
+    "portal_x, portal_y, view_x, view_y, view_zoom, created_at"
 )
 
 
@@ -483,6 +495,7 @@ def _page_from_row(r, session_id: str) -> Page:
         id=r["id"],
         name=r["name"],
         icon=r["icon"],
+        accent=r["accent"],
         parent_id=r["parent_id"],
         position=r["position"],
         portal_x=r["portal_x"],
@@ -539,7 +552,11 @@ def page_module_counts(session_id: str) -> dict[str, int]:
 
 
 def create_page(
-    session_id: str, name: str, icon: str | None = None, parent_id: str | None = None
+    session_id: str,
+    name: str,
+    icon: str | None = None,
+    parent_id: str | None = None,
+    accent: str | None = None,
 ) -> Page:
     with _conn() as c:
         max_pos = c.execute(
@@ -550,14 +567,15 @@ def create_page(
         now = _now()
         position = max_pos + 1
         c.execute(
-            "INSERT INTO pages (id, session_id, name, icon, parent_id, position, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (page_id, session_id, name, icon, parent_id, position, now),
+            "INSERT INTO pages (id, session_id, name, icon, accent, parent_id, position, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (page_id, session_id, name, icon, accent, parent_id, position, now),
         )
     return Page(
         id=page_id,
         name=name,
         icon=icon,
+        accent=accent,
         parent_id=parent_id,
         position=position,
         session_id=session_id,
@@ -573,6 +591,7 @@ def update_page(
     page_id: str,
     name=_UNSET,
     icon=_UNSET,
+    accent=_UNSET,
     parent_id=_UNSET,
     portal_x=_UNSET,
     portal_y=_UNSET,
@@ -587,6 +606,9 @@ def update_page(
     if icon is not _UNSET:
         sets.append("icon = ?")
         params.append(icon)
+    if accent is not _UNSET:
+        sets.append("accent = ?")
+        params.append(accent)
     if parent_id is not _UNSET:
         sets.append("parent_id = ?")
         params.append(parent_id)
@@ -677,6 +699,95 @@ def delete_page(session_id: str, page_id: str) -> bool:
         )
         cur = c.execute("DELETE FROM pages WHERE id = ? AND session_id = ?", (page_id, session_id))
         return cur.rowcount > 0
+
+
+def insert_structure(
+    owner: str, proposal: StructureProposal, parent_page_id: str | None
+) -> tuple[list[Page], list[StoredModule]]:
+    """Create a whole structure's pages + modules in ONE transaction (SURF/ONB-1).
+    Inlines the page/module INSERT SQL (does NOT call create_page/insert_module,
+    which each open+commit their own connection) so a mid-insert exception rolls
+    the WHOLE thing back — never a partial structure. Automations are composed and
+    created AFTER this commits, by the confirm route's shared creation path (a
+    failed automation is dropped+reported, never a partial page)."""
+    pages_out: list[Page] = []
+    modules_out: list[StoredModule] = []
+    now = _now()
+    with _conn() as c:
+        base = c.execute(
+            "SELECT COALESCE(MAX(position), -1) FROM pages WHERE session_id = ?", (owner,)
+        ).fetchone()[0]
+        for i, sp in enumerate(proposal.pages):
+            page_id = str(uuid.uuid4())
+            position = base + 1 + i
+            c.execute(
+                "INSERT INTO pages (id, session_id, name, icon, accent, parent_id, position,"
+                " created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (page_id, owner, sp.name, sp.icon, sp.accent, parent_page_id, position, now),
+            )
+            pages_out.append(
+                Page(
+                    id=page_id,
+                    session_id=owner,
+                    name=sp.name,
+                    icon=sp.icon,
+                    accent=sp.accent,
+                    parent_id=parent_page_id,
+                    position=position,
+                    created_at=now,
+                )
+            )
+            for cfg in sp.modules:
+                module_id = str(uuid.uuid4())
+                config_json = cfg.model_dump_json()
+                c.execute(
+                    "INSERT INTO modules (id, session_id, page_id, config_json, created_at,"
+                    " updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+                    (module_id, owner, page_id, config_json, now, now),
+                )
+                _record_version(c, module_id, owner, config_json, now)
+                modules_out.append(
+                    StoredModule(
+                        id=module_id, config=cfg, created_at=now, updated_at=now, page_id=page_id
+                    )
+                )
+    return pages_out, modules_out
+
+
+def page_overview(owner: str) -> dict[str, dict]:
+    """Per-page {modules, automations, last_run_at} for the owner — one grouped
+    query set (never N+1). module count is non-archived; automation count +
+    last_run_at come from the V2 automations table (REAL from day one)."""
+    with _conn() as c:
+        mod_counts = {
+            r["page_id"]: r["n"]
+            for r in c.execute(
+                "SELECT page_id, COUNT(*) AS n FROM modules"
+                " WHERE session_id = ? AND archived = 0 AND page_id IS NOT NULL GROUP BY page_id",
+                (owner,),
+            ).fetchall()
+        }
+        auto = {
+            r["page_id"]: (r["n"], r["lr"])
+            for r in c.execute(
+                "SELECT page_id, COUNT(*) AS n, MAX(last_run_at) AS lr FROM automations"
+                " WHERE owner = ? AND page_id IS NOT NULL GROUP BY page_id",
+                (owner,),
+            ).fetchall()
+        }
+        page_ids = [
+            r["id"]
+            for r in c.execute("SELECT id FROM pages WHERE session_id = ?", (owner,)).fetchall()
+        ]
+    out: dict[str, dict] = {}
+    for pid in page_ids:
+        n_auto, last_run = auto.get(pid, (0, None))
+        out[pid] = {
+            "modules": mod_counts.get(pid, 0),
+            "automations": n_auto,
+            "last_run_at": last_run,
+        }
+    return out
 
 
 # ---------------------------------------------------------------------------

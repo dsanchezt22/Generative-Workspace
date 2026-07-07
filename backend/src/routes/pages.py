@@ -39,7 +39,7 @@ async def create_page(body: CreatePageRequest, request: Request) -> Page:
         raise HTTPException(status_code=422, detail="Page name cannot be empty")
     sid = _owner_id(request)
     _require_own_parent(sid, body.parent_id)
-    return db.create_page(sid, name, icon=body.icon, parent_id=body.parent_id)
+    return db.create_page(sid, name, icon=body.icon, parent_id=body.parent_id, accent=body.accent)
 
 
 def _would_loop(sid: str, page_id: str, parent_id: str | None) -> bool:
@@ -71,6 +71,8 @@ async def update_page(page_id: str, body: RenamePageRequest, request: Request) -
         kwargs["name"] = name
     if "icon" in fields:
         kwargs["icon"] = body.icon
+    if "accent" in fields:
+        kwargs["accent"] = body.accent
     if "parent_id" in fields:
         _require_own_parent(sid, body.parent_id)
         if _would_loop(sid, page_id, body.parent_id):
