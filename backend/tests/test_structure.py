@@ -121,7 +121,10 @@ def test_structure_keeps_valid_data_source():
                                     "id": "kpi1",
                                     "type": "kpi",
                                     "label": "Calories",
-                                    "data_source": {"provider": "nutrition", "query": {"food": "banana"}},
+                                    "data_source": {
+                                        "provider": "nutrition",
+                                        "query": {"food": "banana"},
+                                    },
                                 }
                             ],
                         }
@@ -149,7 +152,10 @@ def test_structure_strips_out_of_domain_data_source():
                                     "id": "kpi1",
                                     "type": "kpi",
                                     "label": "AAPL",
-                                    "data_source": {"provider": "stocks", "query": {"ticker": "AAPL"}},
+                                    "data_source": {
+                                        "provider": "stocks",
+                                        "query": {"ticker": "AAPL"},
+                                    },
                                 }
                             ],
                         }

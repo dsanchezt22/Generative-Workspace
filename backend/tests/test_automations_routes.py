@@ -207,6 +207,39 @@ def test_run_unknown_404(client):
     assert client.post("/api/automations/nope/run").status_code == 404
 
 
+def test_run_now_409_while_marker_held_then_succeeds(client, monkeypatch):
+    m = _insert_module(client, [{"id": "t", "type": "number_input", "label": "T"}], {})
+    monkeypatch.setattr(
+        "src.services.live_data.fetch", lambda *a, **k: {"value": 40.0, "error": None}
+    )
+    auto = _create(
+        client,
+        {
+            "type": "watch",
+            "provider": "weather",
+            "query": {"place": "SF"},
+            "module_id": m["id"],
+            "component_id": "t",
+            "op": "over",
+            "threshold": 30,
+        },
+    ).json()
+    # A scheduler tick (or a concurrent run-now) holds the in-flight marker.
+    with db._conn() as c:
+        c.execute(
+            "UPDATE automations SET run_started_at = ? WHERE id = ?",
+            ("2026-07-06T12:00:00+00:00", auto["id"]),
+        )
+    r = client.post(f"/api/automations/{auto['id']}/run")
+    assert r.status_code == 409
+    assert "running right now" in r.json()["detail"]
+    # Marker released → run-now works again (and clears it itself in the finally).
+    with db._conn() as c:
+        c.execute("UPDATE automations SET run_started_at = NULL WHERE id = ?", (auto["id"],))
+    r2 = client.post(f"/api/automations/{auto['id']}/run")
+    assert r2.status_code == 200 and r2.json()["activity"]["kind"] == "ran"
+
+
 # ── cross-owner isolation everywhere (RUN-5) ─────────────────────────────────
 
 

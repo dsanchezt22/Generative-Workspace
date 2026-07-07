@@ -137,6 +137,22 @@ def failed_summary(automation_name: str, safe_reason: str) -> str:
     return f'"{_trunc(automation_name)}" failed — {_trunc(safe_reason)}'
 
 
+def auto_disabled_summary(failed_line: str, failures: int) -> str:
+    """Append the auto-disable note to a failed row's summary — the runtime turns
+    a chronically failing automation off (TRUS_RUNTIME_MAX_FAILURES) rather than
+    backing off forever, and says so plainly with the re-enable path."""
+    return (
+        f"{failed_line} — turned this automation off after {failures} straight "
+        "failures; re-enable it from Pulse"
+    )
+
+
+def interrupted_summary(automation_name: str) -> str:
+    """One honest 'failed' row for an automation the scheduler was mid-run on when
+    the process died (boot reconcile) — never a silent loss."""
+    return f'"{_trunc(automation_name)}" was interrupted by a restart mid-run'
+
+
 def preview(action_type: str, payload: dict) -> PreviewPayload | None:
     """A typed preview for consequential actions only (autonomous holds → None).
     Rendered by trusted components as plain text — no markup path exists."""

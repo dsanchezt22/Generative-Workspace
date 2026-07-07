@@ -60,6 +60,7 @@ here is aspirational.
 | Vision (Layout Studio import) | `TRUS_VISION_MODEL`, `TRUS_VISION_BASE_URL`, `TRUS_VISION_TIMEOUT` | unset model ⇒ falls back to Gemini for the screenshot read |
 | Semantic cache | `TRUS_CACHE`, `TRUS_CACHE_THRESHOLD`, `TRUS_CACHE_SEED_THRESHOLD`, `TRUS_EMBED_BASE_URL`, `TRUS_EMBED_MODEL` | on by default; dependency-free hashing embedder unless `TRUS_EMBED_BASE_URL` is set |
 | Live data widgets | `TRUS_LIVE_DATA`, `TRUS_LIVE_CACHE_MAX` | `on` (real fetch, e.g. weather); cache capped at 5000 rows, oldest pruned on write |
+| Automation runtime (V2) | `TRUS_RUNTIME`, `TRUS_RUNTIME_TICK_SECS`, `TRUS_RUNTIME_BATCH`, `TRUS_RUNTIME_BACKOFF_BASE`, `TRUS_RUNTIME_BACKOFF_CAP`, `TRUS_RUNTIME_MAX_FAILURES`, `TRUS_TZ`, `TRUS_APPROVAL_TTL_HOURS`, `TRUS_ACTIVITY_MAX` | scheduler on, 15s tick; auto-disables an automation after 10 straight failures (`TRUS_RUNTIME_MAX_FAILURES`); `TRUS_TZ` (IANA name, e.g. `America/Los_Angeles`) makes a `daily_at` fire at that local time — unset ⇒ UTC |
 | Screenshot capture engine | `TRUS_CAPTURE_OCR`, `TRUS_CAPTURE_VERIFY`, `TRUS_CAPTURE_CONF_THRESHOLD`, `TRUS_CAPTURE_AUTOPROMOTE` | OCR/verify off by default (optional deps); autopromote on |
 | Layout Studio URL import | `TRUS_ALLOW_URL_IMPORT` | `0`; in prod, URL-based image import 422s unless set to `1` (SSRF guard, Stage-1 review) |
 | Misc | `TRUS_LOG_LEVEL` | `INFO` |

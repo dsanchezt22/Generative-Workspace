@@ -244,10 +244,21 @@ def delete_automation(aid: str, request: Request) -> None:
 def run_automation(aid: str, request: Request) -> dict:
     owner = _owner_id(request)
     _rate(owner)
+    now = _now_dt()
     row = db.automation_get(owner, aid)
     if row is None:
         raise HTTPException(status_code=404, detail="Automation not found")
-    activity, approval = runtime.run_once(owner, row, _now_dt(), next_run_at=row["next_run_at"])
+    # Run-now mutex: acquire the same in-flight marker the scheduler stamps. If a
+    # tick (or another run-now) is mid-run, refuse honestly rather than double-fire.
+    if not db.automation_acquire_run(owner, aid, now.isoformat()):
+        raise HTTPException(
+            status_code=409,
+            detail="This automation is running right now — check Pulse in a moment.",
+        )
+    try:
+        activity, approval = runtime.run_once(owner, row, now, next_run_at=row["next_run_at"])
+    finally:
+        db.automation_clear_run(owner, aid)  # run_once already clears it; belt-and-braces
     return {
         "activity": _activity_out(owner, activity) if activity else None,
         "approval": _approval_out(owner, approval) if approval else None,

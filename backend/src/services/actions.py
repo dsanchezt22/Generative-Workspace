@@ -65,6 +65,10 @@ Executor = Callable[[str, dict, ExecContext], ExecResult]
 
 @dataclass(frozen=True)
 class ActionSpec:
+    # Fail-closed floor: a NEW consequential executor is irreversible=True until
+    # explicitly reviewed down (test_consequential_floor_is_irreversible_unless_
+    # allowlisted guards it; today archive_module is the only reviewed-reversible
+    # exception).
     floor: Tier
     irreversible: bool  # True → AUT-4 hard floor: NEVER autonomous, dial ignored
     uses_llm: bool  # True → budget MUST pass before execution
@@ -422,6 +426,14 @@ def _exec_delete_data(owner: str, payload: dict, ctx: ExecContext) -> ExecResult
 
 
 # ── The frozen registry (12 types, every one with a real executor) ───────────
+#
+# INVARIANT (test_no_spec_is_both_llm_and_irreversible): no spec is BOTH uses_llm
+# AND irreversible. _freeze_payload is a documented no-op for uses_llm actions
+# (zero-spend park freezes the SPEC, not composed content), so a spec with both
+# flags would let "approve" authorize model output that was never previewed for
+# an irreversible delivery. The escape for a future compose-and-send action is
+# two-stage approval: approve spend → compose → approve the frozen bytes — never
+# a single ActionSpec carrying both flags.
 
 ACTION_SPECS: dict[str, ActionSpec] = {
     # autonomous floor — reversible, internal to the owner's workspace

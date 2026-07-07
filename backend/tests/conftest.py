@@ -120,6 +120,8 @@ def _isolate_llm_env(monkeypatch):
         "TRUS_RUNTIME_BACKOFF_CAP",
         "TRUS_RUNTIME_GEN_RATE_MAX",
         "TRUS_RUNTIME_GEN_RATE_WINDOW",
+        "TRUS_RUNTIME_MAX_FAILURES",
+        "TRUS_TZ",
         "TRUS_ACTIVITY_MAX",
         "TRUS_APPROVAL_TTL_HOURS",
         # Per-surface sharing (SHARE-1..3): the public read path's own per-IP rate

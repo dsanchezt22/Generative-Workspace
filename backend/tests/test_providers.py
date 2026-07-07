@@ -55,6 +55,37 @@ class _BadJsonResp:
         return False
 
 
+def test_every_outbound_urlopen_passes_explicit_timeout():
+    """Source invariant: every urlopen() in the two HTTP-making modules carries an
+    explicit timeout=. A future executor must not silently ship an unbounded
+    network call that stalls the single scheduler thread. AST walk (not a substring
+    grep) so a module-level constant (timeout=_TIMEOUT) counts and a multi-line
+    call is still checked correctly."""
+    import ast
+    from pathlib import Path
+
+    import src.llm
+    import src.services.live_data
+
+    for module in (src.llm, src.services.live_data):
+        tree = ast.parse(Path(module.__file__).read_text())
+        calls = [
+            n
+            for n in ast.walk(tree)
+            if isinstance(n, ast.Call)
+            and (
+                (isinstance(n.func, ast.Attribute) and n.func.attr == "urlopen")
+                or (isinstance(n.func, ast.Name) and n.func.id == "urlopen")
+            )
+        ]
+        assert calls, f"expected at least one urlopen call in {module.__name__}"
+        for call in calls:
+            assert "timeout" in {kw.arg for kw in call.keywords}, (
+                f"{module.__name__}:{call.lineno} — urlopen without an explicit "
+                "timeout can stall the scheduler thread"
+            )
+
+
 def test_resolve_provider_auto(monkeypatch):
     _clear(monkeypatch)
     assert llm._resolve_provider() == "stub"

@@ -199,6 +199,7 @@ CREATE TABLE IF NOT EXISTS automations (
     last_run_at   TEXT,
     last_status   TEXT,                       -- mirror of latest activity kind for cheap list views
     failure_count INTEGER NOT NULL DEFAULT 0, -- consecutive executor EXCEPTIONS; drives backoff
+    run_started_at TEXT,                      -- in-flight marker: set at claim, cleared on outcome; NULL at boot ⇒ orphan
     created_at    TEXT NOT NULL,
     updated_at    TEXT NOT NULL
 );
@@ -345,6 +346,11 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE gen_cache ADD COLUMN owner TEXT NOT NULL DEFAULT 'local'")
     if "owner" not in lcols:
         conn.execute("ALTER TABLE layout_library ADD COLUMN owner TEXT NOT NULL DEFAULT 'local'")
+    # V2 runtime: the in-flight marker (crash-visibility + run-now mutex), added
+    # after the automations table shipped, so existing V2 DBs need it too (nullable).
+    acols = {r[1] for r in conn.execute("PRAGMA table_info(automations)").fetchall()}
+    if "run_started_at" not in acols:
+        conn.execute("ALTER TABLE automations ADD COLUMN run_started_at TEXT")
 
 
 @contextmanager
@@ -1782,7 +1788,7 @@ def profile_clear(owner: str) -> int:
 _AUTOMATION_COLS = (
     "id, owner, page_id, name, description, action_type, action_json, state_json, "
     "schedule_kind, interval_secs, daily_at, trust_dial, enabled, next_run_at, "
-    "last_run_at, last_status, failure_count, created_at, updated_at"
+    "last_run_at, last_status, failure_count, run_started_at, created_at, updated_at"
 )
 
 
@@ -1953,13 +1959,17 @@ def automation_mark_run(
     enabled=_UNSET,
 ) -> None:
     """The scheduler's bookkeeping writer — NEVER writes trust_dial. Column set is
-    disjoint from PATCH's (AUT-3). `enabled` is written only on quarantine
-    auto-disable; `state_json` only when an executor returns new scratch state."""
+    disjoint from PATCH's (AUT-3). `enabled` is written on quarantine/chronic-
+    failure auto-disable; `state_json` only when an executor returns new scratch
+    state. Always clears run_started_at: every run_once outcome flows through here,
+    so the in-flight marker is released on every branch (only a hard process death
+    leaves it set for the boot reconcile)."""
     sets = [
         "last_run_at = ?",
         "next_run_at = ?",
         "last_status = ?",
         "failure_count = ?",
+        "run_started_at = NULL",
         "updated_at = ?",
     ]
     params: list = [last_run_at, next_run_at, last_status, failure_count, _now()]
@@ -1974,6 +1984,49 @@ def automation_mark_run(
         c.execute(  # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
             f"UPDATE automations SET {', '.join(sets)} WHERE id = ? AND owner = ?", params
         )
+
+
+# ⚙ scheduler-only: stamp the in-flight marker right after the CAS claim. The
+# claim already guarantees exclusivity, so this is an unconditional id-keyed set;
+# automation_mark_run clears it on the run's outcome.
+def automation_mark_started(aid: str, started_at: str) -> None:
+    with _conn() as c:
+        c.execute("UPDATE automations SET run_started_at = ? WHERE id = ?", (started_at, aid))
+
+
+def automation_acquire_run(owner: str, aid: str, started_at: str) -> bool:
+    """Owner-scoped run-now mutex: stamp the in-flight marker ONLY if it is not
+    already set. rowcount 0 ⇒ a scheduler tick (or a concurrent run-now) is mid-run
+    → the route returns 409 instead of double-firing. Cleared when the run finishes."""
+    with _conn() as c:
+        cur = c.execute(
+            "UPDATE automations SET run_started_at = ?"
+            " WHERE id = ? AND owner = ? AND run_started_at IS NULL",
+            (started_at, aid, owner),
+        )
+        return cur.rowcount == 1
+
+
+def automation_clear_run(owner: str, aid: str) -> None:
+    """Release the in-flight marker (owner-scoped). Belt-and-braces: the run's own
+    bookkeeping already clears it, but the run-now route clears in a finally and
+    the boot reconcile clears each orphan, so a marker can never get stuck."""
+    with _conn() as c:
+        c.execute(
+            "UPDATE automations SET run_started_at = NULL WHERE id = ? AND owner = ?", (aid, owner)
+        )
+
+
+# ⚙ scheduler-only (cross-owner): rows still carrying an in-flight marker at boot —
+# a hard process death mid-run (every normal outcome clears the marker). The
+# Scheduler.start() reconcile journals one honest 'failed' row per orphan.
+def automations_interrupted() -> list[dict]:
+    with _conn() as c:
+        # nosemgrep: python.lang.security.audit.formatted-sql-query.formatted-sql-query,python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
+        rows = c.execute(
+            f"SELECT {_AUTOMATION_COLS} FROM automations WHERE run_started_at IS NOT NULL"
+        ).fetchall()
+    return [dict(r) for r in rows]
 
 
 _APPROVAL_COLS = (

@@ -100,6 +100,35 @@ def test_compute_next_run_daily_today_vs_tomorrow():
     assert runtime._compute_next_run(row, after) == datetime(2026, 7, 7, 7, 30, tzinfo=timezone.utc)
 
 
+# ── TRUS_TZ: daily_at interpreted in a local zone, on both DST sides ──────────
+
+
+def test_daily_respects_trus_tz_pdt(monkeypatch):
+    # America/Los_Angeles is UTC-7 in July (PDT): 07:00 local → 14:00Z.
+    monkeypatch.setenv("TRUS_TZ", "America/Los_Angeles")
+    row = {"schedule_kind": "daily", "daily_at": "07:00", "interval_secs": None}
+    now = datetime(2026, 7, 6, 12, 0, tzinfo=timezone.utc)  # 05:00 PDT
+    assert runtime._compute_next_run(row, now) == datetime(2026, 7, 6, 14, 0, tzinfo=timezone.utc)
+
+
+def test_daily_respects_trus_tz_pst(monkeypatch):
+    # America/Los_Angeles is UTC-8 in January (PST): 07:00 local → 15:00Z.
+    monkeypatch.setenv("TRUS_TZ", "America/Los_Angeles")
+    row = {"schedule_kind": "daily", "daily_at": "07:00", "interval_secs": None}
+    now = datetime(2026, 1, 6, 12, 0, tzinfo=timezone.utc)  # 04:00 PST
+    assert runtime._compute_next_run(row, now) == datetime(2026, 1, 6, 15, 0, tzinfo=timezone.utc)
+
+
+def test_daily_invalid_tz_falls_back_to_utc(monkeypatch):
+    # An unknown zone must not crash the tick — it falls back to UTC (the default).
+    monkeypatch.setenv("TRUS_TZ", "Not/AZone")
+    row = {"schedule_kind": "daily", "daily_at": "07:30", "interval_secs": None}
+    before = datetime(2026, 7, 6, 7, 29, tzinfo=timezone.utc)
+    assert runtime._compute_next_run(row, before) == datetime(
+        2026, 7, 6, 7, 30, tzinfo=timezone.utc
+    )
+
+
 # ── failure isolation + backoff doubling + cap + reset ───────────────────────
 
 
@@ -247,6 +276,81 @@ def test_start_stop_joins_within_timeout(monkeypatch):
 
 
 # ── adopt_session_data re-owns automations + approvals + activity ────────────
+
+
+# ── chronic-failure auto-disable (TRUS_RUNTIME_MAX_FAILURES) ─────────────────
+
+
+def test_auto_disables_after_max_failures(monkeypatch):
+    monkeypatch.setenv("TRUS_RUNTIME_MAX_FAILURES", "3")
+    owner = _owner()
+    a = _mk(owner, "sort", '{"type":"sort","module_id":"gone","component_id":"c","by":"date"}')
+    # Drive run_once with failure_count already at threshold-1, so the next failure
+    # crosses it (the sort target is missing → the executor raises).
+    row = db.automation_get(owner, a["id"])
+    row["failure_count"] = 2
+    act, _ = runtime.run_once(owner, row, NOW, next_run_at=row["next_run_at"])
+    disabled = db.automation_get(owner, a["id"])
+    assert disabled["enabled"] == 0
+    assert disabled["failure_count"] == 3
+    assert act["kind"] == "failed"
+    assert "turned this automation off" in act["summary"] and "Pulse" in act["summary"]
+
+
+def test_below_max_failures_stays_enabled():
+    owner = _owner()
+    a = _mk(owner, "sort", '{"type":"sort","module_id":"gone","component_id":"c","by":"date"}')
+    runtime.Scheduler(now_fn=lambda: NOW).tick(NOW)  # one failure, default threshold 10
+    row = db.automation_get(owner, a["id"])
+    assert row["enabled"] == 1
+    assert row["failure_count"] == 1
+    assert row["last_status"] == "failed"
+
+
+# ── in-flight marker: set at claim, cleared on every outcome, boot reconcile ──
+
+
+def test_tick_sets_marker_during_run_and_clears_after(monkeypatch):
+    owner = _owner()
+    a = _mk_learn(owner, next_run="2020-01-01T00:00:00+00:00")
+    seen: dict = {}
+    real = runtime.run_once
+
+    def spy(owner_, row_, now_, *, next_run_at):
+        seen["during"] = db.automation_get(owner_, row_["id"])["run_started_at"]
+        return real(owner_, row_, now_, next_run_at=next_run_at)
+
+    monkeypatch.setattr(runtime, "run_once", spy)
+    runtime.Scheduler(now_fn=lambda: NOW).tick(NOW)
+    assert seen["during"] == NOW.isoformat()  # stamped right after the CAS claim
+    assert db.automation_get(owner, a["id"])["run_started_at"] is None  # cleared on outcome
+
+
+def test_exception_branch_clears_run_marker():
+    # A failing executor still completes with a journaled outcome, so the marker is
+    # released — only a hard process death leaves it set (that's the boot reconcile).
+    owner = _owner()
+    a = _mk(owner, "sort", '{"type":"sort","module_id":"gone","component_id":"c","by":"date"}')
+    row = db.automation_get(owner, a["id"])
+    db.automation_mark_started(row["id"], NOW.isoformat())
+    runtime.run_once(owner, row, NOW, next_run_at=row["next_run_at"])
+    assert db.automation_get(owner, a["id"])["run_started_at"] is None
+
+
+def test_boot_reconcile_journals_interrupted_and_clears_marker():
+    owner = _owner()
+    a = _mk_learn(owner)
+    # Simulate a hard death mid-run: marker set, no journaled outcome.
+    with db._conn() as c:
+        c.execute(
+            "UPDATE automations SET run_started_at = ? WHERE id = ?",
+            ("2020-01-01T00:00:00+00:00", a["id"]),
+        )
+    runtime.Scheduler(now_fn=lambda: NOW)._reconcile_interrupted(NOW)
+    assert db.automation_get(owner, a["id"])["run_started_at"] is None
+    failed = [e for e in db.activity_list(owner, limit=10) if e["kind"] == "failed"]
+    assert len(failed) == 1
+    assert "interrupted by a restart" in failed[0]["summary"]
 
 
 def test_adopt_reowns_all_three_tables():

@@ -15,7 +15,8 @@ import logging
 import os
 import threading
 from collections.abc import Callable
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, tzinfo
+from zoneinfo import ZoneInfo
 
 from src import db
 from src.routes.deps import _RateLimiter
@@ -50,6 +51,23 @@ def _gen_rate_window() -> float:
     return float(os.environ.get("TRUS_RUNTIME_GEN_RATE_WINDOW", "3600"))
 
 
+def _max_failures() -> int:
+    return int(os.environ.get("TRUS_RUNTIME_MAX_FAILURES", "10"))
+
+
+def _schedule_tz() -> tzinfo:
+    """The IANA zone a daily_at is interpreted in (TRUS_TZ). Unset ⇒ UTC (the
+    historical behavior); an unknown/invalid name also falls back to UTC rather
+    than crashing the tick. Read fresh per call (conftest isolates it)."""
+    name = os.environ.get("TRUS_TZ", "").strip()
+    if not name:
+        return timezone.utc
+    try:
+        return ZoneInfo(name)
+    except Exception:
+        return timezone.utc
+
+
 # The scheduler's OWN limiter instance — never eats the interactive _gen_limiter
 # budget (a chatty voice/live session and a scheduled digest are separate rates).
 _runtime_limiter = _RateLimiter(max_calls=10, window_secs=3600)
@@ -74,13 +92,16 @@ def budget_ok(owner: str, now: datetime) -> bool:
 
 def _compute_next_run(row: dict, now: datetime) -> datetime:
     """The next fire, ALWAYS computed from now (restart-coalesce: three days down
-    ≠ 72 replayed digests). interval → now + interval; daily → the next HH:MM UTC
-    strictly after now."""
+    ≠ 72 replayed digests). interval → now + interval; daily → the next HH:MM in
+    TRUS_TZ (default UTC) strictly after now, returned as a UTC instant."""
     if row["schedule_kind"] == "interval":
         return now + timedelta(seconds=int(row["interval_secs"]))
     h, m = str(row["daily_at"]).split(":")
-    cand = now.replace(hour=int(h), minute=int(m), second=0, microsecond=0)
-    return cand if cand > now else cand + timedelta(days=1)
+    local_now = now.astimezone(_schedule_tz())
+    cand = local_now.replace(hour=int(h), minute=int(m), second=0, microsecond=0)
+    if cand <= local_now:
+        cand += timedelta(days=1)
+    return cand.astimezone(timezone.utc)
 
 
 def _ran_detail(automation: dict, payload: dict, result: dict) -> dict | None:
@@ -217,7 +238,13 @@ def run_once(
     except Exception as e:  # failure isolation: raw detail → log only, class name journaled
         _log.exception("automation %s failed", aid)
         failures = automation["failure_count"] + 1
+        disabled = failures >= _max_failures()  # chronic failure → stop retrying, turn it off
         backoff = min(_backoff_base() * (2**failures), _backoff_cap())
+        summary = legibility.failed_summary(name, actions.safe_reason(e))
+        err_detail: dict = {"reason": "error", "error_class": type(e).__name__}
+        if disabled:
+            summary = legibility.auto_disabled_summary(summary, failures)
+            err_detail["auto_disabled"] = True
         db.automation_mark_run(
             owner,
             aid,
@@ -225,13 +252,14 @@ def run_once(
             next_run_at=(now + timedelta(seconds=backoff)).isoformat(),
             last_status="failed",
             failure_count=failures,
+            **({"enabled": False} if disabled else {}),
         )
         act = db.activity_add(
             owner,
             "failed",
-            legibility.failed_summary(name, actions.safe_reason(e)),
+            summary,
             automation_id=aid,
-            detail_json=json.dumps({"reason": "error", "error_class": type(e).__name__}),
+            detail_json=json.dumps(err_detail),
         )
         return act, None
 
@@ -275,8 +303,24 @@ class Scheduler:
         self._thread: threading.Thread | None = None
 
     def start(self) -> None:
+        self._reconcile_interrupted(self._now_fn())
         self._thread = threading.Thread(target=self._loop, name="trus-runtime", daemon=True)
         self._thread.start()
+
+    def _reconcile_interrupted(self, now: datetime) -> None:
+        """Boot honesty: an automation left with its in-flight marker set (a hard
+        process death mid-run — every normal outcome clears it) gets exactly one
+        legible 'failed' row and the marker cleared, so a crashed run is never a
+        silent loss."""
+        for row in db.automations_interrupted():
+            db.activity_add(
+                row["owner"],
+                "failed",
+                legibility.interrupted_summary(row["name"]),
+                automation_id=row["id"],
+                detail_json=json.dumps({"reason": "interrupted"}),
+            )
+            db.automation_clear_run(row["owner"], row["id"])
 
     def stop(self, join_timeout: float = 5.0) -> None:
         self._stop.set()
@@ -304,6 +348,7 @@ class Scheduler:
             nxt = _compute_next_run(row, now)
             if not db.automation_claim(row["id"], row["next_run_at"], nxt.isoformat()):
                 continue  # a future second worker (or restart catch-up) lost the claim
+            db.automation_mark_started(row["id"], now.isoformat())  # in-flight marker
             run_once(row["owner"], row, now, next_run_at=nxt.isoformat())
             ran += 1
         return ran

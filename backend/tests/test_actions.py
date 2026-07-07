@@ -7,7 +7,7 @@ exercised against a real (isolated) SQLite file via the db layer.
 from datetime import datetime, timezone
 
 import pytest
-from src import db
+from src import db, llm
 from src.schema import ModuleConfig
 from src.services import actions
 
@@ -83,6 +83,36 @@ def test_unknown_type_raises_keyerror():
 
 def test_registry_has_twelve_types():
     assert len(actions.ACTION_SPECS) == 12
+
+
+# ── registry invariants (fail-closed floor, no un-previewed irreversible spend) ─
+
+# The ONE reviewed-reversible exception on the consequential floor (archive is
+# restorable from Archived). Any other consequential spec must be irreversible.
+_REVIEWED_REVERSIBLE_CONSEQUENTIAL = {"archive_module"}
+
+
+def test_no_spec_is_both_llm_and_irreversible():
+    # _freeze_payload is a no-op for uses_llm actions (zero-spend park freezes the
+    # SPEC, not composed content), so a spec with both flags would let "approve"
+    # authorize model output never previewed for an irreversible delivery. A
+    # future compose-and-send must use two-stage approval instead.
+    for action_type, spec in actions.ACTION_SPECS.items():
+        assert not (spec.uses_llm and spec.irreversible), (
+            f"{action_type}: uses_llm+irreversible authorizes un-previewed model "
+            "output for irreversible delivery — use two-stage approval instead"
+        )
+
+
+def test_consequential_floor_is_irreversible_unless_allowlisted():
+    # Fail-closed: a new consequential executor is irreversible=True until
+    # explicitly reviewed down into the allowlist above.
+    for action_type, spec in actions.ACTION_SPECS.items():
+        if spec.floor == "consequential" and action_type not in _REVIEWED_REVERSIBLE_CONSEQUENTIAL:
+            assert spec.irreversible, (
+                f"{action_type}: consequential executors are irreversible=True until "
+                "explicitly reviewed down (add to the allowlist with a reason)"
+            )
 
 
 # ── watch: edge-triggered via state_json.armed ───────────────────────────────
@@ -383,6 +413,64 @@ def test_summarize_falls_back_to_page_modules(monkeypatch):
     assert res.result["n"] == 2  # both modules on the page summarized
     assert db.get_module(owner, tgt.id).config.state["d"] == "Two tools present."
     assert src.id  # referenced
+
+
+def _capturing_generate(store):
+    """An llm.generate replacement that records the composed prompt (+ system) and
+    sets llm.last_call, so a test can assert what _exec_summarize actually sends
+    to the model. Accepts the keyword-only expect_text param the path threads."""
+
+    def _gen(prompt, system=None, **kwargs):
+        store["prompt"] = prompt
+        store["system"] = system
+        res = llm.GenResult(text="A tidy digest.", provider="test", model="test")
+        llm.last_call.set(res)
+        return res
+
+    return _gen
+
+
+def test_summarize_prompt_includes_profile_facts(monkeypatch):
+    # PROF-1 (DESIGN-runtime §8): a seeded profile fact must reach the summarize
+    # prompt via orchestrator._profile_block, so a digest is shaped by what Trus
+    # has learned about the owner.
+    owner = "o"
+    m = _mk_module(owner, [{"id": "note", "type": "note", "label": "Digest"}], {"note": ""})
+    db.profile_add(owner, "preference", "Prefers metric units", source="manual")
+    store: dict = {}
+    monkeypatch.setattr("src.services.actions.llm.generate", _capturing_generate(store))
+    actions.ACTION_SPECS["summarize"].execute(
+        owner,
+        {
+            "type": "summarize",
+            "module_id": m.id,
+            "component_id": "note",
+            "source_module_ids": [m.id],
+        },
+        _ctx(),
+    )
+    assert "What I know about you:" in store["prompt"]
+    assert "Prefers metric units" in store["prompt"]
+
+
+def test_summarize_prompt_omits_profile_block_when_empty(monkeypatch):
+    # No profile facts → no "What I know about you:" block at all (the empty-facts
+    # branch of _profile_block returns "").
+    owner = "o"
+    m = _mk_module(owner, [{"id": "note", "type": "note", "label": "Digest"}], {"note": ""})
+    store: dict = {}
+    monkeypatch.setattr("src.services.actions.llm.generate", _capturing_generate(store))
+    actions.ACTION_SPECS["summarize"].execute(
+        owner,
+        {
+            "type": "summarize",
+            "module_id": m.id,
+            "component_id": "note",
+            "source_module_ids": [m.id],
+        },
+        _ctx(),
+    )
+    assert "What I know about you:" not in store["prompt"]
 
 
 def test_safe_reason_class_name_for_plain_exception():
