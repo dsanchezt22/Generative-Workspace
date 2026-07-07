@@ -70,6 +70,22 @@ def test_resolve_provider_auto(monkeypatch):
     assert llm._resolve_provider() == "stub"  # explicit override wins
 
 
+def test_stub_expect_text_returns_honest_prose_not_module_json(monkeypatch):
+    # A ModuleConfig-shaped JSON dump (the default stub shape, for module
+    # generation) would read as garbage inside an automation's digest/draft
+    # Feed entry — expect_text must get honest, clearly-labeled prose instead.
+    _clear(monkeypatch)
+    monkeypatch.setenv("TRUS_LLM_PROVIDER", "stub")
+    default = llm.generate("Summarize this page.", system="s")
+    assert default.text.strip().startswith("{")  # unchanged: still the module stub
+
+    text = llm.generate("Summarize this page.", system="s", expect_text=True)
+    assert text.provider == "stub"
+    assert not text.text.strip().startswith("{")
+    assert "no live model configured" in text.text
+    assert "Summarize this page." in text.text  # echoes the real prompt, doesn't fabricate
+
+
 def test_provider_info_has_no_secrets(monkeypatch):
     _clear(monkeypatch)
     monkeypatch.setenv("TRUS_LLM_PROVIDER", "openai")
@@ -127,6 +143,27 @@ def test_openai_array_path_skips_json_object(monkeypatch):
     monkeypatch.setattr(llm.urllib.request, "urlopen", fake_urlopen)
     llm.generate("x", system="s", expect_array=True)
     # json_object root would forbid the array the decompose path needs.
+    assert "response_format" not in captured["body"]
+
+
+def test_openai_expect_text_skips_json_object(monkeypatch):
+    # A free-text automation call (digest/draft) must not force JSON mode, or
+    # a real model's plain-prose output would come back JSON-shaped — the
+    # same bug class test_openai_array_path_skips_json_object guards for the
+    # decompose path, but for expect_text instead of expect_array.
+    _clear(monkeypatch)
+    monkeypatch.setenv("TRUS_LLM_PROVIDER", "openai")
+    monkeypatch.setenv("TRUS_LLM_BASE_URL", "http://h/v1")
+    monkeypatch.setenv("TRUS_LLM_MODEL", "m")
+    captured = {}
+
+    def fake_urlopen(req, timeout=None):
+        captured["body"] = json.loads(req.data.decode())
+        return _chat("A short honest sentence.")
+
+    monkeypatch.setattr(llm.urllib.request, "urlopen", fake_urlopen)
+    out = llm.generate("summarize this", system="s", expect_text=True)
+    assert out.text == "A short honest sentence."
     assert "response_format" not in captured["body"]
 
 
@@ -188,7 +225,7 @@ def test_openai_cascade_to_gemini_when_key_present(monkeypatch):
     monkeypatch.setenv("TRUS_LLM_BASE_URL", "http://localhost:1/v1")
     monkeypatch.setenv("TRUS_LLM_MODEL", "m")
     monkeypatch.setenv("GEMINI_API_KEY", "AIza-real-looking-key")
-    monkeypatch.setattr(llm, "_gemini_generate", lambda prompt, system: '{"title":"cascaded"}')
+    monkeypatch.setattr(llm, "_gemini_generate", lambda prompt, system, **_: '{"title":"cascaded"}')
 
     def boom(req, timeout=None):
         raise OSError("refused")
@@ -370,6 +407,23 @@ def test_gemini_config_includes_max_output_tokens_when_set(monkeypatch):
     assert cfg2.max_output_tokens == 256
 
 
+def test_gemini_config_forces_json_by_default_but_not_for_expect_text():
+    # Every ModuleConfig-generating caller relies on JSON mime by default; a
+    # free-text automation call (expect_text=True) must NOT force JSON, or a
+    # real model's digest/draft output would come back JSON-shaped instead of
+    # plain prose (the bug this pair of tests guards against).
+    assert llm._gemini_config("SYS").response_mime_type == "application/json"
+    assert llm._gemini_config("SYS", expect_text=True).response_mime_type is None
+
+
+def test_gemini_generate_expect_text_skips_json_mime(monkeypatch):
+    monkeypatch.setattr(
+        llm, "_get_client", lambda: _FakeGeminiClient(text="Everything looks fine.")
+    )
+    text = llm._gemini_generate("prompt", "sys", expect_text=True)
+    assert text == "Everything looks fine."
+
+
 def test_gemini_generate_success(monkeypatch):
     monkeypatch.setattr(llm, "_get_client", lambda: _FakeGeminiClient(text='{"title":"G"}'))
     text = llm._gemini_generate("prompt", "sys")
@@ -411,7 +465,7 @@ def test_gemini_generate_file_exception_raises(monkeypatch):
 def test_generate_gemini_provider_returns_gemini_result(monkeypatch):
     _clear(monkeypatch)
     monkeypatch.setenv("TRUS_LLM_PROVIDER", "gemini")
-    monkeypatch.setattr(llm, "_gemini_generate", lambda prompt, system: '{"title":"G"}')
+    monkeypatch.setattr(llm, "_gemini_generate", lambda prompt, system, **_: '{"title":"G"}')
     out = llm.generate("x")
     assert out.provider == "gemini"
     assert out.text == '{"title":"G"}'
@@ -450,7 +504,7 @@ def test_cascade_to_gemini_labels_the_gemini_model(monkeypatch):
     monkeypatch.setattr(
         llm, "_openai_chat", lambda *a, **k: (_ for _ in ()).throw(LLMError("down"))
     )
-    monkeypatch.setattr(llm, "_gemini_generate", lambda p, s: '{"title":"cascaded"}')
+    monkeypatch.setattr(llm, "_gemini_generate", lambda p, s, **_: '{"title":"cascaded"}')
     out = llm.generate("x")
     assert out.provider == "gemini"
     assert out.model == "gemini-flash-latest"  # NOT the failed openai model
@@ -472,7 +526,7 @@ def test_gemini_provider_labels_the_gemini_model(monkeypatch):
     _clear(monkeypatch)
     monkeypatch.setenv("TRUS_LLM_PROVIDER", "gemini")
     monkeypatch.setenv("GEMINI_MODEL", "gemini-2.5-pro")
-    monkeypatch.setattr(llm, "_gemini_generate", lambda p, s: '{"title":"G"}')
+    monkeypatch.setattr(llm, "_gemini_generate", lambda p, s, **_: '{"title":"G"}')
     out = llm.generate("x")
     assert out.model == "gemini-2.5-pro"
 

@@ -103,6 +103,69 @@ def test_structure_parse_happy_path():
     assert d.structure.pages[0].accent == "sky"
 
 
+# ── 1b. data_source honesty (SEAM-2): the structure path shares the flat
+# path's sanitizer, not a separate/weaker check ────────────────────────────
+
+
+def test_structure_keeps_valid_data_source():
+    d = orchestrator._parse_structure(
+        {
+            "pages": [
+                {
+                    "name": "Kitchen",
+                    "modules": [
+                        {
+                            "title": "Groceries",
+                            "components": [
+                                {
+                                    "id": "kpi1",
+                                    "type": "kpi",
+                                    "label": "Calories",
+                                    "data_source": {"provider": "nutrition", "query": {"food": "banana"}},
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ]
+        }
+    )
+    kpi = d.structure.pages[0].modules[0].components[0]
+    assert kpi.data_source is not None
+    assert kpi.data_source.provider == "nutrition"
+
+
+def test_structure_strips_out_of_domain_data_source():
+    d = orchestrator._parse_structure(
+        {
+            "pages": [
+                {
+                    "name": "Portfolio",
+                    "modules": [
+                        {
+                            "title": "Stocks",
+                            "components": [
+                                {
+                                    "id": "kpi1",
+                                    "type": "kpi",
+                                    "label": "AAPL",
+                                    "data_source": {"provider": "stocks", "query": {"ticker": "AAPL"}},
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ]
+        }
+    )
+    # The out-of-domain binding costs only itself — the component (and its
+    # page/module) survive as ordinary manual entry, exactly the flat path's
+    # R-705 contract (test_generate_modules_strips_out_of_domain_data_source).
+    kpi = d.structure.pages[0].modules[0].components[0]
+    assert kpi.data_source is None
+    assert d.structure.pages[0].name == "Portfolio"
+
+
 # ── 2. size ceiling — clip, never raise ──────────────────────────────────────
 
 

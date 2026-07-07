@@ -139,6 +139,16 @@ def _stub_module_for(prompt: str) -> str:
     return json.dumps(pick_template(prompt))
 
 
+def _stub_prose_for(prompt: str) -> str:
+    """Honest stub text for FREE-TEXT calls (automation digests/drafts) — a
+    ModuleConfig-shaped JSON dump (the default stub shape) would read as
+    garbage in a digest/draft feed entry, so this stays plain prose and says
+    outright that no live model is configured, rather than fabricating one."""
+    snippet = " ".join(prompt.split())[:160]
+    ellipsis = "…" if len(prompt) > 160 else ""
+    return f"(stub — no live model configured) {snippet}{ellipsis}"
+
+
 # -------------------------------------------------------------- gemini -------
 
 
@@ -151,29 +161,34 @@ def _get_client():
     return _client
 
 
-def _gemini_config(system: str | None):
+def _gemini_config(system: str | None, *, expect_text: bool = False):
     from google.genai import types
 
     # Static system_instruction + variable text at the tail → Gemini's implicit
     # context caching (automatic on 2.5/3.x) discounts the repeated prefix for free.
     kwargs: dict = {
         "system_instruction": system,
-        "response_mime_type": "application/json",
         "temperature": DEFAULT_TEMPERATURE,
     }
+    # Every OTHER Gemini caller wants a ModuleConfig, so JSON mime is the
+    # default — but a free-text call (an automation's digest/draft) must not
+    # be forced into JSON, or the "plain prose" contract breaks even on a
+    # real, working model call.
+    if not expect_text:
+        kwargs["response_mime_type"] = "application/json"
     mot = _max_output_tokens()
     if mot:
         kwargs["max_output_tokens"] = mot
     return types.GenerateContentConfig(**kwargs)
 
 
-def _gemini_generate(prompt: str, system: str | None) -> str:
+def _gemini_generate(prompt: str, system: str | None, *, expect_text: bool = False) -> str:
     model = _gemini_model()
     try:
         response = _get_client().models.generate_content(
             model=model,
             contents=prompt,
-            config=_gemini_config(system),
+            config=_gemini_config(system, expect_text=expect_text),
         )
     except Exception as e:  # network, quota (429), auth — surfaced cleanly upstream
         raise LLMError(str(e)) from e
@@ -229,7 +244,10 @@ def _gemini_usage(response: object) -> tuple[int | None, int | None]:
 
 
 def _openai_chat(
-    messages: list[dict], schema: dict | None = None, expect_array: bool = False
+    messages: list[dict],
+    schema: dict | None = None,
+    expect_array: bool = False,
+    expect_text: bool = False,
 ) -> tuple[str, dict]:
     base = os.environ.get("TRUS_LLM_BASE_URL", "").strip().rstrip("/")
     model = os.environ.get("TRUS_LLM_MODEL", "").strip()
@@ -247,13 +265,15 @@ def _openai_chat(
     # json_object forces an object root, which is incompatible with the
     # array-returning decompose path — skip the constraint there and rely on the
     # prompt + validate/retry. Schema-guided decoding is opt-in (servers that
-    # support it: vLLM, llama.cpp, recent Ollama).
-    if mode == "schema" and schema is not None and not expect_array:
+    # support it: vLLM, llama.cpp, recent Ollama). A free-text call (an
+    # automation's digest/draft) must skip it too, or a real model's plain-
+    # prose output comes back JSON-shaped instead.
+    if not expect_text and mode == "schema" and schema is not None and not expect_array:
         body["response_format"] = {
             "type": "json_schema",
             "json_schema": {"name": "module_config", "schema": schema, "strict": False},
         }
-    elif mode in ("object", "schema") and not expect_array:
+    elif not expect_text and mode in ("object", "schema") and not expect_array:
         body["response_format"] = {"type": "json_object"}
 
     data = json.dumps(body).encode("utf-8")
@@ -293,6 +313,7 @@ def generate(
     *,
     schema: dict | None = None,
     expect_array: bool = False,
+    expect_text: bool = False,
 ) -> GenResult:
     # Reset provenance up front so an exception path leaves last_call = None
     # (unknown provenance), never a stale previous-call value (R-403).
@@ -304,6 +325,8 @@ def generate(
         return r
 
     def _stub_text() -> str:
+        if expect_text:
+            return _stub_prose_for(prompt)
         if expect_array:
             from src.stub_templates import pick_system
 
@@ -318,7 +341,9 @@ def generate(
             messages.append({"role": "system", "content": system})
         messages.append({"role": "user", "content": prompt})
         try:
-            text, usage = _openai_chat(messages, schema=schema, expect_array=expect_array)
+            text, usage = _openai_chat(
+                messages, schema=schema, expect_array=expect_array, expect_text=expect_text
+            )
             return _done(
                 GenResult(
                     text,
@@ -336,11 +361,18 @@ def generate(
             if not _is_stub_key(os.environ.get("GEMINI_API_KEY")):
                 return _done(
                     GenResult(
-                        _gemini_generate(prompt, system), "gemini", _gemini_model(), degraded=True
+                        _gemini_generate(prompt, system, expect_text=expect_text),
+                        "gemini",
+                        _gemini_model(),
+                        degraded=True,
                     )
                 )
             return _done(GenResult(_stub_text(), "stub", "stub", degraded=True))
-    return _done(GenResult(_gemini_generate(prompt, system), "gemini", _gemini_model()))
+    return _done(
+        GenResult(
+            _gemini_generate(prompt, system, expect_text=expect_text), "gemini", _gemini_model()
+        )
+    )
 
 
 def generate_from_file(user_message: str, system: str | None, data: bytes, mime: str) -> str:

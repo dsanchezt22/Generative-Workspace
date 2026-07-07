@@ -193,3 +193,36 @@ already records (STATUS.md, plans, CLAUDE.md).
   nulled (not dropped); confirm then drops the automation only if it's still unresolvable.
   Garbage `action_type` fails the Literal and drops the automation — the parser can never
   invent a type the model didn't state.
+
+- **Real dev env discovery: `.env` has a local Ollama endpoint (`TRUS_LLM_BASE_URL` →
+  `http://localhost:11434/v1`, model `qwen3:4b-instruct-2507-q4_K_M`) AND a real
+  `GEMINI_API_KEY`.** `_resolve_provider()`'s precedence (explicit override → base-url-set
+  → openai) means the default dev server tries the openai/Ollama path FIRST; Ollama isn't
+  running on this machine (`ollama serve` was never started), so every real call currently
+  cascades openai-fail → gemini (keyed, so a REAL Gemini call fires, `degraded=True`) →
+  stub only if ungemini'd. Confirmed with `ollama list` (server unreachable) and a direct,
+  non-secret-leaking `llm.provider_info()` read (only provider/model/base_url — no key
+  ever printed). **Needs-you item for closeout: run `ollama serve` (+ `ollama pull
+  qwen3:4b-instruct-2507-q4_K_M` if not already pulled) to get real LOCAL generation with
+  zero added credentials — Gemini already works today via cascade even without that.**
+
+- **Found + fixed a real (not stub-only) honesty-seam bug: `llm.generate()`'s free-text
+  callers (`actions._exec_summarize`/`_exec_draft`/`_exec_learn`) had no way to ask for
+  plain prose.** Stub mode always returned a ModuleConfig-shaped JSON dump (the
+  module-generation shape) regardless of caller intent, so a "digest" Feed entry showed
+  garbled JSON, not a summary — live-caught by a VISION-DOD verifier driving the real
+  running app. WORSE: the same bug existed on the REAL (non-stub) paths too — both
+  `_gemini_config` and `_openai_chat` force `response_mime_type`/`response_format: json_object`
+  by DEFAULT, so even a working Gemini/Ollama call would return JSON for a "summarize this"
+  prompt. Fixed by adding `expect_text: bool` all the way through `generate()` →
+  `_gemini_config`/`_gemini_generate` and `_openai_chat` (skip JSON-forcing when set) →
+  a new `_stub_prose_for()` (honest "(stub — no live model configured) …" text, never a
+  JSON dump) → `actions._llm_generate(..., expect_text=True)` default. Verified live against
+  a real (unreachable-Ollama → Gemini-cascade) call: digest now reads
+  "The water tracker is at five cups today." instead of forced JSON. Existing tests that
+  monkeypatch `llm.generate`/`_gemini_generate` directly (`test_providers.py`,
+  `test_actions.py`) never exercised the real default-stub shape, which is why this shipped
+  green through 3 build waves — **a monkeypatched-provider unit test proves the write-path
+  logic, not the default-stub end-to-end shape; re-check both.** Two of the four
+  `_gemini_generate` lambda mocks in `test_providers.py` needed a `**_` catch-all to accept
+  the new keyword-only `expect_text` param.

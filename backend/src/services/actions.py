@@ -161,15 +161,21 @@ _LEARN_SYSTEM = (
 )
 
 
-def _llm_generate(owner: str, prompt: str, system: str) -> str:
+def _llm_generate(owner: str, prompt: str, system: str, *, expect_text: bool = True) -> str:
     """Run a model call for an automation and record a gen_event(kind='automation')
     from llm.last_call — the same provenance the interactive `_track` records, so
     scheduled + interactive spend share one owner-day cost wallet. Re-raises
-    LLMError untouched (the runner sanitizes it)."""
+    LLMError untouched (the runner sanitizes it).
+
+    `expect_text=True` (the default — every caller here wants prose or a JSON
+    array, never a ModuleConfig) tells the stub provider to return honest,
+    clearly-labeled placeholder prose instead of the module-generation stub's
+    ModuleConfig-shaped JSON, which would otherwise land as garbage inside a
+    digest/draft Feed entry when no live model is configured."""
     t0 = time.monotonic()
     outcome = "ok"
     try:
-        res = llm.generate(prompt, system=system)
+        res = llm.generate(prompt, system=system, expect_text=expect_text)
         return res.text
     except LLMError:
         outcome = "error"
