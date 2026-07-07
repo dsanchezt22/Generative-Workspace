@@ -156,6 +156,21 @@
 
 ---
 
+### Standing invariants (permanent, not per-run)
+
+- **No raw-markup escape hatch, ever.** The model emits typed configs rendered by
+  the trusted component library — SURF-2 is not a per-run criterion but a permanent
+  law. No future feature may add a raw-HTML block, an iframe surface, or a
+  "custom code" widget, however pressing the primitive ceiling feels: that single
+  exception reopens the entire injection/XSS surface the architecture exists to
+  close (OWASP LLM05:2025 names exactly this failure). Raise ambition by composing
+  primitives, never by widening one artifact's expressiveness.
+- **No action type may combine `uses_llm` with `irreversible`.** Zero-spend park
+  freezes the *spec*, not composed content, so approve would authorize un-previewed
+  model output for irreversible delivery. A future compose-and-send action must use
+  two-stage approval (approve spend → compose → approve the frozen bytes). Pinned by
+  a registry meta-test.
+
 ### Deliberately out of scope for this run (recorded, not forgotten)
 
 Live deploy (Stage-4 Task 10, operator-only) · real credential connectors (Gmail/

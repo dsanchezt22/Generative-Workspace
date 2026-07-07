@@ -194,6 +194,57 @@ already records (STATUS.md, plans, CLAUDE.md).
   Garbage `action_type` fails the Literal and drops the automation — the parser can never
   invent a type the model didn't state.
 
+- **Reduced-motion CSS blocks must crush `animation-delay` too.** The global
+  reduced-motion rules zeroed duration/iteration but not delay — a staggered
+  `animate-pop` with `backwards` fill therefore rendered INVISIBLE for the length
+  of its stagger delay under reduced motion. Both blocks now carry
+  `animation-delay: 0.001ms !important`; keep it when adding new gates. Inline
+  `style={{animationDelay}}` staggers are safe because of this.
+
+- **`lib/motion.ts prefersReducedMotion()` is THE motion gate** (in-app
+  `html[data-motion]` override first, OS query fallback). Canvas zoom-launch,
+  Module assembly, and useAssembly all share it — never write a bespoke
+  matchMedia check for new motion.
+
+- **The product's de-facto card radius is 16px** (`rounded-2xl` + trace
+  `rx/ry=16`, set by Module.tsx). Pulse cards had drifted to 12px and were
+  aligned up. Match Module, not the marketing-site token table, for any new card.
+
+- **The global `:focus-visible` outline can't reach Module or PortalTile** —
+  Module's selected-state inline `outline` and PortalTile's `focus:outline-none`
+  out-specify it, so those two carry their own off-white box-shadow ring. New
+  components should rely on the global rule and NOT set outline-none.
+
+- **`--accent-hover` (#a82478) is the semantic darker-magenta hover for filled
+  accent CTAs** (`hover:bg-[var(--accent-hover)]`, never `hover:brightness-110`
+  — brightening reads neon). Accent-colored TEXT links keep their color on hover;
+  the darken rule is for fills where white text sits on top.
+
+- **New raw-SQL f-string SELECTs need BOTH nosemgrep rule ids on their own line**
+  (`formatted-sql-query` fires alongside `sqlalchemy-execute-raw-query` — the
+  layout_library ALTER pattern); an inline trailing comment does not silence it.
+
+- **`run_started_at` is an internal in-flight marker, not a wire field** — set by
+  the tick after the CAS claim and by run-now's mutex, cleared on every journaled
+  outcome; only a hard process death leaves it set, and Scheduler.start()
+  reconciles those into one honest 'failed' row. Don't add it to AutomationOut.
+
+- **Per-item primary is a documented exception to one-magenta-per-screen.** With
+  N pending approvals the Pulse panel shows N filled-magenta Approve buttons (one
+  per card). Reviewed against DESIGN-ETHOS §2.4 and accepted deliberately: Approve
+  is the per-*item* primary in a queue, the list itself has no competing screen-level
+  CTA while the panel is open (the badge hides), and demoting lower cards to matte
+  would misstate their urgency. Don't "fix" this.
+
+- **Share pages carry defense-in-depth headers, not just metadata.** The share
+  token is a bearer credential in the URL. Beyond the page's `referrer:
+  "no-referrer"` + `robots: noindex` metadata, `next.config.ts` sets real
+  `Referrer-Policy: no-referrer` and `X-Robots-Tag: noindex, nofollow` response
+  headers on `/share/:path*` — empirically, meta-only referrer policies have
+  leaked tokens on some browsers (DIMVA 2019: 7 of 21 major services). Keep both
+  layers; token entropy is `secrets.token_urlsafe(32)` (256-bit CSPRNG), don't
+  reduce it.
+
 - **Real dev env discovery: `.env` has a local Ollama endpoint (`TRUS_LLM_BASE_URL` →
   `http://localhost:11434/v1`, model `qwen3:4b-instruct-2507-q4_K_M`) AND a real
   `GEMINI_API_KEY`.** `_resolve_provider()`'s precedence (explicit override → base-url-set
