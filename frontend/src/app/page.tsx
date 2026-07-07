@@ -7,6 +7,8 @@ import { ConversationPanel } from "@/components/ConversationPanel";
 import { ArchivedPanel } from "@/components/ArchivedPanel";
 import { SnapshotsPanel } from "@/components/SnapshotsPanel";
 import { ProfilePanel } from "@/components/ProfilePanel";
+import { ActivityPanel } from "@/components/ActivityPanel";
+import { ApprovalBadge } from "@/components/ApprovalBadge";
 import { Inspector } from "@/components/Inspector";
 import { DetailView } from "@/components/DetailView";
 import { Sidebar } from "@/components/Sidebar";
@@ -113,6 +115,12 @@ export default function Home() {
   // own facts state; page.tsx only toggles visibility and keeps it mutually
   // exclusive with the other right-hand panels.
   const [profileOpen, setProfileOpen] = useState(false);
+  // V2 Pulse: the "what happened / what needs your tap" surface. Joins the
+  // mutually-exclusive right-aside set. `pendingCount` drives the home badge +
+  // the header toggle's count dot — polled cheaply (approvalCount), refreshed on
+  // focus and after any panel mutation.
+  const [activityOpen, setActivityOpen] = useState(false);
+  const [pendingCount, setPendingCount] = useState(0);
   // R-1102: page delete is the most destructive action (cascades every module
   // on the page) — always confirmed, stating the module count. Holds the page
   // plus its real module ids: `modules` state only covers the ACTIVE page,
@@ -310,6 +318,13 @@ export default function Home() {
     api.pageModuleCounts().then(setChildCounts).catch(() => {});
   }, []);
 
+  // V2 Pulse: the badge's freshness. One indexed COUNT (approvalCount) — cheap
+  // enough to poll. Swallow failures (e.g. the endpoint not yet reachable): the
+  // badge simply stays at its last known value rather than surfacing an error.
+  const refreshPendingCount = useCallback(() => {
+    api.approvalCount().then((r) => setPendingCount(r.pending)).catch(() => {});
+  }, []);
+
   // Check invite-claim status first (R-901): an unclaimed session (prod, anon
   // off) gets the gate instead of the canvas, before any workspace data loads.
   // Then load pages, then modules + conversation for the first page. The
@@ -407,6 +422,24 @@ export default function Home() {
     refreshChildCounts();
   }, [activePageId, refreshChildCounts]);
 
+  // V2 Pulse: poll the pending-approval count every 30s (the freshness ceiling
+  // for the home badge), skipping while the tab is hidden, plus an immediate
+  // refresh on window focus. Not started until the session is claimed (the gate
+  // has no owner to count for). Cleared on unmount.
+  useEffect(() => {
+    if (gated) return;
+    refreshPendingCount();
+    const onFocus = () => refreshPendingCount();
+    window.addEventListener("focus", onFocus);
+    const iv = window.setInterval(() => {
+      if (!document.hidden) refreshPendingCount();
+    }, 30000);
+    return () => {
+      window.removeEventListener("focus", onFocus);
+      window.clearInterval(iv);
+    };
+  }, [gated, refreshPendingCount]);
+
   const handleNewModule = useCallback((m: StoredModule) => {
     setModules((prev) => {
       // The model/stub doesn't pick good canvas coordinates (it tends to emit
@@ -470,6 +503,7 @@ export default function Home() {
     setArchivedOpen(false);
     setSnapshotsOpen(false);
     setProfileOpen(false);
+    setActivityOpen(false);
   }, []);
 
   const handleRefinedModule = useCallback((updated: StoredModule) => {
@@ -679,6 +713,7 @@ export default function Home() {
     setConvoOpen(false);
     setSnapshotsOpen(false);
     setProfileOpen(false);
+    setActivityOpen(false);
     try { setArchived(await api.listArchived()); } catch { setArchived([]); }
     setArchivedOpen(true);
   }, []);
@@ -706,6 +741,7 @@ export default function Home() {
     setConvoOpen(false);
     setArchivedOpen(false);
     setProfileOpen(false);
+    setActivityOpen(false);
     try { setSnapshots(await api.listSnapshots(activePageId)); } catch { setSnapshots([]); }
     setSnapshotsOpen(true);
   }, [activePageId]);
@@ -718,7 +754,45 @@ export default function Home() {
     setConvoOpen(false);
     setArchivedOpen(false);
     setSnapshotsOpen(false);
+    setActivityOpen(false);
     setProfileOpen(true);
+  }, []);
+
+  // V2 Pulse opens like the other right-hand panels (mutually exclusive). It
+  // fetches its own lists on mount, so this just clears selection/inspector and
+  // closes the siblings. On close we re-poll the count so a just-approved item
+  // updates the badge immediately.
+  const openActivity = useCallback(() => {
+    setSelectedId(null);
+    setInspectorId(null);
+    setConvoOpen(false);
+    setArchivedOpen(false);
+    setSnapshotsOpen(false);
+    setProfileOpen(false);
+    setActivityOpen(true);
+  }, []);
+
+  // A journal deep-link was tapped: close Pulse and go to what the automation
+  // touched — focus the module if it's on this page, else switch to its page
+  // (the module is focused once that page's modules load, the existing
+  // pendingFocusRef idiom), or just switch pages when only a page is named.
+  const handlePulseNavigate = useCallback((t: { moduleId?: string | null; pageId?: string | null }) => {
+    setActivityOpen(false);
+    if (t.moduleId) {
+      const onActive = modulesRef.current.some((m) => m.id === t.moduleId);
+      if (onActive) {
+        setSelectedId(t.moduleId);
+        setFocusReq({ id: t.moduleId, n: Date.now() });
+      } else if (t.pageId) {
+        pendingFocusRef.current = t.moduleId;
+        setActivePageId(t.pageId);
+      } else {
+        setSelectedId(t.moduleId);
+        setFocusReq({ id: t.moduleId, n: Date.now() });
+      }
+    } else if (t.pageId) {
+      setActivePageId(t.pageId);
+    }
   }, []);
 
   const handleSaveSnapshot = useCallback(async () => {
@@ -760,6 +834,7 @@ export default function Home() {
     setCmdOpen(false);
     setConvoOpen(false);
     setArchivedOpen(false);
+    setActivityOpen(false);
     if (m.page_id && m.page_id !== activePageId) {
       pendingFocusRef.current = m.id; // applied once the page's modules load
       setActivePageId(m.page_id);
@@ -795,7 +870,7 @@ export default function Home() {
       if (mod && e.key === "/") { e.preventDefault(); setPromptFocus((n) => n + 1); return; }
       if (mod && e.key.toLowerCase() === "d" && selectedId) { e.preventDefault(); handleDuplicateModule(selectedId); return; }
       if (mod && e.key.toLowerCase() === "z" && selectedId && !typing) { e.preventDefault(); handleUndoModule(selectedId); return; }
-      if (e.key === "Escape") { setCmdOpen(false); setShortcutsOpen(false); setArchivedOpen(false); setSnapshotsOpen(false); setProfileOpen(false); setDetailId(null); setSelectedId(null); setInspectorId(null); setConvoOpen(false); return; }
+      if (e.key === "Escape") { setCmdOpen(false); setShortcutsOpen(false); setArchivedOpen(false); setSnapshotsOpen(false); setProfileOpen(false); setActivityOpen(false); setDetailId(null); setSelectedId(null); setInspectorId(null); setConvoOpen(false); return; }
       if (!typing && !mod) {
         if (e.key === "?" || (e.shiftKey && e.key === "/")) setShortcutsOpen(true);
         else if (e.key.toLowerCase() === "f") setFitReq((n) => n + 1);
@@ -916,7 +991,7 @@ export default function Home() {
 
         <button
           type="button"
-          onClick={() => setConvoOpen((v) => { const n = !v; if (n) { setSelectedId(null); setInspectorId(null); setArchivedOpen(false); setSnapshotsOpen(false); setProfileOpen(false); } return n; })}
+          onClick={() => setConvoOpen((v) => { const n = !v; if (n) { setSelectedId(null); setInspectorId(null); setArchivedOpen(false); setSnapshotsOpen(false); setProfileOpen(false); setActivityOpen(false); } return n; })}
           className={`shrink-0 flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs transition ${
             convoOpen
               ? "border-[var(--accent)] text-[var(--foreground)]"
@@ -930,6 +1005,29 @@ export default function Home() {
           {messages.length > 0 && (
             <span className="rounded-full bg-[var(--surface-elevated)] text-[var(--muted)] px-1.5 leading-tight">
               {messages.filter((m) => m.role === "user").length}
+            </span>
+          )}
+        </button>
+
+        {/* V2 Pulse toggle — the always-available entry to what happened / what
+            needs your tap. Chrome, so it stays muted (the magenta accent is the
+            home badge); its count dot mirrors the pending total like History's. */}
+        <button
+          type="button"
+          onClick={() => (activityOpen ? setActivityOpen(false) : openActivity())}
+          className={`shrink-0 flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs transition ${
+            activityOpen
+              ? "border-[var(--accent)] text-[var(--foreground)]"
+              : "border-[var(--border)] text-[var(--muted)] hover:text-[var(--foreground)]"
+          }`}
+          title="Pulse — what happened and what needs your tap"
+          aria-label="Toggle Pulse"
+        >
+          <Icon name="activity" size={14} />
+          <span className="hidden sm:inline">Pulse</span>
+          {pendingCount > 0 && (
+            <span className="rounded-full bg-[var(--surface-elevated)] text-[var(--muted)] px-1.5 leading-tight">
+              {pendingCount}
             </span>
           )}
         </button>
@@ -1000,8 +1098,8 @@ export default function Home() {
         modules={activeModules}
         activePageId={activePageId ?? undefined}
         selectedId={selectedId}
-        onModuleSelect={(id) => { setSelectedId(id); setInspectorId(null); if (id) { setConvoOpen(false); setArchivedOpen(false); setSnapshotsOpen(false); setProfileOpen(false); } }}
-        onModuleEdit={(id) => { setSelectedId(id); setInspectorId(id); setConvoOpen(false); setArchivedOpen(false); setSnapshotsOpen(false); setProfileOpen(false); }}
+        onModuleSelect={(id) => { setSelectedId(id); setInspectorId(null); if (id) { setConvoOpen(false); setArchivedOpen(false); setSnapshotsOpen(false); setProfileOpen(false); setActivityOpen(false); } }}
+        onModuleEdit={(id) => { setSelectedId(id); setInspectorId(id); setConvoOpen(false); setArchivedOpen(false); setSnapshotsOpen(false); setProfileOpen(false); setActivityOpen(false); }}
         onModuleExpand={handleExpand}
         onModuleChange={handleModuleChange}
         onModuleCommit={commitModule}
@@ -1113,6 +1211,18 @@ export default function Home() {
       )}
 
       {profileOpen && <ProfilePanel onClose={() => setProfileOpen(false)} />}
+
+      {activityOpen && (
+        <ActivityPanel
+          onClose={() => { setActivityOpen(false); refreshPendingCount(); }}
+          onNavigate={handlePulseNavigate}
+          onMutated={refreshPendingCount}
+        />
+      )}
+
+      {/* The can't-miss home indicator — the home screen's single magenta
+          accent, absent at 0. Opens Pulse. */}
+      <ApprovalBadge count={pendingCount} onOpen={openActivity} />
       </main>
 
       <CommandPalette
