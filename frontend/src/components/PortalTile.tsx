@@ -47,12 +47,12 @@ export function PortalTile({ page, pos, dragging, overview, now, index, onPointe
           onEnter();
         }
       }}
-      className={`portal-tile group absolute flex flex-col justify-between select-none rounded-xl border p-3 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] transition ${
+      className={`portal-tile group absolute flex flex-col justify-between select-none rounded-xl border p-3 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--foreground)] transition ${
         underConstruction ? "border-dashed" : "border-solid"
       } ${
         dragging
           ? "border-[var(--accent)] cursor-grabbing shadow-lg bg-[var(--surface-elevated)]"
-          : "border-[var(--border)] cursor-pointer hover:border-[var(--accent)] bg-[var(--surface-elevated)]/80"
+          : "border-[var(--border)] cursor-pointer hover:border-[var(--border-strong)] bg-[var(--surface-elevated)]/80"
       }`}
       style={{ left: pos.x, top: pos.y, width: PORTAL_W, height: PORTAL_H }}
     >
@@ -86,7 +86,7 @@ export function PortalTile({ page, pos, dragging, overview, now, index, onPointe
 
       <div className="flex items-center justify-between pr-5 text-[10px] font-mono uppercase tracking-wide text-[var(--muted)]">
         <span aria-hidden>App</span>
-        <span className="flex items-center gap-0.5 normal-case tracking-normal text-[11px] group-hover:text-[var(--accent)] group-focus-visible:text-[var(--accent)] transition">
+        <span className="flex items-center gap-0.5 normal-case tracking-normal text-[11px] group-hover:text-[var(--foreground)] group-focus-visible:text-[var(--foreground)] transition">
           Open <Icon name="chevronRight" size={12} />
         </span>
       </div>

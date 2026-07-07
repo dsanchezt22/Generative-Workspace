@@ -6,7 +6,7 @@ import type { SharedModule, SharedPageResponse, StoredModule } from "@/lib/types
 import { crossModuleValues } from "@/lib/crossModule";
 import { normalizeLayout, type PositionedBox } from "@/lib/sharedLayout";
 import { relativeTime } from "@/lib/pulse";
-import { resolveIconName } from "@/lib/theme";
+import { resolveIconName, resolvePageAccent } from "@/lib/theme";
 import { useAssembly } from "@/lib/useAssembly";
 import { Module } from "./Module";
 import { Icon } from "./Icon";
@@ -97,6 +97,10 @@ export function SharedSurface({ token }: { token: string }) {
   }
 
   const { page, modules } = state.data;
+  // Match owner-side (PortalTile/AppFrame): the page icon carries its muted
+  // per-page accent, never the global magenta. The shared payload omits the
+  // stored accent token, so this is the deterministic-from-name fallback.
+  const headerAccent = resolvePageAccent(null, page.name);
   const stored = modules.map(toStored);
   const norm = normalizeLayout(stored.map((m) => ({ id: m.id, layout: m.config.layout })));
   const boxes = new Map(norm.boxes.map((b) => [b.id, b]));
@@ -106,7 +110,7 @@ export function SharedSurface({ token }: { token: string }) {
     <div className="flex flex-col h-screen w-full bg-[var(--background)] text-[var(--foreground)]">
       {/* Slim top bar — icon + name, the persistent read-only badge, wordmark right. */}
       <header className="shrink-0 flex items-center gap-2 h-12 px-4 border-b border-[var(--border)] bg-[var(--background)]/85 backdrop-blur">
-        <span className="shrink-0 text-[var(--accent)]"><Icon name={resolveIconName(page.icon, page.name)} size={16} /></span>
+        <span className="shrink-0" style={{ color: headerAccent.accent }}><Icon name={resolveIconName(page.icon, page.name)} size={16} /></span>
         <span className="text-sm font-semibold tracking-tight truncate min-w-0">{page.name}</span>
         <span className="shrink-0 text-[10px] font-mono uppercase tracking-wide text-[var(--muted)] rounded border border-[var(--border)] px-1.5 py-0.5">
           Shared view · read-only{latest ? ` · as of ${relativeTime(latest, now)}` : ""}

@@ -196,7 +196,7 @@ export default function StudioPage() {
               type="button"
               onClick={generate}
               disabled={generating || !active}
-              className={`${btn} bg-[var(--accent)] text-[var(--accent-fg)] hover:brightness-110 active:scale-95 disabled:opacity-40 flex items-center gap-1.5`}
+              className={`${btn} bg-[var(--accent)] text-[var(--accent-fg)] hover:bg-[var(--accent-hover)] active:scale-95 disabled:opacity-40 flex items-center gap-1.5`}
             >
               <Icon name="sparkles" size={14} className={generating ? "animate-pulse" : ""} />
               {generating ? "Mining…" : "Generate layouts"}
@@ -219,7 +219,7 @@ export default function StudioPage() {
                 </p>
                 {!loadingLayouts && (
                   <button type="button" onClick={generate} disabled={generating}
-                    className={`${btn} bg-[var(--accent)] text-[var(--accent-fg)] hover:brightness-110 active:scale-95 disabled:opacity-40`}>
+                    className={`${btn} bg-[var(--accent)] text-[var(--accent-fg)] hover:bg-[var(--accent-hover)] active:scale-95 disabled:opacity-40`}>
                     {generating ? "Mining…" : "✦ Generate layouts"}
                   </button>
                 )}

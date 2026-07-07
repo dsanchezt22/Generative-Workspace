@@ -66,7 +66,7 @@ export function ListFieldComponent({ spec, value, onChange }: Props) {
         <button
           type="button"
           onClick={add}
-          className="rounded-md bg-[var(--accent)] text-[var(--accent-fg)] px-3 py-1.5 text-sm font-medium hover:brightness-110 transition"
+          className="rounded-md bg-[var(--accent)] text-[var(--accent-fg)] px-3 py-1.5 text-sm font-medium hover:bg-[var(--accent-hover)] transition"
         >
           Add
         </button>

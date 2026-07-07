@@ -285,7 +285,7 @@ export function Inspector({ module, onCommit, onClose, onRefine, onDuplicate, on
 
       <div className="p-3 border-t border-[var(--border)] flex flex-col gap-2 shrink-0">
         <button type="button" onClick={() => onRefine(module.id)}
-          className="press w-full rounded-md bg-[var(--accent)] text-[var(--accent-fg)] px-3 py-1.5 text-sm font-medium hover:brightness-110 transition">✦ Edit with AI</button>
+          className="press w-full rounded-md bg-[var(--accent)] text-[var(--accent-fg)] px-3 py-1.5 text-sm font-medium hover:bg-[var(--accent-hover)] transition">✦ Edit with AI</button>
         <div className="flex items-center gap-2">
           <button type="button" onClick={() => onDuplicate(module.id)}
             className="flex-1 rounded-md border border-[var(--border)] px-3 py-1.5 text-xs text-[var(--muted)] hover:text-[var(--foreground)] transition">Duplicate</button>

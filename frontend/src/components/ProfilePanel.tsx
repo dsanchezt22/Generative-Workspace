@@ -187,7 +187,7 @@ export function ProfilePanel({ onClose }: Props) {
             <button
               type="submit"
               disabled={!addText.trim()}
-              className="shrink-0 rounded-md bg-[var(--accent)] text-[var(--accent-fg)] px-2.5 py-1 text-xs font-medium hover:brightness-110 transition disabled:opacity-40 disabled:cursor-not-allowed"
+              className="shrink-0 rounded-md bg-[var(--accent)] text-[var(--accent-fg)] px-2.5 py-1 text-xs font-medium hover:bg-[var(--accent-hover)] transition disabled:opacity-40 disabled:cursor-not-allowed"
             >
               Add
             </button>

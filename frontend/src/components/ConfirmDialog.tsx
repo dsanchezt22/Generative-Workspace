@@ -79,7 +79,7 @@ export function ConfirmDialog({ open, title, body, confirmLabel, onConfirm, onCa
             ref={confirmRef}
             type="button"
             onClick={onConfirm}
-            className="rounded-md bg-[var(--danger)] text-white px-3 py-1.5 text-xs font-medium hover:brightness-110 transition"
+            className="rounded-md bg-[var(--danger)] text-[var(--foreground)] px-3 py-1.5 text-xs font-medium hover:brightness-110 transition"
           >
             {confirmLabel}
           </button>

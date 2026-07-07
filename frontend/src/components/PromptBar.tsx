@@ -407,7 +407,7 @@ export function PromptBar({ onModule, activePageId, refineTarget, onRefineModule
             app pages + the agents that run on them. Replaces the flat preview
             stack. Confirm is the single magenta; Dismiss discards (nothing lands). */}
         {structure && (
-          <div className="flex flex-col gap-3 px-3 pt-3 pb-1 max-h-[60vh] overflow-y-auto">
+          <div className="animate-pop flex flex-col gap-3 px-3 pt-3 pb-1 max-h-[60vh] overflow-y-auto">
             {(structure.plan || plan) && (
               <p className="px-1 text-xs text-[var(--muted)] leading-relaxed">{structure.plan ?? plan}</p>
             )}
@@ -416,7 +416,7 @@ export function PromptBar({ onModule, activePageId, refineTarget, onRefineModule
                 Creates {structure.pages.length} app page{structure.pages.length === 1 ? "" : "s"} on your canvas
               </span>
               <button type="button" onClick={confirmStructure} disabled={confirmingStructure}
-                className="ml-auto rounded-md bg-[var(--accent)] text-[var(--accent-fg)] px-2.5 py-1 text-xs font-medium hover:brightness-110 transition disabled:opacity-40 disabled:cursor-not-allowed">
+                className="ml-auto rounded-md bg-[var(--accent)] text-[var(--accent-fg)] px-2.5 py-1 text-xs font-medium hover:bg-[var(--accent-hover)] transition disabled:opacity-40 disabled:cursor-not-allowed">
                 {confirmingStructure ? "Creating…" : "Confirm"}
               </button>
               <button type="button" onClick={dismissStructure}
@@ -427,7 +427,7 @@ export function PromptBar({ onModule, activePageId, refineTarget, onRefineModule
               {structure.pages.map((pg, i) => {
                 const theme = resolvePageAccent(pg.accent, pg.name);
                 return (
-                  <div key={i} className="flex items-center gap-2.5 rounded-lg border border-[var(--border)] bg-[var(--surface-elevated)] px-3 py-2">
+                  <div key={i} className="animate-pop flex items-center gap-2.5 rounded-lg border border-[var(--border)] bg-[var(--surface-elevated)] px-3 py-2" style={{ animationDelay: `${i * 40}ms` }}>
                     <span className="grid place-items-center w-7 h-7 shrink-0 rounded-md"
                       style={{ background: `color-mix(in srgb, ${theme.accent} 20%, transparent)`, color: theme.accent }}>
                       <Icon name={resolveIconName(pg.icon, pg.name)} size={15} />
@@ -450,7 +450,7 @@ export function PromptBar({ onModule, activePageId, refineTarget, onRefineModule
                 {structure.automations.map((a, i) => {
                   const tier = deriveTier(a.action_type);
                   return (
-                    <div key={i} className="flex flex-col gap-1 rounded-lg border border-[var(--border)] bg-[var(--surface-elevated)] px-3 py-2">
+                    <div key={i} className="animate-pop flex flex-col gap-1 rounded-lg border border-[var(--border)] bg-[var(--surface-elevated)] px-3 py-2" style={{ animationDelay: `${(structure.pages.length + i) * 40}ms` }}>
                       <div className="flex items-center gap-2">
                         <span className="text-sm font-medium flex-1 min-w-0 truncate">{a.name}</span>
                         <span className={`shrink-0 font-mono text-[9px] uppercase tracking-wide rounded px-1.5 py-0.5 ${
@@ -485,7 +485,7 @@ export function PromptBar({ onModule, activePageId, refineTarget, onRefineModule
                 {previews.length} tool{previews.length === 1 ? "" : "s"} proposed — preview &amp; edit
               </span>
               <button type="button" onClick={addAll}
-                className="ml-auto rounded-md bg-[var(--accent)] text-[var(--accent-fg)] px-2.5 py-1 text-xs font-medium hover:brightness-110 transition">
+                className="ml-auto rounded-md bg-[var(--accent)] text-[var(--accent-fg)] px-2.5 py-1 text-xs font-medium hover:bg-[var(--accent-hover)] transition">
                 Add all to canvas
               </button>
               <button type="button" onClick={dismissAll}
@@ -636,7 +636,14 @@ export function PromptBar({ onModule, activePageId, refineTarget, onRefineModule
           <button
             type="submit"
             disabled={(!prompt.trim() && !file) || loading}
-            className={`rounded-md bg-[var(--accent)] text-[var(--accent-fg)] px-3 py-1.5 text-sm font-medium disabled:opacity-40 disabled:cursor-not-allowed hover:brightness-110 active:scale-95 transition shrink-0 ${loading ? "animate-pulse" : ""}`}
+            // While the structure card is up, its Confirm is the single filled
+            // magenta — demote this submit CTA to the matte-secondary treatment
+            // (§7.1) so there's never a second one; restore when the card is gone.
+            className={`rounded-md px-3 py-1.5 text-sm font-medium disabled:opacity-40 disabled:cursor-not-allowed active:scale-95 transition shrink-0 ${
+              structure
+                ? "bg-transparent border border-[var(--border-strong)] text-[var(--foreground)] hover:bg-[var(--surface-elevated)]"
+                : "bg-[var(--accent)] text-[var(--accent-fg)] hover:bg-[var(--accent-hover)]"
+            } ${loading ? "animate-pulse" : ""}`}
           >
             {buttonLabel}
           </button>

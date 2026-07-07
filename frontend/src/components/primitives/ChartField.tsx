@@ -101,7 +101,7 @@ export function ChartField({ spec, value, onChange }: Props) {
           onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); add(); } }}
           className="w-16 rounded-md border border-[var(--border)] bg-[var(--surface-elevated)] px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-[var(--accent)]/40" />
         <button type="button" onClick={add}
-          className="rounded-md bg-[var(--accent)] text-[var(--accent-fg)] px-2 py-1 text-xs font-medium hover:brightness-110 transition">Add</button>
+          className="rounded-md bg-[var(--accent)] text-[var(--accent-fg)] px-2 py-1 text-xs font-medium hover:bg-[var(--accent-hover)] transition">Add</button>
       </div>
     </div>
   );

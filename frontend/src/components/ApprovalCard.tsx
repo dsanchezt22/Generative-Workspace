@@ -43,7 +43,7 @@ export function ApprovalCard({ item, onApprove, onDismiss, now, index }: Props) 
   return (
     <div
       ref={ref}
-      className={`relative overflow-hidden rounded-xl border bg-[var(--surface-elevated)] p-3 flex flex-col gap-2.5 ${
+      className={`relative overflow-hidden rounded-2xl border bg-[var(--surface-elevated)] p-3 flex flex-col gap-2.5 ${
         error ? "border-[var(--danger)]" : "border-[var(--border)]"
       } ${busy ? "opacity-70" : ""}`}
     >
@@ -54,9 +54,9 @@ export function ApprovalCard({ item, onApprove, onDismiss, now, index }: Props) 
         preserveAspectRatio="none"
         aria-hidden
       >
-        <rect data-assembly="border" fill="none" stroke="var(--accent)" strokeWidth="1.5" rx="12" ry="12" />
+        <rect data-assembly="border" fill="none" stroke="var(--accent)" strokeWidth="1.5" rx="16" ry="16" />
       </svg>
-      <div className="pointer-events-none absolute inset-0 z-20 overflow-hidden rounded-xl" aria-hidden>
+      <div className="pointer-events-none absolute inset-0 z-20 overflow-hidden rounded-2xl" aria-hidden>
         <div
           data-assembly="scan"
           className="absolute inset-y-0 left-0 w-1/2 opacity-0"
@@ -136,7 +136,7 @@ export function ApprovalCard({ item, onApprove, onDismiss, now, index }: Props) 
             type="button"
             onClick={onApprove}
             disabled={busy}
-            className="press rounded-md bg-[var(--accent)] text-[var(--accent-fg)] px-3 py-1.5 text-xs font-medium hover:brightness-110 transition disabled:opacity-60 disabled:cursor-wait"
+            className="press rounded-md bg-[var(--accent)] text-[var(--accent-fg)] px-3 py-1.5 text-xs font-medium hover:bg-[var(--accent-hover)] transition disabled:opacity-60 disabled:cursor-wait"
           >
             {pending === "approve" ? "Executing…" : "Approve"}
           </button>

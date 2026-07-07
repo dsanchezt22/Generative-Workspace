@@ -8,10 +8,12 @@ interface Props {
 }
 
 // The can't-miss home indicator (TAP-4). Rendered NOWHERE at 0 — absence is the
-// calm state. At > 0 it is the home screen's single magenta accent: a fixed
-// filled-magenta Geist Mono pill "N NEED YOUR TAP" that opens Pulse. One
-// scale-settle pulse fires when the count climbs (reduced motion → static via
-// the global rule). aria-live announces changes to screen readers.
+// calm state. At > 0 it rides Pulse's amber "needs your tap" channel (§2 color
+// law: the one filled magenta on the home canvas is the PromptBar CTA, so this
+// must not be a second one): a fixed --status-hold Geist Mono pill on a
+// --status-hold-dim fill, "N need your tap", that opens Pulse. One scale-settle
+// pulse fires when the count climbs (reduced motion → static via the global
+// rule). aria-live announces changes to screen readers.
 export function ApprovalBadge({ count, onOpen }: Props) {
   const prev = useRef(count);
   const [pulse, setPulse] = useState(false);
@@ -34,10 +36,9 @@ export function ApprovalBadge({ count, onOpen }: Props) {
       onClick={onOpen}
       aria-live="polite"
       aria-label={`${count} ${count === 1 ? "approval needs" : "approvals need"} your tap — open Pulse`}
-      className={`press fixed top-16 right-4 z-30 rounded-full bg-[var(--accent)] text-[var(--accent-fg)] font-mono text-[11px] uppercase tracking-wide px-3 py-1.5 shadow-lg hover:brightness-110 transition ${
+      className={`press fixed top-16 right-4 z-30 rounded-full bg-[var(--status-hold-dim)] text-[var(--status-hold)] border border-[var(--status-hold)] font-mono text-[11px] uppercase tracking-wide px-3 py-1.5 shadow-lg transition ${
         pulse ? "animate-checkpop" : ""
       }`}
-      style={{ boxShadow: "var(--accent-blue-glow)" }}
     >
       {count} need your tap
     </button>

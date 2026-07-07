@@ -29,7 +29,7 @@ export function ButtonField({ spec, onAction, count }: Props) {
       <button
         type="button"
         onClick={() => (utility ? setOpen((v) => !v) : onAction())}
-        className="press w-full flex items-center justify-center gap-1.5 rounded-md bg-[var(--accent)] text-[var(--accent-fg)] px-3 py-2 text-sm font-medium hover:brightness-110 transition"
+        className="press w-full flex items-center justify-center gap-1.5 rounded-md bg-[var(--accent)] text-[var(--accent-fg)] px-3 py-2 text-sm font-medium hover:bg-[var(--accent-hover)] transition"
       >
         <Icon name={iconName} size={15} />
         <span className="truncate">{spec.label}</span>

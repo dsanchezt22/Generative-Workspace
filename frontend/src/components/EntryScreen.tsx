@@ -168,7 +168,7 @@ export function EntryScreen({ onSubmit, onSkip }: Props) {
               className={`relative grid place-items-center w-24 h-24 rounded-full transition disabled:opacity-60 disabled:cursor-not-allowed active:scale-95 ${
                 recording
                   ? "bg-[var(--danger)] text-white animate-pulse shadow-2xl shadow-black/40"
-                  : "bg-[var(--accent)] text-[var(--accent-fg)] hover:brightness-110 shadow-2xl shadow-black/40"
+                  : "bg-[var(--accent)] text-[var(--accent-fg)] hover:bg-[var(--accent-hover)] shadow-2xl shadow-black/40"
               }`}
               style={recording || transcribing ? undefined : { boxShadow: "var(--accent-blue-glow), 0 20px 60px rgba(0,0,0,0.4)" }}
               aria-label={recording ? "Stop recording" : transcribing ? "Transcribing" : "Speak — tell me what's on your mind"}

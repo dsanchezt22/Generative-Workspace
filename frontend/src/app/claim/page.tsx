@@ -127,7 +127,7 @@ function ClaimInner() {
         <button
           type="button"
           onClick={() => claim(true)}
-          className="press mt-6 rounded-md bg-[var(--accent)] text-[var(--accent-fg)] px-4 py-2 text-sm font-medium hover:brightness-110 transition animate-rise"
+          className="press mt-6 rounded-md bg-[var(--accent)] text-[var(--accent-fg)] px-4 py-2 text-sm font-medium hover:bg-[var(--accent-hover)] transition animate-rise"
           style={{ animationDelay: "0.25s" }}
         >
           Switch to {previewName}
@@ -176,7 +176,7 @@ function ClaimInner() {
       <button
         type="button"
         onClick={() => claim(false)}
-        className="press mt-6 rounded-md bg-[var(--accent)] text-[var(--accent-fg)] px-4 py-2 text-sm font-medium hover:brightness-110 transition animate-rise"
+        className="press mt-6 rounded-md bg-[var(--accent)] text-[var(--accent-fg)] px-4 py-2 text-sm font-medium hover:bg-[var(--accent-hover)] transition animate-rise"
         style={{ animationDelay: "0.25s" }}
       >
         Claim workspace

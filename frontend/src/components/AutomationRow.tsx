@@ -80,7 +80,7 @@ export function AutomationRow({
   return (
     <div
       ref={ref}
-      className="relative overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-3 flex flex-col gap-2.5"
+      className="relative overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)] p-3 flex flex-col gap-2.5"
     >
       <svg
         data-assembly="border-svg"
@@ -88,7 +88,7 @@ export function AutomationRow({
         preserveAspectRatio="none"
         aria-hidden
       >
-        <rect data-assembly="border" fill="none" stroke="var(--accent)" strokeWidth="1.5" rx="12" ry="12" />
+        <rect data-assembly="border" fill="none" stroke="var(--accent)" strokeWidth="1.5" rx="16" ry="16" />
       </svg>
 
       <div data-assembly="body" className="flex flex-col gap-2.5">

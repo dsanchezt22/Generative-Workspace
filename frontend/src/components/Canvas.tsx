@@ -21,15 +21,16 @@ import {
 } from "@/lib/pinchZoom";
 import { launchTargetView, PORTAL_H, PORTAL_W, portalPosition, type PortalPoint } from "@/lib/portalLayout";
 import { crossModuleValues } from "@/lib/crossModule";
+import { prefersReducedMotion } from "@/lib/motion";
 import { resolveInitialView, viewChanged, type ViewState } from "@/lib/viewPersist";
 import { Icon } from "./Icon";
 import { Module } from "./Module";
 import { PortalTile } from "./PortalTile";
 
 // SURF §6: honour reduced motion — the zoom-launch (both directions) collapses
-// to today's instant page swap, a complete static end state (ETHOS-3).
-const prefersReducedMotion = () =>
-  typeof window !== "undefined" && !!window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+// to today's instant page swap, a complete static end state (ETHOS-3). The gate
+// is the shared prefersReducedMotion (lib/motion), so the tween honours the
+// in-app html[data-motion] override, not just the OS query.
 
 // R-221: the sketch snap's interpretation instruction, sent as the `hint` the
 // backend folds into the vision model's message (bounded server-side to ~200).
@@ -972,7 +973,7 @@ export function Canvas({
             onClick={doSnap}
             disabled={!canSnap || snapping}
             title="Turn this sketch into tools"
-            className="rounded-full bg-[var(--accent)] text-[var(--accent-fg)] px-3 py-1 font-medium disabled:opacity-40 hover:brightness-110 transition"
+            className="rounded-full bg-[var(--accent)] text-[var(--accent-fg)] px-3 py-1 font-medium disabled:opacity-40 hover:bg-[var(--accent-hover)] transition"
           >
             {snapping ? "Snapping…" : "Snap to tools"}
           </button>

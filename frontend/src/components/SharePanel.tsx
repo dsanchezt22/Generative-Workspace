@@ -35,6 +35,9 @@ export function SharePanel({ pageId, onClose, onStateChange }: Props) {
   const [busy, setBusy] = useState(false);
   const [confirm, setConfirm] = useState<null | "rotate" | "revoke">(null);
   const [copied, setCopied] = useState(false);
+  // AUT×SHARE disclosure: does an agent write to this page? If so, sharing the
+  // link exports its future output — surfaced honestly in both panel states.
+  const [hasAgent, setHasAgent] = useState(false);
 
   useEffect(() => {
     let alive = true;
@@ -43,6 +46,16 @@ export function SharePanel({ pageId, onClose, onStateChange }: Props) {
       .then((s) => { if (alive) setStatus(s); })
       // A pre-share page (or an unreachable endpoint) reads as simply private.
       .catch(() => { if (alive) setStatus({ active: false, token: null, created_at: null }); });
+    return () => { alive = false; };
+  }, [pageId]);
+
+  useEffect(() => {
+    let alive = true;
+    api
+      .listAutomations()
+      .then((r) => { if (alive) setHasAgent(r.automations.some((a) => a.page_id === pageId)); })
+      // Can't tell → no disclosure (fail quiet); never a false "an agent writes here".
+      .catch(() => {});
     return () => { alive = false; };
   }, [pageId]);
 
@@ -106,8 +119,13 @@ export function SharePanel({ pageId, onClose, onStateChange }: Props) {
               <p className="text-xs text-[var(--muted)] leading-relaxed">
                 Anyone with the link can view this surface, read-only. Nothing else — no other pages, no profile.
               </p>
+              {hasAgent && (
+                <p className="text-[11px] font-mono text-[var(--muted)] leading-relaxed">
+                  An agent writes to this page — its future output will be visible through this link.
+                </p>
+              )}
               <button type="button" onClick={create} disabled={busy}
-                className="press w-full flex items-center justify-center gap-1.5 rounded-md bg-[var(--accent)] text-[var(--accent-fg)] px-3 py-1.5 text-sm font-medium hover:brightness-110 transition disabled:opacity-50">
+                className="press w-full flex items-center justify-center gap-1.5 rounded-md bg-[var(--accent)] text-[var(--accent-fg)] px-3 py-1.5 text-sm font-medium hover:bg-[var(--accent-hover)] transition disabled:opacity-50">
                 <Icon name="link" size={15} /> Create link
               </button>
             </>
@@ -126,7 +144,7 @@ export function SharePanel({ pageId, onClose, onStateChange }: Props) {
                   className="w-full rounded-md border border-[var(--border)] bg-[var(--surface-elevated)] px-2.5 py-1.5 text-[11px] font-mono text-[var(--foreground)] truncate"
                 />
                 <button type="button" onClick={copy}
-                  className="press w-full flex items-center justify-center gap-1.5 rounded-md bg-[var(--accent)] text-[var(--accent-fg)] px-3 py-1.5 text-sm font-medium hover:brightness-110 transition">
+                  className="press w-full flex items-center justify-center gap-1.5 rounded-md bg-[var(--accent)] text-[var(--accent-fg)] px-3 py-1.5 text-sm font-medium hover:bg-[var(--accent-hover)] transition">
                   <Icon name={copied ? "check" : "link"} size={15} /> {copied ? "Copied" : "Copy link"}
                 </button>
               </div>
@@ -145,6 +163,11 @@ export function SharePanel({ pageId, onClose, onStateChange }: Props) {
               <p className="text-[11px] text-[var(--muted)] leading-relaxed border-t border-[var(--border)] pt-3">
                 This link shares the page&apos;s current and future contents, not a snapshot.
               </p>
+              {hasAgent && (
+                <p className="text-[11px] font-mono text-[var(--muted)] leading-relaxed">
+                  An agent writes to this page — its future output will be visible through this link.
+                </p>
+              )}
             </>
           )}
         </div>

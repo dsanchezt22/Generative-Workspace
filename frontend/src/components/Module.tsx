@@ -1,8 +1,10 @@
 "use client";
 
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { CommitModule, Component, FeedEntry, ModuleConfig, StoredModule } from "@/lib/types";
 import { runAssembly } from "@/lib/assembly";
+import { prefersReducedMotion } from "@/lib/motion";
+import { useIsoLayoutEffect } from "@/lib/useIsoLayoutEffect";
 import { arrowNudgeDelta } from "@/lib/a11y";
 import { deriveSummary } from "@/lib/summary";
 import { resolveAccent, resolveIconName } from "@/lib/theme";
@@ -36,10 +38,6 @@ import { GalleryField } from "./primitives/GalleryField";
 import { NoteField } from "./primitives/NoteField";
 import { TrackerField } from "./primitives/TrackerField";
 import { FeedField } from "./primitives/Feed";
-
-// useLayoutEffect on the client (no SSR warning) so the build's initial hidden
-// state is set before paint — no flash of the finished card.
-const useIsoLayoutEffect = typeof window !== "undefined" ? useLayoutEffect : useEffect;
 
 // In a 2-column module these span the full width rather than sit in one cell.
 const WIDE_TYPES = new Set<string>([
@@ -106,11 +104,7 @@ export function Module({
   // (page load, page switch, or generation). Reduced motion → final state instantly.
   useIsoLayoutEffect(() => {
     if (!isCanvas || !rootRef.current) return;
-    const m = document.documentElement.dataset.motion;
-    const reduced =
-      m === "reduced" ||
-      (m !== "full" && typeof window !== "undefined" && !!window.matchMedia?.("(prefers-reduced-motion: reduce)").matches);
-    if (reduced) return; // accessibility: no animation, the finished card is already correct
+    if (prefersReducedMotion()) return; // accessibility: no animation, the finished card is already correct
     return runAssembly(rootRef.current, index);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -313,14 +307,16 @@ export function Module({
       ref={rootRef}
       onMouseDown={isCanvas ? () => onSelect(module.id) : undefined}
       // R-1306: a canvas card is a first-class keyboard citizen — Tab reaches
-      // it, SRs announce it by title, and the focus ring reuses the portal
-      // tiles' existing accent ring (R-1305: no new visual language).
+      // it, SRs announce it by title, and the focus ring is the house off-white
+      // treatment (matches globals :focus-visible + the portal tiles; the card's
+      // own inline outline is reserved for the selected state, so it carries a
+      // matching off-white box-shadow ring here instead).
       tabIndex={isCanvas ? 0 : undefined}
       role={isCanvas ? "group" : undefined}
       aria-label={isCanvas ? title : undefined}
       onKeyDown={isCanvas ? handleKeyDown : undefined}
       className={`rounded-2xl border bg-[var(--surface)] flex flex-col ${
-        isCanvas ? "absolute shadow-lg shadow-black/30 transition-[transform,box-shadow] duration-200 hover:shadow-xl hover:shadow-black/40 hover:-translate-y-0.5 will-change-transform focus-visible:ring-2 focus-visible:ring-[var(--accent)]" : "relative w-full shadow-none"
+        isCanvas ? "absolute shadow-lg shadow-black/30 transition-[transform,box-shadow] duration-200 hover:shadow-xl hover:shadow-black/40 hover:-translate-y-0.5 will-change-transform focus-visible:ring-2 focus-visible:ring-[var(--foreground)]" : "relative w-full shadow-none"
       }`}
       style={!isCanvas ? ({
         ["--accent" as string]: theme.accent,
@@ -449,7 +445,9 @@ export function Module({
               );
             })}
             {components.length === 0 && (
-              <p className="text-xs text-[var(--muted)] italic col-span-2">No fields yet — open the inspector to add some.</p>
+              <p className="text-xs text-[var(--muted)] italic col-span-2">
+                {shared ? "This module is empty." : "No fields yet — open the inspector to add some."}
+              </p>
             )}
           </fieldset>
         </div>

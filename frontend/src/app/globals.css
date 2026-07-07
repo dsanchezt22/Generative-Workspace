@@ -45,6 +45,7 @@
   --muted: #6e6d6a;
   --border: #e4e3e0;
   --accent: #c42e8c;
+  --accent-hover: #a82478;        /* darker magenta — hover on filled CTAs (ethos: darken, never brighten) */
   --accent-fg: #ffffff;
   --danger: #d7674f;
 
@@ -63,6 +64,7 @@
   --muted: #8f8e8b;               /* text-secondary */
   --border: #383838;              /* border-default */
   --accent: #c42e8c;              /* the one accent — vivid magenta brand spark */
+  --accent-hover: #a82478;        /* darker magenta — hover on filled CTAs */
   --accent-fg: #ffffff;           /* CTA text always white */
   --danger: #d7674f;              /* status-err (muted terracotta) */
 }
@@ -105,6 +107,11 @@ html {
 ::-webkit-scrollbar { width: 5px; height: 5px; }
 ::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 999px; }
 ::-webkit-scrollbar-track { background: transparent; }
+
+/* Focus ring — the house treatment: an off-white outline, everywhere (a11y §9).
+   Components that self-provide a ring (canvas cards, portal tiles) suppress this
+   with their own outline handling and carry a matching off-white ring instead. */
+:focus-visible { outline: 2px solid var(--foreground); outline-offset: 2px; }
 
 .canvas-grid {
   background-image: radial-gradient(
@@ -190,6 +197,7 @@ html[data-grid="off"] .canvas-grid {
   html:not([data-motion="full"]) *::before,
   html:not([data-motion="full"]) *::after {
     animation-duration: 0.001ms !important;
+    animation-delay: 0.001ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.001ms !important;
   }
@@ -198,6 +206,7 @@ html[data-motion="reduced"] *,
 html[data-motion="reduced"] *::before,
 html[data-motion="reduced"] *::after {
   animation-duration: 0.001ms !important;
+  animation-delay: 0.001ms !important;
   animation-iteration-count: 1 !important;
   transition-duration: 0.001ms !important;
 }
