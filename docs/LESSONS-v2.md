@@ -98,3 +98,30 @@ already records (STATUS.md, plans, CLAUDE.md).
   budget, separate from routes.deps `_gen_limiter`). It persists across tests;
   clear `._hits` in an autouse fixture, or use unique owner ids, so `budget_ok`
   stays deterministic when `now` is injected at a fixed timestamp.
+
+- **The `"shared"` Module variant reuses the card but not the canvas motion
+  scaffold.** In non-canvas mode Module renders neither the `border-svg`/`scan`
+  assembly elements nor runs its own `useIsoLayoutEffect` assembly (both gated on
+  `isCanvas`). So the read-only shared surface drives construct-in by attaching
+  `lib/useAssembly.ts` to each tile's absolutely-positioned WRAPPER — `runAssembly`
+  finds only the `label`+`body` beats that DO render and skips the missing ones
+  (seed + surface-fill + label-wipe + settle, no border trace). Read-only-ness is
+  belt-and-braces: `setField` early-returns on `shared` AND the fields sit in a
+  `<fieldset disabled className="contents">` (`contents` keeps it layout-neutral, so
+  canvas/detail/preview are untouched).
+
+- **`crossModuleValues`/`computeMetric` moved verbatim to `lib/crossModule.ts`**
+  (Canvas + SharedSurface both import). They stay typed to `StoredModule[]`; the
+  whitelisted `SharedModule` payload (id/config/updated_at only) is mapped up to
+  StoredModule shape in SharedSurface (`rev:0, archived:false, page_id:null` — inert
+  on a read-only surface) so both the renderer and the helper type-check. Off-page
+  `source_module_id` resolves to undefined over the delivered page-scoped list and
+  falls back to saved state — zero special-case code.
+
+- **Shared surface layout normalizes by min x/y, not just the bounding box.**
+  `lib/sharedLayout.ts` subtracts the minimum x/y across modules so nothing lands at
+  a negative offset the viewer can't scroll to; the container `minHeight` is only a
+  FLOOR (module `layout.height` is usually 0 / content-sized) — absolutely-positioned
+  tiles extend the `overflow-auto` scroll area past it. Reuses the `.canvas-grid`
+  dot-grid class for the charcoal texture. SharePanel's ConfirmDialog is a SIBLING of
+  the `animate-slide-right` aside (the containing-block lesson, again).
