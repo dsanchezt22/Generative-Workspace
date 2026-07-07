@@ -2,8 +2,12 @@ import type { Metadata } from "next";
 import { SharedSurface } from "@/components/SharedSurface";
 
 // The token is a credential carried in the URL — never leak it via the Referer
-// header when the viewer clicks out or an embedded asset loads (DESIGN-sharing §4g).
-export const metadata: Metadata = { referrer: "no-referrer" };
+// header when the viewer clicks out or an embedded asset loads (DESIGN-sharing §4g),
+// and never let a crawler index a shared surface into search results.
+export const metadata: Metadata = {
+  referrer: "no-referrer",
+  robots: { index: false, follow: false },
+};
 
 // Next 16: route params are async.
 export default async function SharedPage({
