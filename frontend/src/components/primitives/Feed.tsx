@@ -17,9 +17,9 @@ const BADGE: Record<string, { bg: string; fg: string }> = {
 };
 
 // The one new trusted component (SURF-2): a read-only feed an automation appends
-// to. Title/body render as plain React text nodes ONLY — never
-// dangerouslySetInnerHTML — even though the body may have transited an LLM.
-// Newest first, Geist Mono timestamps, bounded by `max_items`.
+// to. Title/body render as plain React text nodes ONLY (no raw-HTML injection
+// path) even though the body may have transited an LLM. Newest first, Geist Mono
+// timestamps, bounded by `max_items`.
 export function FeedField({ spec, value }: Props) {
   const cap = spec.max_items ?? 20;
   const entries = (Array.isArray(value) ? value : []).slice().reverse().slice(0, cap);

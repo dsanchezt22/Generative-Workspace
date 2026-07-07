@@ -37,6 +37,21 @@ function hash(seed: string): number {
   return h;
 }
 
+// V2 SURF: a portal tile's icon chip is tinted per-page so each "app" reads as a
+// distinct place (unlike modules, which stay on the single magenta). An explicit
+// `accent` token wins; otherwise a DETERMINISTIC fallback from the page name over
+// the MUTED hues only — magenta (`blue`) is never handed out by the fallback, so
+// the home canvas keeps exactly one magenta accent (the approval badge / a CTA).
+const MUTED_ACCENT_NAMES = ACCENT_NAMES.filter((n) => n !== "blue");
+
+export function resolvePageAccent(accent?: string | null, seed = ""): AccentTheme {
+  if (accent) {
+    const t = accent.trim();
+    if (ACCENTS[t]) return ACCENTS[t];
+  }
+  return ACCENTS[MUTED_ACCENT_NAMES[hash(seed) % MUTED_ACCENT_NAMES.length]];
+}
+
 export function resolveAccent(name?: string | null, _seed = "", themeOptIn = false): AccentTheme {
   // Ethos: ONE accent by default — matte charcoal + the single magenta accent.
   // Per-module hues are an explicit opt-in (e.g. a "match source colours" screenshot
