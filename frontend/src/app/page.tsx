@@ -270,9 +270,13 @@ export default function Home() {
     if (loading || introDecidedRef.current) return;
     introDecidedRef.current = true;
     const firstVisit = !sessionStorage.getItem("trus-intro-seen");
-    // `modules` holds the active page's modules once loaded (seeded starters
-    // included), so an empty length here means a genuinely empty workspace.
-    if (firstVisit && modules.length === 0) setIntroOpen(true);
+    // `modules` holds the active page's modules, but the root canvas can be
+    // "empty" of modules while still holding child pages that render as portal
+    // tiles — so guard on those too, or the onboarding overlay lands on top of a
+    // populated canvas. A genuinely empty workspace has no modules AND no child
+    // pages (only the auto-created root).
+    const hasChildPages = pages.some((p) => p.parent_id);
+    if (firstVisit && modules.length === 0 && !hasChildPages) setIntroOpen(true);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loading]);
 
@@ -1231,7 +1235,7 @@ export default function Home() {
         onViewSave={handleViewSave}
       />
 
-      {!loading && activeModules.length === 0 && (
+      {!loading && activeModules.length === 0 && childPages.length === 0 && (
         <EmptyState onPick={handlePickChip} onStartConversation={handleStartConversation} />
       )}
 

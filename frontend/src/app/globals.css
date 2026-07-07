@@ -112,6 +112,11 @@ html {
    Components that self-provide a ring (canvas cards, portal tiles) suppress this
    with their own outline handling and carry a matching off-white ring instead. */
 :focus-visible { outline: 2px solid var(--foreground); outline-offset: 2px; }
+/* The prompt-bar input is borderless by design and lives inside a styled
+   container that shows focus on itself (focus-within) — so it must NOT carry a
+   second, nested focus outline. Unlayered like the rule above so a Tailwind
+   utility can't be relied on to override it. */
+.prompt-bar-input:focus-visible { outline: none; }
 
 .canvas-grid {
   background-image: radial-gradient(

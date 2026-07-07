@@ -401,7 +401,7 @@ export function PromptBar({ onModule, activePageId, refineTarget, onRefineModule
       onSubmit={submit}
       className="absolute left-1/2 -translate-x-1/2 bottom-6 w-[min(720px,calc(100%-2rem))] z-10"
     >
-      <div className="flex flex-col rounded-2xl border border-[var(--border)] bg-[var(--surface)]/95 backdrop-blur shadow-2xl shadow-black/40 overflow-hidden">
+      <div className="flex flex-col rounded-2xl border border-[var(--border)] focus-within:border-[var(--border-strong)] transition-colors bg-[var(--surface)]/95 backdrop-blur shadow-2xl shadow-black/40 overflow-hidden">
 
         {/* V2 SURF (ONB-1): the structure proposal card — a whole organization of
             app pages + the agents that run on them. Replaces the flat preview
@@ -630,7 +630,11 @@ export function PromptBar({ onModule, activePageId, refineTarget, onRefineModule
             // so the submit button never gets pushed past the card's
             // overflow-hidden edge on a 375px phone (esp. with the 44px touch
             // targets on the mic/attach buttons to its left).
-            className="flex-1 min-w-0 bg-transparent text-sm placeholder:text-[var(--muted)] focus:outline-none disabled:opacity-50"
+            className="prompt-bar-input flex-1 min-w-0 bg-transparent text-sm placeholder:text-[var(--muted)] focus:outline-none disabled:opacity-50"
+            // Borderless by design; the container shows focus (focus-within).
+            // Inline outline:none beats the unlayered global :focus-visible ring
+            // so there's no nested box around the input.
+            style={{ outline: "none" }}
             autoFocus
           />
           <button
