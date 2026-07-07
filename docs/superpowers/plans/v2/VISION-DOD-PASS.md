@@ -106,3 +106,56 @@ fixed and re-verified before this table was finalized: the honesty-seam digest b
 (PROF-1/SEAM-2-adjacent) and the double-magenta ApprovalBadge (ETHOS-2). The one
 honestly-unresolved item is a live browser click-through, blocked by an environment
 tool-connectivity issue rather than anything in the code.
+
+---
+
+## Addendum — independent second sweep + hardening pass (2026-07-07, HEAD `fe19d79`)
+
+A fresh session re-verified the whole contract from scratch and then hardened it.
+Method: 40 workflow agents (6 adversarial DOD verifier clusters over all 42
+criterion rows · 5 DESIGN-ETHOS §10 auditors over every new V2 surface · an
+adversarial re-check of every negative verdict and every ethos finding · a
+completeness critic), plus an LLM council (5 independent lenses + chairman, every
+load-bearing claim re-verified against the code) and a 105-agent deep-research
+sweep validating the four load-bearing architecture choices against primary
+sources (W3C TAG, OWASP LLM05:2025, OpenAI/Anthropic agent guidance, DIMVA 2019,
+APScheduler docs). Council verdict: **no REPLACE anywhere** — every architectural
+bet judged right-sized-to-ahead-of-the-field, with a short act-now hardening list,
+all of it landed:
+
+- **Second sweep verdicts:** 38 met + 1 met-seam as of `b38bdb0`, and 3 honest
+  partials — every one closed this pass: PROF-1's specified automation-level
+  profile-read test now exists (`test_actions.py`); GATE-3 is format-clean at
+  whole-tree scope (83 files, tests included); ETHOS-1's two confirmed gaps
+  (structure card appearing with no construct-in; useAssembly's one-frame
+  finished-card flash) are fixed.
+- **Hardening landed** (`b9a47d6`, `427063c`, `2977a0b`, `fe19d79`): the
+  `uses_llm ∧ irreversible` registry meta-test + fail-closed consequential-floor
+  guard; auto-disable after `TRUS_RUNTIME_MAX_FAILURES` straight failures with a
+  legible journal row; the `run_started_at` in-flight marker (run-now mutex, 409
+  on concurrent fire, boot reconcile of hard-death orphans into an honest
+  `failed` row); `TRUS_TZ` so `daily_at` means the user's local time,
+  DST-correct; an AST test pinning explicit timeouts on every outbound call the
+  scheduler thread can reach; the full ethos polish wave (global
+  `:focus-visible`, amber ApprovalBadge, shared reduced-motion gate honoring the
+  in-app override, structure-card construct-in, single-magenta in every screen
+  state, TrustDial ARIA keyboard contract + honest dial-2 copy, share-page
+  `Referrer-Policy`/`X-Robots-Tag` headers); two standing invariants written
+  into VISION-DOD itself.
+- **Re-proofs at `fe19d79`:** RUN-1 re-proven with zero HTTP (backdated
+  `next_run_at` directly in SQLite; the thread claimed, executed, journaled
+  `ran`, rescheduled). The 24-check integration smoke passes end-to-end on the
+  hardened tree. Gates: `862 passed, 2 skipped`, 93.73% coverage (80% gate) ·
+  mypy clean · ruff check + format clean (whole backend) · 163 frontend tests ·
+  `tsc` clean · production build clean.
+- **Local model now live:** `ollama serve` was started and the configured
+  `qwen3:4b-instruct-2507-q4_K_M` verified end-to-end through `src.llm`
+  (real prose, zero API cost); the Gemini cascade also works. Live (non-stub)
+  generation no longer needs anything from the operator.
+- **Honest residue:** the browser click-through remains blocked (the
+  Claude-in-Chrome extension reported "not connected" in this session too) — all
+  visual/motion conclusions rest on code-level inspection, unit tests, and live
+  API drives; the golden-path click-through is still the one thing a human
+  should do before calling the visual polish signed off. And `.env.example` is
+  deny-listed for agents: an operator should add two documented lines
+  (`TRUS_RUNTIME_MAX_FAILURES`, `TRUS_TZ` — see deploy/README.md's env table).

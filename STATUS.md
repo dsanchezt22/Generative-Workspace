@@ -154,11 +154,26 @@ read-only sharing via an unguessable, revocable link.
 - `docs/superpowers/plans/v2/VISION-DOD-PASS.md` — the full pass table, one row per
   criterion, with evidence (test name + what it asserts, or a live API drive).
 - `docs/LESSONS-v2.md` — accumulated build gotchas, read before extending V2.
-- **Gates:** `python -m pytest -q` → 848 passed, 93.70% coverage (80% gate) · mypy/ruff
-  clean · frontend 163 tests · `tsc`/`next build` clean.
+- **Gates (at `fe19d79`, after the hardening pass):** `python -m pytest -q` → 862
+  passed, 93.73% coverage (80% gate) · mypy clean · ruff check + format clean over
+  the whole backend · frontend 163 tests · `tsc`/`next build` clean · the 24-check
+  integration smoke passes end-to-end.
+- **Second sweep + hardening (2026-07-07):** an independent 40-agent adversarial
+  re-verification of all 42 criterion rows, a 5-lens LLM council (unanimous: no
+  architectural REPLACE anywhere), and a 105-agent source-verified research pass
+  produced a short hardening list — all landed (`b9a47d6`…`fe19d79`): registry
+  meta-tests (`uses_llm ∧ irreversible` ban, fail-closed consequential floor),
+  auto-disable for chronically failing automations, an in-flight run marker
+  (run-now mutex + boot-crash honesty), `TRUS_TZ` local-time daily schedules, an
+  outbound-timeout invariant test, the full DESIGN-ETHOS §10 polish wave, and
+  share-page `Referrer-Policy`/`X-Robots-Tag` hardening. Details in the pass
+  table's addendum.
 - **Needs a human:** (1) real send/message/pay credentials, if those stubs are ever
-  wired to real providers — not required for anything shipped here; (2) optionally,
-  `ollama serve` (a local model is already configured in `.env`, just not running) for
-  local, non-cascaded generation — a real Gemini key already configured there means
-  live (non-stub) generation works today via cascade; (3) the pre-existing Stage-4
-  Task 10 operator deploy, unaffected by V2.
+  wired to real providers — not required for anything shipped here; (2) add two
+  documented lines to `.env.example` (`TRUS_RUNTIME_MAX_FAILURES`, `TRUS_TZ` — the
+  file is deny-listed for agents; see deploy/README.md's env table); (3) a golden-path
+  browser click-through (zoom-launch, Pulse, share) — the Claude-in-Chrome extension
+  was unavailable in both sessions, so visual polish rests on code-level + API
+  evidence; (4) the pre-existing Stage-4 Task 10 operator deploy, unaffected by V2.
+  (`ollama serve` is now running with the configured local model — real local
+  generation was verified end-to-end, so that former item is done.)
