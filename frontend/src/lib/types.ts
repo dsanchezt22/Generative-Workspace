@@ -330,6 +330,198 @@ export interface UserProfileEntry {
   updated_at: string;
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+// V2 Pulse — server-side runtime automations (the always-on trust spine).
+// NOT the client-side `Automation` above (ModuleConfig.automations, an
+// intra-module increment/flag rule) — a different concept with its own store.
+// Mirrors backend/src/schema_automations.py (DESIGN-autonomy §4.1 + the V2
+// reconciled ruling 4). The UI reads action_type/tier_floor/summary/preview;
+// the typed `action` union is mirrored so create payloads type-check.
+// ─────────────────────────────────────────────────────────────────────────
+
+export interface AutoActionWatch {
+  type: "watch";
+  provider: "weather" | "nutrition";
+  query: Record<string, string | number>;
+  module_id: string;
+  component_id: string;
+  op?: "over" | "under" | null;
+  threshold?: number | null;
+  feed_module_id?: string | null;
+  feed_component_id?: string | null;
+}
+export interface AutoActionSort {
+  type: "sort";
+  module_id: string;
+  component_id: string;
+  by: "date" | "value" | "label";
+}
+export interface AutoActionTrack {
+  type: "track";
+  module_id: string;
+  component_id: string;
+  source_module_id: string;
+  source_component_id: string;
+  label?: string | null;
+}
+export interface AutoActionRemind {
+  type: "remind";
+  module_id: string;
+  component_id: string;
+  feed_module_id?: string | null;
+  feed_component_id?: string | null;
+}
+export interface AutoActionSummarize {
+  type: "summarize";
+  module_id: string;
+  component_id: string;
+  source_module_ids: string[];
+}
+export interface AutoActionDraft {
+  type: "draft";
+  module_id: string;
+  component_id: string;
+  recipient: string;
+  instruction: string;
+}
+export interface AutoActionLearn {
+  type: "learn";
+  lookback_days: number;
+  max_facts: number;
+}
+export interface AutoActionArchiveModule {
+  type: "archive_module";
+  module_id: string;
+}
+export interface AutoActionSendEmail {
+  type: "send_email";
+  to: string;
+  subject: string;
+  module_id?: string | null;
+  component_id?: string | null;
+}
+export interface AutoActionMessageHuman {
+  type: "message_human";
+  to: string;
+  text: string;
+}
+export interface AutoActionPay {
+  type: "pay";
+  payee: string;
+  amount_usd: number;
+  memo: string;
+}
+export interface AutoActionDeleteData {
+  type: "delete_data";
+  target: "module" | "page";
+  target_id: string;
+}
+
+// Discriminated on `type` — all 12 action types (reconciled ruling 4).
+export type AutoAction =
+  | AutoActionWatch
+  | AutoActionSort
+  | AutoActionTrack
+  | AutoActionRemind
+  | AutoActionSummarize
+  | AutoActionDraft
+  | AutoActionLearn
+  | AutoActionArchiveModule
+  | AutoActionSendEmail
+  | AutoActionMessageHuman
+  | AutoActionPay
+  | AutoActionDeleteData;
+
+export type TierFloor = "autonomous" | "consequential";
+export type ScheduleKind = "interval" | "daily";
+
+export interface AutomationOut {
+  id: string;
+  name: string;
+  description: string;
+  page_id: string | null;
+  action: AutoAction;
+  action_type: string;
+  tier_floor: TierFloor; // from ACTION_SPECS — display only
+  irreversible: boolean; // drives the dial's hard-floor lock line
+  trust_dial: number; // 0 ask-always | 1 standard | 2 trusted
+  enabled: boolean;
+  schedule_kind: ScheduleKind;
+  interval_secs: number | null;
+  daily_at: string | null;
+  next_run_at: string | null;
+  last_run_at: string | null;
+  created_at: string;
+}
+
+export interface AutomationCreate {
+  name: string;
+  description?: string;
+  page_id?: string | null;
+  action: AutoAction;
+  schedule_kind?: ScheduleKind;
+  interval_secs?: number | null; // backend bounds 300..604800 (reconciled ruling 4)
+  daily_at?: string | null;
+  trust_dial?: number; // creation can never exceed 1 (AUT-3)
+}
+
+export interface AutomationPatch {
+  name?: string | null;
+  enabled?: boolean | null;
+  trust_dial?: number | null; // the ONLY dial writer
+}
+
+export interface PreviewField {
+  label: string;
+  value: string;
+}
+
+// Trusted-render only — flat text, never markup.
+export interface PreviewPayload {
+  title: string;
+  fields: PreviewField[];
+  body?: string | null; // e.g. a full draft, mono-rendered
+  simulated: boolean; // SEAM-1 badge
+}
+
+export type ApprovalStatus = "pending" | "approved" | "rejected" | "expired" | "failed";
+
+export interface ApprovalOut {
+  id: string;
+  automation_id: string;
+  automation_name: string;
+  action_type: string;
+  summary: string; // future-tense "what it will do" (server-composed, frozen)
+  preview: PreviewPayload | null;
+  status: ApprovalStatus;
+  expires_at: string;
+  created_at: string;
+  decided_at: string | null;
+  executed_at: string | null;
+}
+
+export type ActivityKind =
+  | "ran"
+  | "held"
+  | "approved"
+  | "rejected"
+  | "expired"
+  | "failed"
+  | "skipped";
+
+export interface ActivityEntry {
+  id: string;
+  kind: ActivityKind;
+  summary: string;
+  automation_id: string | null;
+  automation_name: string | null;
+  approval_id: string | null;
+  module_id?: string | null; // deep-link target (zoom-to-module)
+  page_id?: string | null;
+  simulated: boolean;
+  created_at: string;
+}
+
 // Layout Studio — a use-case-indexed library of candidate layouts.
 export interface StudioUseCase {
   key: string;

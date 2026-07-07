@@ -27,6 +27,7 @@
   --accent-blue-glow: 0 6px 24px rgba(196, 46, 142, 0.38); /* the only colored shadow */
   --status-err: #d7674f; --status-err-dim: rgba(215, 103, 79, 0.16); /* muted terracotta */
   --status-ok: #5fae7e;  --status-ok-dim: rgba(95, 174, 126, 0.16);  /* muted sage */
+  --status-hold: #cf9f52; --status-hold-dim: rgba(207, 159, 82, 0.16); /* muted amber — "held / needs your tap" (Pulse) */
   --glow-white: 0 0 24px rgba(240, 239, 237, 0.12), 0 0 60px rgba(240, 239, 237, 0.05);
   --gap-xs: 4px; --gap-sm: 8px; --gap-md: 16px; --gap-lg: 24px; --gap-xl: 48px; --gap-2xl: 96px;
   --radius-sm: 4px; --radius-md: 8px; --radius-lg: 14px;

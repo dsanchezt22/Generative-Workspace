@@ -1,4 +1,4 @@
-import type { DataSource, LiveValuePayload, Message, ModuleConfig, Page, ProfileKind, Snapshot, StoredModule, StudioLayout, StudioUseCase, UserProfileEntry } from "./types";
+import type { ActivityEntry, ApprovalOut, AutomationCreate, AutomationOut, AutomationPatch, DataSource, LiveValuePayload, Message, ModuleConfig, Page, ProfileKind, Snapshot, StoredModule, StudioLayout, StudioUseCase, UserProfileEntry } from "./types";
 import { buildLiveQueryParams } from "./liveFormat";
 
 const BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";
@@ -315,6 +315,48 @@ export const api = {
     request<void>(`/api/profile/${id}`, { method: "DELETE" }),
   // R-804/R-1003: real erasure — the backend hard-DELETEs every fact for this owner.
   profileClear: () => request<{ deleted: number }>("/api/profile", { method: "DELETE" }),
+
+  // V2 Pulse — the always-on trust spine (automations + approvals + activity).
+  // All owner-scoped server-side; request() already sends credentials:"include".
+  // The backend lands these contracts in the parallel A1 wave (DESIGN-autonomy
+  // §4.2, reconciled ruling 4) — until then they 404, handled by callers.
+  listAutomations: () => request<{ automations: AutomationOut[] }>("/api/automations"),
+  createAutomation: (body: AutomationCreate) =>
+    request<AutomationOut>("/api/automations", { method: "POST", body: JSON.stringify(body) }),
+  patchAutomation: (id: string, patch: AutomationPatch) =>
+    request<AutomationOut>(`/api/automations/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
+  deleteAutomation: (id: string) =>
+    request<void>(`/api/automations/${id}`, { method: "DELETE" }),
+  // Run-now through the same requires_approval/park/execute path as the scheduler:
+  // either it ran (activity) or it parked as an approval (approval), never both.
+  runAutomation: (id: string) =>
+    request<{ activity: ActivityEntry | null; approval: ApprovalOut | null }>(
+      `/api/automations/${id}/run`,
+      { method: "POST" },
+    ),
+  listApprovals: () =>
+    request<{ approvals: ApprovalOut[]; pending_count: number }>("/api/approvals"),
+  // The cheap badge poll — one indexed COUNT.
+  approvalCount: () => request<{ pending: number }>("/api/approvals/count"),
+  // Approve/reject return the resolved approval + the journal row it produced,
+  // so the panel reconciles optimistically (remove the card, prepend the entry).
+  // 409 { detail: { state } } on a double-tap or expiry — the loser learns honestly.
+  approve: (id: string) =>
+    request<{ approval: ApprovalOut; activity: ActivityEntry }>(
+      `/api/approvals/${id}/approve`,
+      { method: "POST" },
+    ),
+  reject: (id: string) =>
+    request<{ approval: ApprovalOut; activity: ActivityEntry }>(
+      `/api/approvals/${id}/reject`,
+      { method: "POST" },
+    ),
+  // Newest-first, keyset pagination on created_at (pass the oldest loaded row's
+  // created_at as `before` to page back).
+  listActivity: (before?: string) =>
+    request<{ entries: ActivityEntry[] }>(
+      `/api/activity?limit=50${before ? `&before=${encodeURIComponent(before)}` : ""}`,
+    ),
 
   // Layout Studio
   studioUseCases: () => request<StudioUseCase[]>("/api/studio/use-cases"),
