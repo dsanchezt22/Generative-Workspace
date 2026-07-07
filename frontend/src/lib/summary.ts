@@ -111,5 +111,9 @@ function summarizeComponent(
       const rows = raw && typeof raw === "object" && Array.isArray((raw as { rows?: unknown[] }).rows) ? (raw as { rows: unknown[] }).rows : [];
       return `${rows.length} tracked`;
     }
+    case "feed": {
+      const n = Array.isArray(raw) ? raw.length : 0;
+      return `${n} update${n === 1 ? "" : "s"}`;
+    }
   }
 }

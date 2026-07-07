@@ -1,4 +1,4 @@
-import type { ActivityEntry, ApprovalOut, AutomationCreate, AutomationOut, AutomationPatch, DataSource, LiveValuePayload, Message, ModuleConfig, Page, ProfileKind, ShareStatus, SharedPageResponse, Snapshot, StoredModule, StudioLayout, StudioUseCase, UserProfileEntry } from "./types";
+import type { ActivityEntry, ApprovalOut, AutomationCreate, AutomationOut, AutomationPatch, DataSource, InsertStructureResponse, LiveValuePayload, Message, ModuleConfig, Page, PageOverview, ProfileKind, ShareStatus, SharedPageResponse, Snapshot, StoredModule, StructureProposal, StudioLayout, StudioUseCase, UserProfileEntry } from "./types";
 import { buildLiveQueryParams } from "./liveFormat";
 
 const BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";
@@ -95,6 +95,10 @@ export interface GenerateResponse {
   // R-103/R-301: a one-paragraph rationale for the proposal, set only on a
   // fresh (non-stub, non-cached) model response.
   plan?: string | null;
+  // V2 SURF (ONB-1): a broad "organize my whole X" prompt can come back as a
+  // multi-page structure proposal instead of a flat tool stack — the PromptBar
+  // renders the structure card when this is present.
+  structure?: StructureProposal | null;
 }
 
 export const api = {
@@ -367,6 +371,18 @@ export const api = {
     request<{ entries: ActivityEntry[] }>(
       `/api/activity?limit=50${before ? `&before=${encodeURIComponent(before)}` : ""}`,
     ),
+
+  // V2 SURF (ONB-1): confirm a structure proposal — the server mints real pages,
+  // modules, and (reconciled ruling 2) real enabled automations in one
+  // transaction, returning what landed plus the names of anything it had to drop.
+  insertStructure: (structure: StructureProposal, prompt?: string, pageId?: string, exchange?: ExchangeTurn[]) =>
+    request<InsertStructureResponse>(`/api/structure${pageId ? `?page_id=${pageId}` : ""}`, {
+      method: "POST",
+      body: JSON.stringify({ structure, prompt, exchange }),
+    }),
+  // V2 SURF: one grouped owner-scoped overview per page for the portal tiles +
+  // AppFrame ({modules, automations, last_run_at}). Replaces the module-count poll.
+  pagesOverview: () => request<Record<string, PageOverview>>("/api/pages/overview"),
 
   // Layout Studio
   studioUseCases: () => request<StudioUseCase[]>("/api/studio/use-cases"),

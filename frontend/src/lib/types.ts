@@ -28,7 +28,8 @@ export type ComponentType =
   | "checklist"
   | "gallery"
   | "note"
-  | "tracker";
+  | "tracker"
+  | "feed";
 
 export interface ComponentBase {
   id: string;
@@ -193,6 +194,19 @@ export interface Checklist extends ComponentBase { type: "checklist"; }
 export interface Gallery extends ComponentBase { type: "gallery"; }
 export interface Note extends ComponentBase { type: "note"; placeholder?: string | null; }
 export interface Tracker extends ComponentBase { type: "tracker"; period?: "day" | "week"; goal?: number | null; }
+/** V2 SURF: a read-only feed of entries an automation appends to (summarize/draft
+ * land here). The one new trusted component — plain-text nodes only, closed badge
+ * set, bounded display. `max_items` caps how many rows render. */
+export interface Feed extends ComponentBase { type: "feed"; max_items?: number | null; }
+/** A single Feed row — mirrors exactly what the backend appends
+ * (services/actions.py `_land_feed_entry`): `{ts, title, body, badge}`. `badge` is
+ * one of the closed set draft|simulated|failed (or "" for none). */
+export interface FeedEntry {
+  ts: string;
+  title: string;
+  body: string;
+  badge: string;
+}
 
 export type Component =
   | TextInput
@@ -224,7 +238,8 @@ export type Component =
   | Checklist
   | Gallery
   | Note
-  | Tracker;
+  | Tracker
+  | Feed;
 
 export interface ModuleLayout {
   x: number;
@@ -315,6 +330,9 @@ export interface Page {
   view_x?: number | null;
   view_y?: number | null;
   view_zoom?: number | null;
+  /** V2 SURF: a page's accent token (an ACCENTS key), giving each "app" a
+   * distinct icon-chip tint. Null → deterministic fallback from the name. */
+  accent?: string | null;
   created_at: string;
 }
 
@@ -538,6 +556,61 @@ export interface ActivityEntry {
   page_id?: string | null;
   simulated: boolean;
   created_at: string;
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// V2 SURF — self-composing "structure of surfaces" (ONB-1) + app-tile overview.
+// A structure proposal is a set of app pages (each with its tools) plus the
+// automations that will run on them. Confirmed → real pages/modules/automations
+// on the canvas. Mirrors the backend structure schema (DESIGN-surfaces §1) as
+// amended by reconciled ruling 4 (automations carry `action_type`, NO `tier` —
+// the card derives the chip client-side) and ruling 2 (no 'proposed' status —
+// confirmed structures create real, enabled automations).
+// ─────────────────────────────────────────────────────────────────────────
+
+export interface StructurePage {
+  name: string;
+  icon?: string | null;
+  accent?: string | null;
+  purpose?: string | null; // plain-language "what this page is for"
+  modules: ModuleConfig[]; // the tools that populate it
+}
+
+export interface StructureAutomation {
+  name: string;
+  description: string; // plain-language "exactly what it does"
+  action_type: "watch" | "summarize" | "track" | "remind" | "draft";
+  page_index: number; // index into the proposal's pages (never a name/id)
+  schedule?: "hourly" | "daily" | "weekly" | null;
+  // Optional composer hints carried on the wire (the card doesn't render these).
+  provider?: string | null;
+  query?: Record<string, string | number> | null;
+  op?: "over" | "under" | null;
+  threshold?: number | null;
+  instruction?: string | null;
+  source_component_id?: string | null;
+}
+
+export interface StructureProposal {
+  plan?: string | null; // the rationale paragraph
+  pages: StructurePage[];
+  automations: StructureAutomation[];
+}
+
+export interface InsertStructureResponse {
+  pages: Page[];
+  modules: StoredModule[];
+  automation_ids: string[];
+  dropped: string[]; // names of tools/automations that couldn't be built
+}
+
+// One grouped, owner-scoped overview per page (GET /api/pages/overview) — real
+// data from day one (reconciled ruling 6): module + automation counts and the
+// most recent automation run (null until an automation has run).
+export interface PageOverview {
+  modules: number;
+  automations: number;
+  last_run_at: string | null;
 }
 
 // Layout Studio — a use-case-indexed library of candidate layouts.

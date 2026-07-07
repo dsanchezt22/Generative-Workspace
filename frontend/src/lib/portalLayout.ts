@@ -4,10 +4,10 @@
 // non-trivial placement math is unit-testable without a DOM harness — Canvas.tsx
 // keeps the pointer/drag plumbing (manual-traced), same split as sketchExport.ts.
 
-// Tile footprint in WORLD units. Kept in sync with the tile's Tailwind sizing in
-// Canvas.tsx (a matte "place you can enter", distinct from a module card).
-export const PORTAL_W = 210;
-export const PORTAL_H = 120;
+// Tile footprint in WORLD units. Kept in sync with PortalTile's Tailwind sizing
+// (a solid matte "app card", distinct from a module card — V2 SURF §5).
+export const PORTAL_W = 240;
+export const PORTAL_H = 140;
 
 // Auto-placement for a child whose portal position hasn't been set yet: a tidy
 // row-wrapping SHELF in a negative-Y band ABOVE the module grid. The module
@@ -54,4 +54,23 @@ export function portalPosition(
     return { x: page.portal_x, y: page.portal_y };
   }
   return autoPlacePortal(index);
+}
+
+// V2 SURF §6: "zoom-in-is-launching". The forward launch tween animates the
+// canvas view to this target — the tile centered at LAUNCH_ZOOM — then the page
+// swaps under the scrim. The reverse (back) tween SEEDS the view at this exact
+// value and animates out to the parent's saved view, so forward-target and
+// reverse-seed are the same point for a given tile (the symmetry the tests pin).
+// LAUNCH_ZOOM == the interactive ZOOM_MAX (2): never overshoot the clamp, so a
+// mid-tween wheel/pinch gesture can't fight the tween.
+export const LAUNCH_ZOOM = 2;
+
+export function launchTargetView(
+  pos: PortalPoint,
+  rect: { width: number; height: number },
+  zoom = LAUNCH_ZOOM,
+): { x: number; y: number; zoom: number } {
+  const cx = pos.x + PORTAL_W / 2;
+  const cy = pos.y + PORTAL_H / 2;
+  return { zoom, x: rect.width / 2 - cx * zoom, y: rect.height / 2 - cy * zoom };
 }

@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import type { CommitModule, Component, ModuleConfig, StoredModule } from "@/lib/types";
+import type { CommitModule, Component, FeedEntry, ModuleConfig, StoredModule } from "@/lib/types";
 import { runAssembly } from "@/lib/assembly";
 import { arrowNudgeDelta } from "@/lib/a11y";
 import { deriveSummary } from "@/lib/summary";
@@ -35,6 +35,7 @@ import { ChecklistField } from "./primitives/ChecklistField";
 import { GalleryField } from "./primitives/GalleryField";
 import { NoteField } from "./primitives/NoteField";
 import { TrackerField } from "./primitives/TrackerField";
+import { FeedField } from "./primitives/Feed";
 
 // useLayoutEffect on the client (no SSR warning) so the build's initial hidden
 // state is set before paint — no flash of the finished card.
@@ -234,6 +235,8 @@ export function Module({
         return <NoteField key={c.id} spec={c} value={(state[c.id] as string) ?? ""} onChange={(v) => setField(c.id, v)} />;
       case "tracker":
         return <TrackerField key={c.id} spec={c} value={(state[c.id] as { rows: { name: string; done: string[] }[] }) ?? { rows: [] }} onChange={(v) => setField(c.id, v)} />;
+      case "feed":
+        return <FeedField key={c.id} spec={c} value={(state[c.id] as FeedEntry[]) ?? []} />;
     }
   };
 

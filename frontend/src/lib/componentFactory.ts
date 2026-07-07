@@ -31,6 +31,7 @@ export const COMPONENT_TYPES: { type: ComponentType; label: string }[] = [
   { type: "gallery", label: "Gallery" },
   { type: "note", label: "Note" },
   { type: "tracker", label: "Tracker" },
+  { type: "feed", label: "Feed" },
 ];
 
 let counter = 0;
@@ -99,5 +100,7 @@ export function makeComponent(type: ComponentType, label?: string): Component {
       return { id, type, label: label ?? "Notes" };
     case "tracker":
       return { id, type, label: label ?? "Tracker", period: "day" };
+    case "feed":
+      return { id, type, label: label ?? "Feed", max_items: 20 };
   }
 }
