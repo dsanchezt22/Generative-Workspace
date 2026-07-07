@@ -10,6 +10,7 @@ from starlette.middleware.sessions import SessionMiddleware
 from src import db, llm
 from src.routes import (
     auth,
+    automations,
     conversations,
     live,
     modules,
@@ -20,6 +21,7 @@ from src.routes import (
     transcribe,
 )
 from src.routes.deps import _parse_cors_origins
+from src.services import runtime
 
 logging.basicConfig(
     level=os.environ.get("TRUS_LOG_LEVEL", "INFO"),
@@ -30,7 +32,18 @@ logging.basicConfig(
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     db.init_db()
-    yield
+    # The always-on runtime lives in its OWN daemon thread (never the asyncio
+    # event loop). TRUS_RUNTIME=0 (conftest force-sets it) keeps TestClient
+    # lifespans from ever starting the thread.
+    sched = None
+    if os.environ.get("TRUS_RUNTIME", "1") == "1":
+        sched = runtime.Scheduler()
+        sched.start()
+    try:
+        yield
+    finally:
+        if sched:
+            sched.stop()
 
 
 app = FastAPI(title="Trus API", lifespan=lifespan)
@@ -98,6 +111,7 @@ app.include_router(suggestions.router, prefix="/api")
 app.include_router(transcribe.router, prefix="/api")
 app.include_router(live.router, prefix="/api")
 app.include_router(profile.router, prefix="/api")
+app.include_router(automations.router, prefix="/api")
 
 
 @app.get("/api/health")

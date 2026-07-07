@@ -64,3 +64,37 @@ already records (STATUS.md, plans, CLAUDE.md).
   reads consistently as of panel-open. (Backend endpoints for a surface may not
   exist yet while building the frontend — build to the contract; `npm run build`
   is static, it never hits the server.)
+
+- **A1 spine: the executor signature deviates from DESIGN-autonomy** — it is
+  `execute(owner, payload, ExecContext) -> ExecResult`, not `(owner, payload) ->
+  dict`. `watch` is edge-triggered on the automation's own `state_json.armed`, so
+  it needs the current scratch state + injected `now` in, and the new state back
+  out. `ExecContext` = `{automation_id, page_id, state, now, interval_secs}`;
+  `ExecResult` = `{result, state}` (state None = leave scratch untouched). The
+  reconciled doc's "engine wired to the action model" authorizes this — the one
+  intentional signature deviation.
+
+- **Frozen-payload enrichment rides on Pydantic v2's default `extra="ignore"`.**
+  `actions.park` freezes a payload dict that may carry keys the `AutoAction` model
+  doesn't declare (send_email's resolved `body`, archive/delete display
+  `*_title/_name`). On approve, `parse_action` re-validates the frozen JSON for
+  safety, but the executor runs on `json.loads(payload_json)` — the RAW frozen
+  dict — NOT `action.model_dump()` (which would drop the enriched keys). If a new
+  AutoAction ever sets `extra="forbid"`, park-freeze + approve-revalidate will
+  start 500-ing; keep them extra-tolerant.
+
+- **uses_llm actions freeze the SPEC, not composed content** (zero-spend park). A
+  dial-0-held summarize/draft/learn has no preview and its `_freeze_payload` is a
+  no-op; approve runs the budget gate then composes. Only non-LLM consequential
+  actions resolve content at park time.
+
+- **Test owners need a `sessions` row before `insert_module`/`add_message`.** The
+  V2 tables are FK-free on owner, but modules/messages still reference
+  `sessions(id)`. In tests, either use a TestClient (its first request mints the
+  anon session) or `INSERT OR IGNORE INTO sessions` for a chosen owner id, else
+  you get `FOREIGN KEY constraint failed` from the default-page insert.
+
+- **`runtime._runtime_limiter` is a module-level instance** (its own gen-rate
+  budget, separate from routes.deps `_gen_limiter`). It persists across tests;
+  clear `._hits` in an autouse fixture, or use unique owner ids, so `budget_ok`
+  stays deterministic when `now` is injected at a fixed timestamp.

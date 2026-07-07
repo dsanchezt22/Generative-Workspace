@@ -110,8 +110,23 @@ def _isolate_llm_env(monkeypatch):
         # real backup dir or perturb the retention default (7) under test.
         "TRUS_BACKUP_DIR",
         "TRUS_BACKUP_KEEP",
+        # V2 trust spine runtime knobs — the scheduler thread, its tick/batch/
+        # backoff/gen-rate tuning, the activity-journal cap, and the approval TTL.
+        # A dev .env must not perturb these under test (tests inject time + opt in).
+        "TRUS_RUNTIME",
+        "TRUS_RUNTIME_TICK_SECS",
+        "TRUS_RUNTIME_BATCH",
+        "TRUS_RUNTIME_BACKOFF_BASE",
+        "TRUS_RUNTIME_BACKOFF_CAP",
+        "TRUS_RUNTIME_GEN_RATE_MAX",
+        "TRUS_RUNTIME_GEN_RATE_WINDOW",
+        "TRUS_ACTIVITY_MAX",
+        "TRUS_APPROVAL_TTL_HOURS",
     ):
         monkeypatch.delenv(k, raising=False)
+    # No test starts the runtime thread implicitly — a TestClient's lifespan must
+    # never spin up the scheduler (tests drive Scheduler.tick(now) directly).
+    monkeypatch.setenv("TRUS_RUNTIME", "0")
 
 
 @pytest.fixture(autouse=True)

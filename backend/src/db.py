@@ -168,6 +168,65 @@ CREATE TABLE IF NOT EXISTS user_profile (
     updated_at  TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_user_profile_owner ON user_profile(owner, updated_at);
+-- V2 trust spine (DESIGN-RECONCILED rulings 2/5): server-side runtime
+-- automations. owner = the _owner_id key (claimed uid, or dev-only anon sid).
+-- NOT schema.Automation (the client-side intra-module rule): different concept,
+-- different store. All-new tables → no _migrate entries needed.
+CREATE TABLE IF NOT EXISTS automations (
+    id            TEXT PRIMARY KEY,
+    owner         TEXT NOT NULL,
+    page_id       TEXT REFERENCES pages(id) ON DELETE CASCADE,  -- the surface it belongs to (nullable)
+    name          TEXT NOT NULL,
+    description   TEXT NOT NULL DEFAULT '',   -- plain-language "exactly what it does"
+    action_type   TEXT NOT NULL,              -- key into services/actions.ACTION_SPECS
+    action_json   TEXT NOT NULL,              -- typed AutoAction (discriminated union), quarantined on read
+    state_json    TEXT NOT NULL DEFAULT '{}', -- executor scratch (watch edge-trigger 'armed' flag)
+    schedule_kind TEXT NOT NULL,              -- 'interval' | 'daily'
+    interval_secs INTEGER,                    -- 300..604800 (weekly allowed)
+    daily_at      TEXT,                       -- 'HH:MM' UTC
+    trust_dial    INTEGER NOT NULL DEFAULT 1, -- 0 ask-always | 1 standard | 2 trusted; PATCH is the ONLY writer
+    enabled       INTEGER NOT NULL DEFAULT 1,
+    next_run_at   TEXT,                       -- due when <= now; ALSO the CAS claim token
+    last_run_at   TEXT,
+    last_status   TEXT,                       -- mirror of latest activity kind for cheap list views
+    failure_count INTEGER NOT NULL DEFAULT 0, -- consecutive executor EXCEPTIONS; drives backoff
+    created_at    TEXT NOT NULL,
+    updated_at    TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_automations_due   ON automations(enabled, next_run_at);
+CREATE INDEX IF NOT EXISTS idx_automations_owner ON automations(owner, created_at);
+-- Parked consequential fires (AUT-2). payload_json is the FROZEN fully-resolved
+-- action payload captured at park time — approve executes exactly these bytes,
+-- never a re-computation (no preview/execution drift, zero LLM spend on approve).
+CREATE TABLE IF NOT EXISTS approvals (
+    id            TEXT PRIMARY KEY,
+    owner         TEXT NOT NULL,
+    automation_id TEXT NOT NULL,
+    action_type   TEXT NOT NULL,
+    payload_json  TEXT NOT NULL,
+    summary       TEXT NOT NULL,             -- template-composed future-tense line, frozen at park
+    preview_json  TEXT,                      -- typed PreviewPayload dict or NULL
+    status        TEXT NOT NULL DEFAULT 'pending', -- pending|approved|rejected|expired|failed
+    expires_at    TEXT NOT NULL,
+    created_at    TEXT NOT NULL,
+    decided_at    TEXT,
+    executed_at   TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_approvals_owner ON approvals(owner, status, created_at);
+-- Append-only activity journal (TAP-1). summary composed AT WRITE TIME and
+-- stored — history never rewrites when copy templates change. Pruned per owner
+-- on write past TRUS_ACTIVITY_MAX (the live_cache cap pattern).
+CREATE TABLE IF NOT EXISTS activity (
+    id            TEXT PRIMARY KEY,
+    owner         TEXT NOT NULL,
+    automation_id TEXT,                      -- nullable: rows survive automation deletion
+    approval_id   TEXT,
+    kind          TEXT NOT NULL,             -- ran|held|approved|rejected|expired|failed|skipped
+    summary       TEXT NOT NULL,
+    detail_json   TEXT,                      -- small typed dict: {module_id?, page_id?, simulated?, reason?}
+    created_at    TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_activity_owner ON activity(owner, created_at);
 """
 
 # Tracks which db file has had its schema ensured this process, so we re-run the
@@ -382,6 +441,11 @@ def adopt_session_data(old_owner: str, user_id: str) -> None:
         c.execute("UPDATE snapshots SET session_id = ? WHERE session_id = ?", (user_id, old_owner))
         c.execute("UPDATE gen_cache SET owner = ? WHERE owner = ?", (user_id, old_owner))
         c.execute("UPDATE layout_library SET owner = ? WHERE owner = ?", (user_id, old_owner))
+        # V2 trust spine (R-902): pre-claim automations/approvals/activity survive
+        # an invite claim, re-owned to the user alongside the workspace tables above.
+        c.execute("UPDATE automations SET owner = ? WHERE owner = ?", (user_id, old_owner))
+        c.execute("UPDATE approvals SET owner = ? WHERE owner = ?", (user_id, old_owner))
+        c.execute("UPDATE activity SET owner = ? WHERE owner = ?", (user_id, old_owner))
 
 
 # ---------------------------------------------------------------------------
@@ -1575,3 +1639,437 @@ def profile_clear(owner: str) -> int:
     with _conn() as c:
         cur = c.execute("DELETE FROM user_profile WHERE owner = ?", (owner,))
         return cur.rowcount
+
+
+# ── V2 trust spine: automations / approvals / activity ───────────────────────
+# Server-side runtime automation — NOT schema.Automation (a client-side module
+# rule). Every SELECT/UPDATE/DELETE carries `AND owner = ?` except the two
+# scheduler-only calls marked ⚙ (the scheduler is the one trusted cross-owner
+# caller; rows pin their owner). ids uuid4, timestamps _now().
+
+_AUTOMATION_COLS = (
+    "id, owner, page_id, name, description, action_type, action_json, state_json, "
+    "schedule_kind, interval_secs, daily_at, trust_dial, enabled, next_run_at, "
+    "last_run_at, last_status, failure_count, created_at, updated_at"
+)
+
+
+def automation_create(
+    owner: str,
+    *,
+    page_id: str | None,
+    name: str,
+    description: str,
+    action_type: str,
+    action_json: str,
+    schedule_kind: str,
+    interval_secs: int | None,
+    daily_at: str | None,
+    trust_dial: int,
+    next_run_at: str | None,
+) -> dict:
+    """Insert an automation. AUT-3: trust_dial hard-clamped to <= 1 here — an
+    orchestrator/ONB proposal can create at 0 or 1, never 2 (only PATCH lifts to 2)."""
+    dial = min(max(trust_dial, 0), 1)
+    aid = str(uuid.uuid4())
+    now = _now()
+    with _conn() as c:
+        c.execute(
+            "INSERT INTO automations (id, owner, page_id, name, description, action_type,"
+            " action_json, state_json, schedule_kind, interval_secs, daily_at, trust_dial,"
+            " enabled, next_run_at, last_run_at, last_status, failure_count, created_at, updated_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, '{}', ?, ?, ?, ?, 1, ?, NULL, NULL, 0, ?, ?)",
+            (
+                aid,
+                owner,
+                page_id,
+                name,
+                description,
+                action_type,
+                action_json,
+                schedule_kind,
+                interval_secs,
+                daily_at,
+                dial,
+                next_run_at,
+                now,
+                now,
+            ),
+        )
+        row = c.execute(  # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
+            f"SELECT {_AUTOMATION_COLS} FROM automations WHERE id = ?", (aid,)
+        ).fetchone()
+    return dict(row)
+
+
+def automation_list(owner: str) -> list[dict]:
+    with _conn() as c:
+        rows = c.execute(  # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
+            f"SELECT {_AUTOMATION_COLS} FROM automations WHERE owner = ? ORDER BY created_at",
+            (owner,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def automation_get(owner: str, aid: str) -> dict | None:
+    with _conn() as c:
+        row = c.execute(  # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
+            f"SELECT {_AUTOMATION_COLS} FROM automations WHERE id = ? AND owner = ?", (aid, owner)
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def automation_patch(
+    owner: str, aid: str, *, name=_UNSET, enabled=_UNSET, trust_dial=_UNSET
+) -> dict | None:
+    """The ONLY trust_dial writer (AUT-3). Column set {name, enabled, trust_dial,
+    updated_at} is disjoint from the scheduler's bookkeeping writer below (except
+    the harmless updated_at overlap), so neither clobbers the other."""
+    sets, params = [], []
+    if name is not _UNSET:
+        sets.append("name = ?")
+        params.append(name)
+    if enabled is not _UNSET:
+        sets.append("enabled = ?")
+        params.append(1 if enabled else 0)
+    if trust_dial is not _UNSET:
+        sets.append("trust_dial = ?")
+        params.append(min(max(trust_dial, 0), 2))
+    sets.append("updated_at = ?")
+    params.append(_now())
+    params += [aid, owner]
+    with _conn() as c:
+        cur = c.execute(  # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
+            f"UPDATE automations SET {', '.join(sets)} WHERE id = ? AND owner = ?", params
+        )
+        if cur.rowcount == 0:
+            return None
+        row = c.execute(  # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
+            f"SELECT {_AUTOMATION_COLS} FROM automations WHERE id = ?", (aid,)
+        ).fetchone()
+    return dict(row)
+
+
+def automation_delete(owner: str, aid: str) -> bool:
+    """Delete + cascade-expire this automation's pending approvals, journaling one
+    'expired' activity row per swept approval (never an orphaned executable
+    approval). All in one connection/transaction."""
+    now = _now()
+    with _conn() as c:
+        pend = c.execute(
+            "SELECT id, summary FROM approvals"
+            " WHERE automation_id = ? AND owner = ? AND status = 'pending'",
+            (aid, owner),
+        ).fetchall()
+        c.execute(
+            "UPDATE approvals SET status = 'expired', decided_at = ?"
+            " WHERE automation_id = ? AND owner = ? AND status = 'pending'",
+            (now, aid, owner),
+        )
+        for p in pend:
+            c.execute(
+                "INSERT INTO activity (id, owner, automation_id, approval_id, kind, summary,"
+                " detail_json, created_at) VALUES (?, ?, ?, ?, 'expired', ?, NULL, ?)",
+                (
+                    str(uuid.uuid4()),
+                    owner,
+                    aid,
+                    p["id"],
+                    "Expired unanswered: " + p["summary"],
+                    now,
+                ),
+            )
+        cur = c.execute("DELETE FROM automations WHERE id = ? AND owner = ?", (aid, owner))
+        return cur.rowcount > 0
+
+
+# ⚙ scheduler-only (cross-owner): the trusted daemon selects due rows across all
+# owners; each row pins its own owner for the per-run owner-scoped writes.
+def automations_due(now_iso: str, limit: int) -> list[dict]:
+    with _conn() as c:
+        rows = c.execute(  # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
+            f"SELECT {_AUTOMATION_COLS} FROM automations"
+            " WHERE enabled = 1 AND next_run_at IS NOT NULL AND next_run_at <= ?"
+            " ORDER BY next_run_at LIMIT ?",
+            (now_iso, limit),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+# ⚙ scheduler-only CAS claim: the advance of next_run_at IS the claim. Keyed by
+# the unique id + the expected next_run_at token, so a second worker (or a
+# restart's catch-up) that reads the same due row loses cleanly (rowcount 0).
+def automation_claim(aid: str, expected_next_run: str | None, new_next_run: str) -> bool:
+    with _conn() as c:
+        cur = c.execute(
+            "UPDATE automations SET next_run_at = ?, updated_at = ?"
+            " WHERE id = ? AND next_run_at = ? AND enabled = 1",
+            (new_next_run, _now(), aid, expected_next_run),
+        )
+        return cur.rowcount == 1
+
+
+def automation_mark_run(
+    owner: str,
+    aid: str,
+    *,
+    last_run_at: str,
+    next_run_at: str | None,
+    last_status: str,
+    failure_count: int,
+    state_json=_UNSET,
+    enabled=_UNSET,
+) -> None:
+    """The scheduler's bookkeeping writer — NEVER writes trust_dial. Column set is
+    disjoint from PATCH's (AUT-3). `enabled` is written only on quarantine
+    auto-disable; `state_json` only when an executor returns new scratch state."""
+    sets = [
+        "last_run_at = ?",
+        "next_run_at = ?",
+        "last_status = ?",
+        "failure_count = ?",
+        "updated_at = ?",
+    ]
+    params: list = [last_run_at, next_run_at, last_status, failure_count, _now()]
+    if state_json is not _UNSET:
+        sets.append("state_json = ?")
+        params.append(state_json)
+    if enabled is not _UNSET:
+        sets.append("enabled = ?")
+        params.append(1 if enabled else 0)
+    params += [aid, owner]
+    with _conn() as c:
+        c.execute(  # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
+            f"UPDATE automations SET {', '.join(sets)} WHERE id = ? AND owner = ?", params
+        )
+
+
+_APPROVAL_COLS = (
+    "id, owner, automation_id, action_type, payload_json, summary, preview_json, status, "
+    "expires_at, created_at, decided_at, executed_at"
+)
+
+
+def approval_pending_for(owner: str, automation_id: str, action_type: str) -> dict | None:
+    """The single pending approval for this (owner, automation, action_type), if
+    any — park uses it to avoid re-journaling a 'held' row every tick."""
+    with _conn() as c:
+        row = c.execute(  # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
+            f"SELECT {_APPROVAL_COLS} FROM approvals"
+            " WHERE owner = ? AND automation_id = ? AND action_type = ? AND status = 'pending'",
+            (owner, automation_id, action_type),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def approval_create(
+    owner: str,
+    automation_id: str,
+    action_type: str,
+    payload_json: str,
+    summary: str,
+    preview_json: str | None,
+    expires_at: str,
+) -> dict:
+    """Insert a pending approval, deduped: an existing pending row for the same
+    (owner, automation_id, action_type) is returned unchanged (a dial-0 interval
+    automation cannot flood the list)."""
+    now = _now()
+    with _conn() as c:
+        dup = c.execute(  # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
+            f"SELECT {_APPROVAL_COLS} FROM approvals"
+            " WHERE owner = ? AND automation_id = ? AND action_type = ? AND status = 'pending'",
+            (owner, automation_id, action_type),
+        ).fetchone()
+        if dup:
+            return dict(dup)
+        aid = str(uuid.uuid4())
+        c.execute(
+            "INSERT INTO approvals (id, owner, automation_id, action_type, payload_json, summary,"
+            " preview_json, status, expires_at, created_at, decided_at, executed_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, NULL, NULL)",
+            (
+                aid,
+                owner,
+                automation_id,
+                action_type,
+                payload_json,
+                summary,
+                preview_json,
+                expires_at,
+                now,
+            ),
+        )
+        row = c.execute(  # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
+            f"SELECT {_APPROVAL_COLS} FROM approvals WHERE id = ?", (aid,)
+        ).fetchone()
+    return dict(row)
+
+
+def approval_get(owner: str, approval_id: str) -> dict | None:
+    with _conn() as c:
+        row = c.execute(  # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
+            f"SELECT {_APPROVAL_COLS} FROM approvals WHERE id = ? AND owner = ?",
+            (approval_id, owner),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def approval_list_pending(owner: str) -> list[dict]:
+    with _conn() as c:
+        rows = c.execute(  # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
+            f"SELECT {_APPROVAL_COLS} FROM approvals"
+            " WHERE owner = ? AND status = 'pending' ORDER BY created_at DESC",
+            (owner,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def approval_pending_count(owner: str) -> int:
+    with _conn() as c:
+        row = c.execute(
+            "SELECT COUNT(*) AS n FROM approvals WHERE owner = ? AND status = 'pending'",
+            (owner,),
+        ).fetchone()
+    return int(row["n"])
+
+
+def approval_claim(owner: str, approval_id: str, new_status: str, now: str) -> dict | None:
+    """The CAS gate into execution: flip a pending, non-expired approval to
+    new_status. `AND expires_at > ?` closes the approve-past-expiry race even if
+    no sweep ran. rowcount 0 → None (caller re-reads to tell 404 from 409)."""
+    with _conn() as c:
+        cur = c.execute(
+            "UPDATE approvals SET status = ?, decided_at = ?"
+            " WHERE id = ? AND owner = ? AND status = 'pending' AND expires_at > ?",
+            (new_status, now, approval_id, owner, now),
+        )
+        if cur.rowcount == 0:
+            return None
+        row = c.execute(  # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
+            f"SELECT {_APPROVAL_COLS} FROM approvals WHERE id = ?", (approval_id,)
+        ).fetchone()
+    return dict(row)
+
+
+def approval_set_failed(owner: str, approval_id: str) -> None:
+    with _conn() as c:
+        c.execute(
+            "UPDATE approvals SET status = 'failed' WHERE id = ? AND owner = ?",
+            (approval_id, owner),
+        )
+
+
+def approval_set_executed(owner: str, approval_id: str, executed_at: str) -> None:
+    with _conn() as c:
+        c.execute(
+            "UPDATE approvals SET executed_at = ? WHERE id = ? AND owner = ?",
+            (executed_at, approval_id, owner),
+        )
+
+
+def approval_sweep_expired(owner: str, now: str) -> list[dict]:
+    """Flip this owner's overdue pendings to 'expired'; return the swept rows so
+    the caller journals them."""
+    with _conn() as c:
+        rows = c.execute(  # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
+            f"SELECT {_APPROVAL_COLS} FROM approvals"
+            " WHERE owner = ? AND status = 'pending' AND expires_at <= ?",
+            (owner, now),
+        ).fetchall()
+        swept = [dict(r) for r in rows]
+        if swept:
+            c.execute(
+                "UPDATE approvals SET status = 'expired', decided_at = ?"
+                " WHERE owner = ? AND status = 'pending' AND expires_at <= ?",
+                (now, owner, now),
+            )
+    return swept
+
+
+def approval_sweep_expired_global(now: str) -> list[dict]:
+    """⚙ scheduler-only: the per-tick cross-owner expiry pass. Returns swept rows
+    (each pinning its owner) so the runtime journals one 'expired' row apiece."""
+    with _conn() as c:
+        rows = c.execute(  # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
+            f"SELECT {_APPROVAL_COLS} FROM approvals WHERE status = 'pending' AND expires_at <= ?",
+            (now,),
+        ).fetchall()
+        swept = [dict(r) for r in rows]
+        if swept:
+            c.execute(
+                "UPDATE approvals SET status = 'expired', decided_at = ?"
+                " WHERE status = 'pending' AND expires_at <= ?",
+                (now, now),
+            )
+    return swept
+
+
+_ACTIVITY_COLS = "id, owner, automation_id, approval_id, kind, summary, detail_json, created_at"
+
+
+def _activity_max() -> int:
+    return int(os.environ.get("TRUS_ACTIVITY_MAX", "2000"))
+
+
+def activity_add(
+    owner: str,
+    kind: str,
+    summary: str,
+    *,
+    automation_id: str | None = None,
+    approval_id: str | None = None,
+    detail_json: str | None = None,
+) -> dict:
+    """Append an activity row, then prune this owner's oldest rows past
+    TRUS_ACTIVITY_MAX (the live_cache_set LIMIT max(0, COUNT-cap) pattern — owner
+    B's rows are untouched)."""
+    rid = str(uuid.uuid4())
+    now = _now()
+    with _conn() as c:
+        c.execute(
+            "INSERT INTO activity (id, owner, automation_id, approval_id, kind, summary,"
+            " detail_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (rid, owner, automation_id, approval_id, kind, summary, detail_json, now),
+        )
+        c.execute(
+            "DELETE FROM activity WHERE owner = ? AND id IN ("
+            " SELECT id FROM activity WHERE owner = ? ORDER BY created_at ASC, rowid ASC"
+            " LIMIT max(0, (SELECT COUNT(*) FROM activity WHERE owner = ?) - ?))",
+            (owner, owner, owner, _activity_max()),
+        )
+        row = c.execute(  # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
+            f"SELECT {_ACTIVITY_COLS} FROM activity WHERE id = ?", (rid,)
+        ).fetchone()
+    return dict(row)
+
+
+def activity_list(owner: str, limit: int = 50, before: str | None = None) -> list[dict]:
+    """Newest first, keyset pagination on created_at (pass the oldest row's
+    created_at as `before` to page back)."""
+    with _conn() as c:
+        if before:
+            rows = c.execute(  # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
+                f"SELECT {_ACTIVITY_COLS} FROM activity WHERE owner = ? AND created_at < ?"
+                " ORDER BY created_at DESC, rowid DESC LIMIT ?",
+                (owner, before, limit),
+            ).fetchall()
+        else:
+            rows = c.execute(  # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
+                f"SELECT {_ACTIVITY_COLS} FROM activity WHERE owner = ?"
+                " ORDER BY created_at DESC, rowid DESC LIMIT ?",
+                (owner, limit),
+            ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def recent_user_messages(owner: str, since_iso: str, limit: int = 50) -> list[str]:
+    """This owner's recent user-role message texts since `since_iso` (newest
+    first) — the `learn` executor's mining source. Owner-scoped (R-903)."""
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT text FROM messages WHERE session_id = ? AND role = 'user'"
+            " AND created_at >= ? ORDER BY created_at DESC, rowid DESC LIMIT ?",
+            (owner, since_iso, limit),
+        ).fetchall()
+    return [r["text"] for r in rows]
