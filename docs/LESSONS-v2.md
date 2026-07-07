@@ -140,3 +140,32 @@ already records (STATUS.md, plans, CLAUDE.md).
   works under `TRUS_ALLOW_ANON=0`. If you ever add a `request.session[...]` read/write
   on that handler, you silently break test_share's no-cookie / no-session-row / anon-
   disabled guarantees. Keep it read-only and cookie-free.
+
+- **SURF reverse zoom: read the parent view from `lastSavedViewRef`, not
+  `latestViewRef`.** On "back", page.tsx sets `activePageId=parent` AND bumps
+  `portalReturnReq` in one commit. The `[activePageId]` load effect runs first and
+  `setView(parentView)` — but `setView` is async, so `latestViewRef.current` STILL
+  holds the child's view when the reverse effect runs on that same flush. The load
+  effect DOES set `lastSavedViewRef.current = {pid, v}` synchronously, so read the
+  parent target from there. (DESIGN-surfaces §6's sample code says `latestViewRef`;
+  this is the one correction — verified by the effect-ordering, not the prose.) The
+  reverse effect must be declared AFTER the load effect so that ordering holds.
+
+- **Portal-tile accents use a MUTED-only deterministic fallback** (`resolvePageAccent`
+  in `lib/theme.ts`): an explicit `page.accent` token wins, else hash the name over
+  `ACCENT_NAMES` minus `blue`. `blue` IS the magenta spark — excluding it from the
+  fallback keeps the home canvas at exactly one magenta (the approval badge / a CTA),
+  so per-app identity tints never collide with the one-accent-per-screen rule.
+
+- **The SURF-2 "no raw-HTML" grep matches code COMMENTS.** A comment that names the
+  `dangerouslySetInnerHTML` API to say you're NOT using it still trips
+  `grep -rl dangerouslySetInnerHTML` on the Feed/PortalTile/AppFrame paths. Phrase the
+  invariant without the literal token ("no raw-HTML injection path").
+
+- **`launchTargetView`/`overviewMeta`/`deriveTier` are the pure, testable seams**
+  (`lib/portalLayout.ts` + `lib/structure.ts`) — the zoom-launch math, the tile/AppFrame
+  status line, and the client-mirrored fail-closed tier chip (reconciled ruling 4: a
+  StructureAutomation carries `action_type`, never a `tier`; the five structure action
+  types are all autonomous, everything else needs your tap). Components stay untested;
+  these carry the logic. `PageOverview.last_run_at` is real from day one (ruling 6), so
+  the "agent ran …" line renders whenever it's non-null — never a fabricated stub.
