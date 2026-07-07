@@ -9,6 +9,9 @@ interface Props {
   // A row that points at a module/page is a button — tapping it closes the
   // panel and takes you to what the automation touched ("see what it made").
   onNavigate?: (target: { moduleId?: string | null; pageId?: string | null }) => void;
+  // The panel's open-time clock, captured once — keeps this component pure
+  // (no impure Date.now() during render) and every row's "ago" consistent.
+  now: number;
   index: number;
 }
 
@@ -16,13 +19,13 @@ interface Props {
 // lib/pulse.kindRegister — the single source of truth) + the frozen summary +
 // relative time. Rows construct in via lib/assembly (seed → label wipe → body
 // rise); reduced motion renders the finished row instantly.
-export function ActivityRow({ entry, onNavigate, index }: Props) {
+export function ActivityRow({ entry, onNavigate, now, index }: Props) {
   const ref = useAssembly<HTMLElement>(index);
   const reg = kindRegister(entry.kind);
   const label =
     entry.kind === "approved" && entry.simulated ? `${reg.label} · SIMULATED` : reg.label;
   const linked = !!(entry.module_id || entry.page_id);
-  const when = relativeTime(entry.created_at, Date.now());
+  const when = relativeTime(entry.created_at, now);
 
   const inner = (
     <>

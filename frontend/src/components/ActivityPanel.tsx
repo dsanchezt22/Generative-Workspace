@@ -37,6 +37,9 @@ export function ActivityPanel({ onClose, onNavigate, onMutated }: Props) {
   const [automationsOpen, setAutomationsOpen] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState<AutomationOut | null>(null);
+  // The panel's open-time clock, captured once (lazy init) so the child rows
+  // stay pure — every "2m ago" / "expires in 2d" reads consistently as of open.
+  const [now] = useState(() => Date.now());
 
   const closeRef = useRef<HTMLButtonElement | null>(null);
   const { ref: asideRef, onKeyDown } = useDialog<HTMLElement>(true, onClose, closeRef);
@@ -232,6 +235,7 @@ export function ActivityPanel({ onClose, onNavigate, onMutated }: Props) {
                   key={item.approval.id}
                   item={item}
                   index={i}
+                  now={now}
                   onApprove={() => decide(item.approval.id, "approve")}
                   onDismiss={() => decide(item.approval.id, "reject")}
                 />
@@ -251,7 +255,7 @@ export function ActivityPanel({ onClose, onNavigate, onMutated }: Props) {
             ) : (
               <>
                 {state.activity.map((e, i) => (
-                  <ActivityRow key={e.id} entry={e} index={i} onNavigate={onNavigate} />
+                  <ActivityRow key={e.id} entry={e} index={i} now={now} onNavigate={onNavigate} />
                 ))}
                 {!state.activityDone && (
                   <button

@@ -8,6 +8,8 @@ interface Props {
   item: ApprovalItem;
   onApprove: () => void;
   onDismiss: () => void;
+  // The panel's open-time clock (captured once) — keeps this component pure.
+  now: number;
   index: number;
 }
 
@@ -30,13 +32,13 @@ function expiresRegister(iso: string, now: number): string {
 // decisions. Approve is the panel's ONE filled-magenta button; Dismiss is a
 // ghost. The tap flow is optimistic and honest: in-flight shows EXECUTING…, a
 // 5xx restores the buttons with a FAILED register — nothing pretends success.
-export function ApprovalCard({ item, onApprove, onDismiss, index }: Props) {
+export function ApprovalCard({ item, onApprove, onDismiss, now, index }: Props) {
   const ref = useAssembly<HTMLDivElement>(index);
   const [expanded, setExpanded] = useState(false);
   const { approval, pending, error } = item;
   const preview = approval.preview;
   const busy = pending !== null;
-  const expires = expiresRegister(approval.expires_at, Date.now());
+  const expires = expiresRegister(approval.expires_at, now);
 
   return (
     <div
